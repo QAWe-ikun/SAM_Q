@@ -1,0 +1,28 @@
+# SAM²-Q-VLA-HMVP Requirements
+
+# Core
+torch>=2.0.0
+torchvision>=0.15.0
+
+# Transformers
+transformers>=4.37.0
+qwen-vl-utils>=0.0.1
+
+# SAM3 (official release now available)
+# Install with: pip install git+https://github.com/facebookresearch/sam3.git
+
+# Image processing
+Pillow>=10.0.0
+opencv-python>=4.8.0
+
+# Utilities
+numpy>=1.24.0
+tqdm>=4.65.0
+pyyaml>=6.0
+
+# Training
+accelerate>=0.25.0
+peft>=0.7.0
+
+# Optional: for visualization
+matplotlib>=3.7.0

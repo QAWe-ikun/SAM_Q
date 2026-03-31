@@ -1,0 +1,38 @@
+# Configuration for SAM3 + Qwen3-VL Object Placement Prediction
+
+# Data
+data_dir: "D:/experiment/SAM_Q/data"
+batch_size: 4
+num_workers: 4
+
+# Model
+model:
+  qwen_model_name: "Qwen/Qwen3-VL-7B-Instruct"
+  sam3_input_dim: 256
+  qwen_hidden_dim: 3584  # Qwen3-VL-7B hidden size
+  adapter_hidden_dim: 512
+
+# Freeze options
+freeze_qwen: true
+freeze_sam3_image_encoder: true
+
+# Loss
+dice_weight: 1.0
+bce_weight: 1.0
+
+# Optimizer
+optimizer:
+  lr: 1.0e-4
+  weight_decay: 1.0e-4
+
+# Scheduler
+scheduler:
+  T_max: 100
+  eta_min: 1.0e-6
+
+# Training
+num_epochs: 100
+output_dir: "D:/experiment/SAM_Q/outputs"
+
+# Device
+device: "cuda"
