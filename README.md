@@ -440,11 +440,6 @@ SAM-Q/
 │       ├── asset_database.py           # 3D asset management
 │       └── common.py                   # Common utilities
 │
-├── tests/                              # Unit tests
-│   ├── test_models/
-│   ├── test_data/
-│   └── test_inference/
-│
 ├── scripts/                            # Helper scripts
 │   ├── download_data.sh
 │   ├── preprocess_data.py
