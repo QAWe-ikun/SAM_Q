@@ -220,6 +220,7 @@ class Trainer:
             num_epochs: Number of epochs to train
         """
         num_epochs = num_epochs or self.config.get("num_epochs", 100)
+        assert(num_epochs is not None)
         
         for epoch in range(num_epochs):
             self.current_epoch = epoch

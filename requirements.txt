@@ -1,4 +1,4 @@
-# SAM²-Q-VLA-HMVP Requirements
+# SAM-Q-VLA-HMVP Requirements
 
 # Core
 torch>=2.0.0

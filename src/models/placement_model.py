@@ -10,8 +10,8 @@ import torch.nn as nn
 from typing import Optional, Dict, Any, Tuple, List
 from PIL import Image
 
-from .qwen3vl_encoder import Qwen3VLEncoder
-from .adapter import Adapter, CrossModalAdapter
+from .encoders.qwen3vl_encoder import Qwen3VLEncoder
+from .adapters import Adapter, CrossModalAdapter
 
 
 class SAM3PlacementModel(nn.Module):
@@ -335,32 +335,50 @@ class PlacementLoss(nn.Module):
 
 class VLALoss(nn.Module):
     """
-    VLA Loss combining mask segmentation and text generation.
+    VLA Loss for SAM-Q-HMVP system
+    Combines placement heatmap loss, collision loss, and semantic alignment
     """
 
-    def __init__(self, mask_weight: float = 1.0, text_weight: float = 0.5):
+    def __init__(self, heatmap_weight: float = 1.0, collision_weight: float = 0.5, semantic_weight: float = 0.3):
         super().__init__()
-        self.mask_weight = mask_weight
-        self.text_weight = text_weight
-        self.mask_loss_fn = PlacementLoss()
-        self.text_loss_fn = nn.CrossEntropyLoss()
+        self.heatmap_weight = heatmap_weight
+        self.collision_weight = collision_weight
+        self.semantic_weight = semantic_weight
+        self.heatmap_loss_fn = nn.MSELoss()
+        self.collision_loss_fn = nn.BCEWithLogitsLoss()
+        self.semantic_loss_fn = nn.CosineEmbeddingLoss()
 
     def forward(
         self,
-        pred_masks: torch.Tensor,
-        target_masks: torch.Tensor,
-        pred_text_logits: Optional[torch.Tensor] = None,
-        target_text_ids: Optional[torch.Tensor] = None,
+        pred_heatmaps: torch.Tensor,        # [B, 1, H, W] predicted placement heatmaps
+        target_heatmaps: torch.Tensor,      # [B, 1, H, W] target placement heatmaps
+        pred_collision: torch.Tensor,       # [B] predicted collision probabilities
+        target_collision: torch.Tensor,     # [B] target collision (0=free, 1=collision)
+        pred_poses: torch.Tensor,           # [B, 7] predicted poses (x,y,z,qx,qy,qz,qw)
+        target_poses: torch.Tensor,         # [B, 7] target poses
+        semantic_features: torch.Tensor,    # [B, D] semantic features from Qwen3-VL
+        target_semantic: torch.Tensor       # [B, D] target semantic features
     ) -> Dict[str, torch.Tensor]:
-        losses = self.mask_loss_fn(pred_masks, target_masks)
-
-        if pred_text_logits is not None and target_text_ids is not None:
-            text_loss = self.text_loss_fn(
-                pred_text_logits.view(-1, pred_text_logits.size(-1)),
-                target_text_ids.view(-1)
-            )
-            losses["text"] = text_loss
-            losses["total"] = self.mask_weight * losses["total"] + self.text_weight * text_loss
+        losses = {"total": torch.tensor(0.0)}
+        
+        # Heatmap loss (placement location accuracy)
+        heatmap_loss = self.heatmap_loss_fn(pred_heatmaps, target_heatmaps)
+        losses["heatmap"] = heatmap_loss
+        losses["total"] = losses["total"] + self.heatmap_weight * heatmap_loss
+        
+        # Collision loss (avoid collisions)
+        collision_loss = self.collision_loss_fn(pred_collision, target_collision)
+        losses["collision"] = collision_loss
+        losses["total"] = losses["total"] + self.collision_weight * collision_loss
+        
+        # Semantic alignment loss (ensure placement matches text instruction)
+        # Use cosine similarity between semantic features
+        target_sim = torch.ones(pred_poses.size(0), device=pred_poses.device)  # Same class
+        semantic_loss = self.semantic_loss_fn(
+            semantic_features, target_semantic, target_sim
+        )
+        losses["semantic_alignment"] = semantic_loss
+        losses["total"] = losses["total"] + self.semantic_weight * semantic_loss
 
         return losses
 

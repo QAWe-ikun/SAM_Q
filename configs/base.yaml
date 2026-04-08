@@ -1,0 +1,150 @@
+# ============================================================================
+# SAM-Q Base Configuration
+# ============================================================================
+# This is the base configuration file for SAM-Q object placement system.
+# All paths and parameters are documented here for reproducibility.
+# ============================================================================
+
+# ----------------------------------------------------------------------------
+# Experiment Metadata
+# ----------------------------------------------------------------------------
+experiment:
+  name: "samq_base"
+  seed: 42
+  description: "Base configuration for SAM-Q object placement"
+
+# ----------------------------------------------------------------------------
+# Data Configuration
+# ----------------------------------------------------------------------------
+data:
+  root_dir: "data/"
+  train_split: "train"
+  val_split: "val"
+  test_split: "test"
+  
+  # Image preprocessing
+  plane_image_size: [1024, 1024]  # Room top-down view
+  object_image_size: [512, 512]   # Object top-down view
+  
+  # DataLoader settings
+  batch_size: 4
+  num_workers: 4
+  pin_memory: true
+  shuffle: true
+
+# ----------------------------------------------------------------------------
+# Model Architecture
+# ----------------------------------------------------------------------------
+model:
+  # Qwen3-VL Encoder
+  qwen:
+    model_name: "Qwen/Qwen3-VL-7B-Instruct"
+    hidden_dim: 3584
+    freeze: true
+    attn_implementation: "flash_attention_2"  # or "eager"
+  
+  # SAM3 Components
+  sam3:
+    input_dim: 256
+    freeze_image_encoder: true
+    freeze_detector: false
+  
+  # Adapter
+  adapter:
+    type: "cross_modal"  # Options: "base", "cross_modal", "presence_token"
+    hidden_dim: 512
+    num_queries: 64
+    dropout: 0.1
+
+# ----------------------------------------------------------------------------
+# Loss Configuration
+# ----------------------------------------------------------------------------
+loss:
+  type: "placement"  # Options: "placement", "vla"
+  
+  # Placement loss weights
+  dice_weight: 1.0
+  bce_weight: 1.0
+  
+  # VLA loss weights (only used when type is "vla")
+  heatmap_weight: 1.0
+  collision_weight: 0.5
+  semantic_weight: 0.3
+
+# ----------------------------------------------------------------------------
+# Optimizer Configuration
+# ----------------------------------------------------------------------------
+optimizer:
+  type: "AdamW"
+  lr: 1.0e-4
+  weight_decay: 1.0e-4
+  betas: [0.9, 0.999]
+  eps: 1.0e-8
+
+# ----------------------------------------------------------------------------
+# Learning Rate Scheduler
+# ----------------------------------------------------------------------------
+scheduler:
+  type: "CosineAnnealingLR"
+  T_max: 100
+  eta_min: 1.0e-6
+  warmup_epochs: 5
+  warmup_lr: 1.0e-5
+
+# ----------------------------------------------------------------------------
+# Training Configuration
+# ----------------------------------------------------------------------------
+training:
+  num_epochs: 100
+  device: "cuda"
+  
+  # Checkpointing
+  save_dir: "outputs/"
+  save_interval: 10  # Save every N epochs
+  save_best: true    # Save best model based on validation loss
+  
+  # Logging
+  log_interval: 10   # Log every N batches
+  use_wandb: false
+  wandb_project: "sam-q"
+  
+  # Validation
+  val_interval: 1    # Validate every N epochs
+  early_stopping: false
+  patience: 20
+
+# ----------------------------------------------------------------------------
+# Inference Configuration
+# ----------------------------------------------------------------------------
+inference:
+  checkpoint_path: null  # Path to model checkpoint
+  threshold: 0.5         # Confidence threshold
+  device: "cuda"
+  
+  # Output settings
+  save_visualizations: true
+  save_json: true
+  output_dir: "results/"
+
+# ----------------------------------------------------------------------------
+# Advanced Modules (Optional)
+# ----------------------------------------------------------------------------
+advanced:
+  # Dual-scale SAM encoder
+  dual_scale:
+    enabled: false
+    high_res: 1024
+    low_res: 256
+  
+  # H-MVP Collision Detector
+  hmvp:
+    enabled: false
+    max_level: 4
+    base_resolution: 8
+    early_out_threshold: 0.1
+  
+  # Incremental VLA Memory
+  incremental_vla:
+    enabled: false
+    update_threshold: 0.3
+    max_objects: 50

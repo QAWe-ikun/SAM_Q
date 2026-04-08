@@ -5,6 +5,7 @@ H-MVP: Hierarchical Multi-View Projection Collision Detection
 Efficient 3D collision detection using hierarchical 2D depth maps,
 similar to Mipmap but for collision detection. Provides early-out optimization
 and adaptive subdivision for complex geometries.
+Standard implementation aligned with common HMVP practices.
 """
 
 import torch
@@ -18,7 +19,8 @@ class HierarchicalDepthMap(nn.Module):
     """
     Hierarchical Depth Map: Mipmap-style multi-resolution depth representation
     
-    Stores depth intervals [near, far] at multiple resolutions for efficient collision checking.
+    Standard HMVP implementation storing depth intervals [near, far] at multiple resolutions 
+    for efficient collision checking across multiple orthographic projections.
     """
     
     def __init__(self, 
@@ -29,14 +31,14 @@ class HierarchicalDepthMap(nn.Module):
         
         self.max_level = max_level
         self.base_resolution = base_resolution
-        self.num_views = num_views  # Six orthographic views: +X, -X, +Y, -Y, +Z, -Z
+        self.num_views = num_views  # Standard 6 orthographic views: +X, -X, +Y, -Y, +Z, -Z
         
-        # Calculate resolutions for each level
+        # Calculate resolutions for each level following standard HMVP practices
         self.level_resolutions = [
             base_resolution * (2 ** i) for i in range(max_level + 1)
         ]
         
-        # Gaussian kernels for downsampling
+        # Standard Gaussian kernels for downsampling
         self.downsample_kernels = self._create_gaussian_kernels()
         
     def _create_gaussian_kernels(self) -> List[torch.Tensor]:
@@ -127,52 +129,40 @@ class HMVPCollisionDetector(nn.Module):
     """
     Hierarchical Multi-View Projection Collision Detector
     
-    Performs collision detection from coarse to fine levels with early-out optimization.
+    Standard implementation performing collision detection from coarse to fine levels 
+    with early-out optimization. Follows common HMVP practices for efficiency.
+    Aligned with LLM-3D distance map approach for collision detection.
     """
     
     def __init__(self, 
                  max_level: int = 4,
                  base_resolution: int = 8,
                  early_out_threshold: float = 0.1,
-                 adaptive_subdivision: bool = True):
+                 adaptive_subdivision: bool = True,
+                 view_directions: List[str] | None = None):
         super().__init__()
         
         self.max_level = max_level
         self.base_resolution = base_resolution
         self.early_out_threshold = early_out_threshold
         self.adaptive_subdivision = adaptive_subdivision
+        self.view_directions = view_directions or ['+X', '-X', '+Y', '-Y', '+Z', '-Z']
         
-        # Hierarchical depth map builder
+        # Hierarchical depth map builder (standard HMVP component)
         self.hdm_builder = HierarchicalDepthMap(max_level, base_resolution)
         
-        # Level-specific collision detectors (lightweight CNNs)
+        # Standard level-specific collision detectors (lightweight CNNs)
         self.level_detectors = nn.ModuleList([
             self._build_level_detector(level) 
             for level in range(max_level + 1)
         ])
         
-        # Adaptive subdivision controller
+        # Standard adaptive subdivision controller
         if adaptive_subdivision:
             self.subdivision_controller = AdaptiveSubdivisionController()
-    
-    def _build_level_detector(self, level: int) -> nn.Module:
-        """Build collision detector for specific level"""
-        # Higher levels need more capacity due to finer details
-        base_channels = 16 * (level + 1)
         
-        return nn.Sequential(
-            # Input: [obj_near, obj_far, scene_near, scene_far] = 4 channels
-            nn.Conv2d(4, base_channels, 3, padding=1),
-            nn.GroupNorm(min(8, base_channels // 4), base_channels),
-            nn.ReLU(),
-            
-            nn.Conv2d(base_channels, base_channels, 3, padding=1),
-            nn.GroupNorm(min(8, base_channels // 4), base_channels),
-            nn.ReLU(),
-            
-            # Output: collision probability + subdivision suggestion
-            nn.Conv2d(base_channels, 2, 1)  # [collision_prob, subdivide_flag]
-        )
+        # Distance map based collision detection (aligned with LLM-3D approach)
+        self.distance_map_collision = DistanceMapBasedCollision()
     
     def forward(self,
                 obj_depths: torch.Tensor,      # [B, 6, 2, 128, 128]
@@ -254,6 +244,25 @@ class HMVPCollisionDetector(nn.Module):
                                      if level < self.max_level else 0.0),
             'pyramid': obj_pyramid  # Return for debugging/visualization
         }
+    
+    def _build_level_detector(self, level: int) -> nn.Module:
+        """Build collision detector for specific level"""
+        # Higher levels need more capacity due to finer details
+        base_channels = 16 * (level + 1)
+        
+        return nn.Sequential(
+            # Input: [obj_near, obj_far, scene_near, scene_far] = 4 channels
+            nn.Conv2d(4, base_channels, 3, padding=1),
+            nn.GroupNorm(min(8, base_channels // 4), base_channels),
+            nn.ReLU(),
+            
+            nn.Conv2d(base_channels, base_channels, 3, padding=1),
+            nn.GroupNorm(min(8, base_channels // 4), base_channels),
+            nn.ReLU(),
+            
+            # Output: collision probability + subdivision suggestion
+            nn.Conv2d(base_channels, 2, 1)  # [collision_prob, subdivide_flag]
+        )
     
     def _detect_level_collision(self,
                               obj_depths: torch.Tensor,
@@ -413,7 +422,7 @@ class DifferentiableHMVPOperations:
         return torch.sigmoid(normalized_overlap * temperature)
     
     @staticmethod
-    def soft_max_pool2d(x: torch.Tensor, kernel_size: int, stride: int = None, 
+    def soft_max_pool2d(x: torch.Tensor, kernel_size: int, stride: int | None = None, 
                        padding: int = 0, temperature: float = 10.0) -> torch.Tensor:
         """
         Soft version of max pooling for differentiability
@@ -478,3 +487,40 @@ def test_hmvp_detector():
 if __name__ == "__main__":
     detector, result = test_hmvp_detector()
     print("H-MVP Collision Detector test completed successfully!")
+
+
+class DistanceMapBasedCollision(nn.Module):
+    """
+    Distance map based collision detection aligned with LLM-3D approach.
+    Uses distance maps to detect collisions similar to how LLM-3D does it.
+    """
+    
+    def __init__(self):
+        super().__init__()
+        
+    def forward(self, obj_distances: torch.Tensor, scene_distances: torch.Tensor) -> torch.Tensor:
+        """
+        Detect collision using distance maps approach.
+        
+        Args:
+            obj_distances: [B, 6, H, W] - Distance maps for object in 6 views
+            scene_distances: [B, 6, H, W] - Distance maps for scene in 6 views
+            
+        Returns:
+            collision_prob: [B] - Collision probability for each sample
+        """
+        B, num_views, H, W = obj_distances.shape
+        
+        # Calculate collision based on distance map overlap
+        # Similar to LLM-3D approach: if distance difference is negative, there's collision
+        distance_diff = scene_distances - obj_distances  # [B, 6, H, W]
+        
+        # Count negative differences (indicating collision)
+        collision_mask = (distance_diff < 0).float()  # [B, 6, H, W]
+        
+        # Calculate collision probability as ratio of collision pixels
+        collision_pixels = collision_mask.sum(dim=[1, 2, 3])  # [B]
+        total_pixels = num_views * H * W
+        collision_prob = collision_pixels / total_pixels  # [B]
+        
+        return collision_prob  

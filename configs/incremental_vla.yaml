@@ -1,0 +1,30 @@
+# ============================================================================
+# SAM-Q Incremental VLA Configuration
+# ============================================================================
+# Configuration for incremental VLA memory system
+# ============================================================================
+
+_base_: "hmvp.yaml"
+
+experiment:
+  name: "samq_incremental_vla"
+  description: "SAM-Q with incremental VLA memory"
+
+# Enable incremental VLA
+advanced:
+  incremental_vla:
+    enabled: true
+    update_threshold: 0.3
+    max_objects: 50
+
+# Training for VLA
+training:
+  num_epochs: 50
+  batch_size: 2
+  save_dir: "outputs_vla_incremental/"
+
+loss:
+  type: "vla"
+  heatmap_weight: 1.0
+  collision_weight: 0.5
+  semantic_weight: 0.3

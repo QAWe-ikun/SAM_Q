@@ -1,0 +1,378 @@
+# Contributing to SAM-Q
+
+Thank you for your interest in contributing to SAM-Q! This guide provides guidelines and best practices for contributing.
+
+---
+
+## Table of Contents
+
+1. [Code of Conduct](#code-of-conduct)
+2. [Getting Started](#getting-started)
+3. [Development Workflow](#development-workflow)
+4. [Coding Standards](#coding-standards)
+5. [Testing](#testing)
+6. [Documentation](#documentation)
+7. [Pull Request Process](#pull-request-process)
+
+---
+
+## Code of Conduct
+
+- Be respectful and inclusive
+- Welcome newcomers
+- Focus on constructive feedback
+- Prioritize what's best for the community
+
+---
+
+## Getting Started
+
+### 1. Fork and Clone
+
+```bash
+# Fork the repository on GitHub, then:
+git clone https://github.com/YOUR_USERNAME/SAM_Q.git
+cd SAM_Q
+git remote add upstream https://github.com/ORIGINAL_OWNER/SAM_Q.git
+```
+
+### 2. Set Up Environment
+
+```bash
+# Create virtual environment
+conda create -n samq-dev python=3.10
+conda activate samq-dev
+
+# Install dependencies
+pip install -r requirements.txt
+
+# Install development dependencies
+pip install pytest black flake8 mypy
+```
+
+### 3. Verify Installation
+
+```bash
+# Run tests
+python -m pytest tests/ -v
+
+# Check code style
+black --check src/
+flake8 src/
+```
+
+---
+
+## Development Workflow
+
+### Branch Naming
+
+Use descriptive branch names:
+
+```
+feature/add-transformer-encoder
+fix/memory-leak-inference
+docs/update-readme
+refactor/adapter-modules
+```
+
+### Commit Messages
+
+Follow [Conventional Commits](https://www.conventionalcommits.org/):
+
+```
+<type>(<scope>): <description>
+
+[optional body]
+
+[optional footer(s)]
+```
+
+**Types**:
+- `feat`: New feature
+- `fix`: Bug fix
+- `docs`: Documentation changes
+- `style`: Code style changes (formatting, etc.)
+- `refactor`: Code refactoring
+- `test`: Adding or updating tests
+- `chore`: Maintenance tasks
+
+**Examples**:
+```
+feat(adapter): add presence token adapter
+fix(inference): resolve memory leak in predictor
+docs(readme): update installation instructions
+refactor(models): modularize encoder components
+```
+
+### Git Workflow
+
+```bash
+# Sync with upstream
+git fetch upstream
+git checkout main
+git merge upstream/main
+
+# Create feature branch
+git checkout -b feature/my-feature
+
+# Make changes and commit
+git add .
+git commit -m "feat(scope): description"
+
+# Push and create PR
+git push origin feature/my-feature
+```
+
+---
+
+## Coding Standards
+
+### Python Style Guide
+
+We follow [Google Python Style Guide](https://google.github.io/styleguide/pyguide.html) with these highlights:
+
+#### 1. Formatting
+
+Use `black` for automatic formatting:
+
+```bash
+black src/ tests/
+```
+
+#### 2. Type Hints
+
+All functions must have type hints:
+
+```python
+def compute_iou(
+    pred_mask: torch.Tensor,
+    target_mask: torch.Tensor,
+    threshold: float = 0.5,
+) -> float:
+    """Compute IoU score."""
+    ...
+```
+
+#### 3. Docstrings
+
+Use Google-style docstrings:
+
+```python
+class MyModel(nn.Module):
+    """
+    Short description.
+    
+    Longer description if needed.
+    
+    Args:
+        param1: Description
+        param2: Description
+    
+    Returns:
+        Description of return value
+    """
+```
+
+#### 4. Naming Conventions
+
+- **Modules**: `snake_case` (`cross_modal_adapter.py`)
+- **Classes**: `PascalCase` (`CrossModalAdapter`)
+- **Functions/Variables**: `snake_case` (`compute_iou`)
+- **Constants**: `UPPER_SNAKE_CASE` (`MAX_BATCH_SIZE`)
+
+#### 5. Imports
+
+Organize imports in groups:
+
+```python
+# Standard library
+import os
+from pathlib import Path
+from typing import Dict, Optional
+
+# Third-party
+import torch
+import numpy as np
+
+# Local application
+from ..utils.config import Config
+from .base_adapter import BaseAdapter
+```
+
+### File Structure
+
+Each module should follow:
+
+```
+src/models/encoders/
+├── __init__.py          # Exports
+├── base_encoder.py      # Abstract base
+└── qwen3vl_encoder.py   # Implementation
+```
+
+---
+
+## Testing
+
+### Writing Tests
+
+Place tests in `tests/` directory:
+
+```python
+# tests/test_models/test_adapters.py
+
+import pytest
+import torch
+from src.models.adapters import CrossModalAdapter
+
+
+class TestCrossModalAdapter:
+    def test_forward(self):
+        adapter = CrossModalAdapter(
+            qwen_dim=3584,
+            sam3_dim=256,
+            num_queries=64,
+        )
+        x = torch.randn(2, 10, 3584)
+        output = adapter(x)
+        
+        assert output.shape == (2, 64, 256)
+```
+
+### Running Tests
+
+```bash
+# Run all tests
+python -m pytest tests/ -v
+
+# Run specific test file
+python -m pytest tests/test_models/test_adapters.py -v
+
+# Run with coverage
+python -m pytest tests/ --cov=src --cov-report=html
+```
+
+### Test Requirements
+
+- All new features must have tests
+- Aim for >80% code coverage
+- Test both success and edge cases
+
+---
+
+## Documentation
+
+### Updating Documentation
+
+When adding features:
+
+1. Update `README.md` if user-facing
+2. Update `ARCHITECTURE.md` if architecture changes
+3. Add docstrings to all public APIs
+4. Add examples in docstrings
+
+### Example Code
+
+Provide working examples:
+
+```python
+"""
+Example usage:
+    >>> from src.inference import PlacementPredictor
+    >>> predictor = PlacementPredictor("checkpoints/best.pt")
+    >>> results = predictor.predict(
+    ...     plane_image=Image.open("room.png"),
+    ...     object_image=Image.open("chair.png"),
+    ...     text_prompt="Place near window"
+    ... )
+"""
+```
+
+---
+
+## Pull Request Process
+
+### Before Submitting
+
+1. **Update tests**: Ensure all tests pass
+2. **Update docs**: Documentation is current
+3. **Run linters**: Code follows style guide
+4. **Rebase on main**: Latest changes incorporated
+
+### PR Checklist
+
+```markdown
+## Description
+Brief description of changes
+
+## Type of Change
+- [ ] Bug fix
+- [ ] New feature
+- [ ] Breaking change
+- [ ] Documentation update
+
+## Testing
+- [ ] Added unit tests
+- [ ] All tests pass
+- [ ] Manual testing completed
+
+## Documentation
+- [ ] README updated
+- [ ] Docstrings added/updated
+- [ ] ARCHITECTURE.md updated (if applicable)
+```
+
+### Review Process
+
+1. CI checks run automatically
+2. At least one maintainer review required
+3. Address review comments
+4. Squash commits if requested
+5. Maintainer merges PR
+
+---
+
+## Common Contributions
+
+### Adding a New Adapter
+
+1. Create file: `src/models/adapters/my_adapter.py`
+2. Implement class inheriting from `nn.Module`
+3. Add to `src/models/adapters/__init__.py`
+4. Write tests: `tests/test_models/test_my_adapter.py`
+5. Update docs
+
+### Adding a New Dataset
+
+1. Create file: `src/data/my_dataset.py`
+2. Inherit from `torch.utils.data.Dataset`
+3. Implement `__len__`, `__getitem__`
+4. Add to `src/data/__init__.py`
+5. Add example to docs
+
+### Fixing a Bug
+
+1. Write test that reproduces bug
+2. Fix the issue
+3. Verify test passes
+4. Submit PR with description
+
+---
+
+## Getting Help
+
+- **Questions**: Open an issue with label `question`
+- **Bugs**: Open an issue with label `bug`
+- **Features**: Open an issue with label `enhancement`
+- **Chat**: Join our Discord (link in README)
+
+---
+
+## License
+
+By contributing, you agree that your contributions will be licensed under the MIT License.
+
+---
+
+Thank you for contributing to SAM-Q! 🎉

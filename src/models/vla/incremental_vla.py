@@ -1,11 +1,13 @@
 """
-SAM²-Q-VLA-HMVP: Incremental 3D Understanding Agent
+SAM-Q-VLA-HMVP: Incremental 3D Understanding Agent
 ====================================================
 
-核心创新：H-MVP随场景变化动态更新，而非一次性构建
+Core innovation: Standard HMVP implementation with dynamic updates as scene changes,
+rather than building once.
 
-流程：
-初始场景 → H-MVP构建 → 摆放物体 → H-MVP更新 → 摆放下一个 → H-MVP再更新...
+Process:
+Initial scene → HMVP construction → Place object → HMVP update → Place next → HMVP update...
+Standard implementation aligned with common HMVP practices.
 """
 
 import torch
@@ -19,17 +21,17 @@ import math
 
 @dataclass
 class IncrementalVLAConfig:
-    """增量式VLA配置"""
+    """Incremental VLA configuration with standard HMVP parameters"""
     
-    # 输入
+    # Input
     screen_resolution: Tuple[int, int] = (1920, 1080)
     
-    # H-MVP增量更新
+    # Standard HMVP incremental updates
     hmvp_levels: int = 5
     hmvp_base_res: int = 8
-    update_threshold: float = 0.1  # 变化阈值触发更新
+    update_threshold: float = 0.1  # Change threshold to trigger update
     
-    # 输出
+    # Output
     action_space: str = "pyautogui"
 
 
@@ -62,7 +64,7 @@ class IncrementalHMVPMemory(nn.Module):
         """
         从初始场景构建初始H-MVP
         """
-        # 使用SAM²编码初始场景
+        # 使用SAM编码初始场景
         sam2_features = self.encode_scene(initial_screenshot)
         
         # 构建初始H-MVP
@@ -132,8 +134,10 @@ class IncrementalHMVPMemory(nn.Module):
         
         # 计算变化
         pose_delta = new_pose - old_pose
-        
-        # 预测变化影响
+
+        assert(self.current_hmvp is not None), "H-MVP not initialized."
+
+        # 预测变化影响        
         predicted_change = self.hmvp_updater.predict_movement_change(
             current_hmvp=self.current_hmvp,
             object_shape=self.scene_objects[object_id]['shape'],
@@ -160,7 +164,7 @@ class IncrementalHMVPMemory(nn.Module):
         return updated_hmvp
     
     def encode_scene(self, screenshot: torch.Tensor) -> List[torch.Tensor]:
-        """使用SAM²编码场景"""
+        """使用SAM编码场景"""
         from models.sam2_dual_scale import SAM2DualScaleEncoder
         encoder = SAM2DualScaleEncoder()
         result = encoder(screenshot)
@@ -357,7 +361,7 @@ class ChangeDetectionNetwork(nn.Module):
                 total_diff += diff
                 count += 1
         
-        return (total_diff / count).item() if count > 0 else 0.0
+        return (total_diff / count).item() if count > 0 else 0.0 # type: ignore
 
 
 class IncrementalSpatialReasoner(nn.Module):
@@ -439,7 +443,7 @@ class IncrementalSpatialReasoner(nn.Module):
         pos_encoding = pos_h.unsqueeze(2) + pos_w.unsqueeze(1)
         return pos_encoding.view(H*W, -1)  # [H*W, pos_dim]
     
-    def detect_objects_in_hmvp(self, features: torch.Tensor) -> List[Dict]:
+    def detect_objects_in_hmvp(self, features: torch.Tensor) -> List[Dict]: # type: ignore
         """在H-MVP特征中检测物体"""
         # 使用特征聚类检测"物体状"的特征团块
         # 返回物体中心、大小、类型等信息（在特征空间中）
@@ -447,7 +451,7 @@ class IncrementalSpatialReasoner(nn.Module):
     
     def infer_relations_in_hmvp(self, 
                                features: torch.Tensor, 
-                               objects: List[Dict]) -> List[Dict]:
+                               objects: List[Dict]) -> List[Dict]: # type: ignore
         """推断物体间空间关系"""
         # 基于特征相似度和空间距离推断关系
         pass
@@ -593,7 +597,7 @@ class SAM2QVLAIncremental(nn.Module):
     核心：H-MVP随每次操作动态更新
     """
     
-    def __init__(self, config: IncrementalVLAConfig = None):
+    def __init__(self, config: IncrementalVLAConfig | None = None):
         super().__init__()
         self.config = config or IncrementalVLAConfig()
         

@@ -1,5 +1,5 @@
 """
-SAM² Dual-Scale Encoder: High-resolution Detail + Low-resolution Context
+SAM Dual-Scale Encoder: High-resolution Detail + Low-resolution Context
 =======================================================================
 
 Implementation of dual-scale SAM3 encoding for efficient 2D perception.
@@ -15,7 +15,7 @@ import math
 
 class SAM2DualScaleEncoder(nn.Module):
     """
-    SAM²: Dual-Scale SAM3 Encoder
+    SAM: Dual-Scale SAM3 Encoder
     
     Combines high-resolution detail extraction with low-resolution contextual understanding
     using cross-scale attention mechanisms.
@@ -360,7 +360,7 @@ class FeaturePyramidAligner(nn.Module):
 
 
 def test_sam2_encoder():
-    """Test the SAM² encoder"""
+    """Test the SAM encoder"""
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
     encoder = SAM2DualScaleEncoder().to(device)
@@ -387,4 +387,4 @@ def test_sam2_encoder():
 
 if __name__ == "__main__":
     model, result = test_sam2_encoder()
-    print("SAM² Dual-Scale Encoder test completed successfully!")
+    print("SAM Dual-Scale Encoder test completed successfully!")

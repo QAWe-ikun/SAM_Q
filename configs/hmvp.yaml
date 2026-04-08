@@ -1,0 +1,53 @@
+# ============================================================================
+# SAM-Q H-MVP Configuration
+# ============================================================================
+# Configuration for Hierarchical Multi-View Projection collision detection
+# ============================================================================
+
+_base_: "base.yaml"
+
+experiment:
+  name: "samq_hmvp"
+  description: "SAM-Q with H-MVP collision detection"
+
+# Override model settings for H-MVP
+model:
+  sam3:
+    freeze_image_encoder: true
+    freeze_detector: false
+  
+  adapter:
+    type: "cross_modal"
+    hidden_dim: 512
+    num_queries: 64
+
+# Advanced modules
+advanced:
+  # Enable dual-scale SAM
+  dual_scale:
+    enabled: true
+    high_res: 1024
+    low_res: 256
+  
+  # Enable H-MVP collision detection
+  hmvp:
+    enabled: true
+    max_level: 4
+    base_resolution: 8
+    early_out_threshold: 0.1
+  
+  incremental_vla:
+    enabled: false
+
+# Training adjustments
+training:
+  num_epochs: 50
+  batch_size: 2
+  save_dir: "outputs_hmvp/"
+
+# Loss for H-MVP
+loss:
+  type: "vla"
+  heatmap_weight: 1.0
+  collision_weight: 0.5
+  semantic_weight: 0.3
