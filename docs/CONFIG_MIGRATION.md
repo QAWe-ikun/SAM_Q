@@ -61,9 +61,9 @@ batch_size: 4
 num_workers: 4
 
 model:
-  qwen_model_name: "Qwen/Qwen3-VL-7B-Instruct"
+  qwen_model_name: "Qwen/Qwen3-VL-8B-Instruct"
   sam3_input_dim: 256
-  qwen_hidden_dim: 3584
+  qwen_hidden_dim: 4096
   adapter_hidden_dim: 512
 
 freeze_qwen: true
@@ -92,8 +92,8 @@ data:
 
 model:
   qwen:
-    model_name: "Qwen/Qwen3-VL-7B-Instruct"
-    hidden_dim: 3584
+    model_name: "Qwen/Qwen3-VL-8B-Instruct"
+    hidden_dim: 4096
     freeze: true
   sam3:
     input_dim: 256

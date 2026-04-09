@@ -27,9 +27,9 @@ class SAM3PlacementModel(nn.Module):
     def __init__(
         self,
         sam3_model: Optional[nn.Module] = None,
-        qwen_model_name: str = "Qwen/Qwen3-VL-7B-Instruct",
+        qwen_model_name: str = "Qwen/Qwen3-VL-8B-Instruct",
         sam3_input_dim: int = 256,
-        qwen_hidden_dim: int = 3584,  # Qwen3-VL-7B hidden size
+        qwen_hidden_dim: int = 4096,  # Qwen3-VL-8B hidden size
         adapter_hidden_dim: int = 512,
         device: Optional[str] = None,
         dtype: torch.dtype = torch.float16,

@@ -230,11 +230,11 @@ from src.models.adapters import CrossModalAdapter
 class TestCrossModalAdapter:
     def test_forward(self):
         adapter = CrossModalAdapter(
-            qwen_dim=3584,
+            qwen_dim=4096,
             sam3_dim=256,
             num_queries=64,
         )
-        x = torch.randn(2, 10, 3584)
+        x = torch.randn(2, 10, 4096)
         output = adapter(x)
         
         assert output.shape == (2, 64, 256)

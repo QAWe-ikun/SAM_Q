@@ -106,10 +106,10 @@ class Trainer:
         
         model = SAM3PlacementModel(
             qwen_model_name=model_config.get("qwen", {}).get(
-                "model_name", "Qwen/Qwen3-VL-7B-Instruct"
+                "model_name", "Qwen/Qwen3-VL-8B-Instruct"
             ),
             sam3_input_dim=model_config.get("sam3", {}).get("input_dim", 256),
-            qwen_hidden_dim=model_config.get("qwen", {}).get("hidden_dim", 3584),
+            qwen_hidden_dim=model_config.get("qwen", {}).get("hidden_dim", 4096),
             adapter_hidden_dim=model_config.get("adapter", {}).get("hidden_dim", 512),
             device=self.device,
         )

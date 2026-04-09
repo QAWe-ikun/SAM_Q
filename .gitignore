@@ -41,6 +41,7 @@ wheels/
 outputs/
 checkpoints/
 *.log
+models/
 
 # OS
 .DS_Store

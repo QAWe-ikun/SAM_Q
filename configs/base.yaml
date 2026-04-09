@@ -38,8 +38,8 @@ data:
 model:
   # Qwen3-VL Encoder
   qwen:
-    model_name: "Qwen/Qwen3-VL-7B-Instruct"
-    hidden_dim: 3584
+    model_name: "Qwen/Qwen3-VL-8B-Instruct"
+    hidden_dim: 4096
     freeze: true
     attn_implementation: "flash_attention_2"  # or "eager"
   

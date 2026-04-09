@@ -21,7 +21,7 @@ class Qwen3VLEncoder(nn.Module):
     
     def __init__(
         self,
-        model_name: str = "Qwen/Qwen3-VL-7B-Instruct",
+        model_name: str = "Qwen/Qwen3-VL-8B-Instruct",
         device: Optional[str] = None,
         dtype: torch.dtype = torch.float16,
     ):
@@ -171,7 +171,7 @@ class Qwen3VLEncoderWithProjection(nn.Module):
     
     def __init__(
         self,
-        model_name: str = "Qwen/Qwen3-VL-7B-Instruct",
+        model_name: str = "Qwen/Qwen3-VL-8B-Instruct",
         sam3_input_dim: int = 256,
         device: Optional[str] = None,
         dtype: torch.dtype = torch.float16,
