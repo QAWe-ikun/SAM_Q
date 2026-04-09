@@ -38,13 +38,14 @@ data:
 model:
   # Qwen3-VL Encoder
   qwen:
-    model_name: "Qwen/Qwen3-VL-8B-Instruct"
+    model_name: "./models/qwen3_vl"
     hidden_dim: 4096
     freeze: true
     attn_implementation: "flash_attention_2"  # or "eager"
   
   # SAM3 Components
   sam3:
+    model_name: "./models/sam3"
     input_dim: 256
     freeze_image_encoder: true
     freeze_detector: false
