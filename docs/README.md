@@ -22,15 +22,6 @@
 
 ---
 
-## 重构相关
-
-| 文档 | 说明 |
-|------|------|
-| [../REFACTORING_SUMMARY.md](../REFACTORING_SUMMARY.md) | 完整重构总结 |
-| [../CLEANUP_REPORT.md](../CLEANUP_REPORT.md) | 旧文件清理报告 |
-
----
-
 ## 快速链接
 
 ### 新用户

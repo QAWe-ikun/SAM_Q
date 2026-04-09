@@ -1,4 +1,4 @@
-# SAM-Q Architecture Documentation
+﻿# SAM-Q Architecture Documentation
 
 This document provides a comprehensive overview of the SAM-Q system architecture, design decisions, and implementation details.
 
@@ -21,7 +21,7 @@ This document provides a comprehensive overview of the SAM-Q system architecture
 SAM-Q is a modular framework for **semantically-aware object placement** in indoor scenes. It combines:
 
 - **SAM3** (Segment Anything Model 3): For spatial understanding and mask generation
-- **Qwen3-VL** (Vision-Language Model): For multimodal comprehension (images + text)
+- **Qwen3-VL-8B** (Vision-Language Model): For multimodal comprehension (images + text)
 - **Novel Adapter Architecture**: For cross-modal embedding alignment
 - **H-MVP** (Hierarchical Multi-View Projection): For 3D collision detection
 - **Incremental VLA Memory**: For dynamic scene understanding
@@ -31,7 +31,7 @@ SAM-Q is a modular framework for **semantically-aware object placement** in indo
 | Capability | Description | Module |
 |------------|-------------|--------|
 | Language-Guided Placement | Natural language controls placement semantics | `models/encoders/` |
-| Cross-Modal Fusion | Bridges 4096D (Qwen) �?256D (SAM3) | `models/adapters/` |
+| Cross-Modal Fusion | Bridges 4096D (Qwen) to 256D (SAM3) | `models/adapters/` |
 | 3D Collision Detection | Prevents invalid placements | `models/collision/` |
 | Incremental Memory | Updates scene understanding | `models/vla/` |
 | Heatmap-Guided Sampling | Multiple candidate extraction | `models/sampling/` |
@@ -45,8 +45,9 @@ SAM-Q is a modular framework for **semantically-aware object placement** in indo
 Each component is independent and interchangeable:
 
 ```
-Encoder �?Adapter �?Detector �?Sampling
-   �?         �?        �?         �? Qwen3-VL  Cross-Attn  SAM3     Top-K+NMS
+Encoder -> Adapter -> Detector -> Sampling
+   |          |         |          |
+ Qwen3-VL  Cross-Attn  SAM3     Top-K+NMS
 ```
 
 ### 2. Configuration Inheritance
@@ -73,18 +74,59 @@ Heavy models (Qwen3-VL, SAM3) are loaded lazily to:
 
 | Component | Parameters | Trainable? |
 |-----------|-----------|------------|
-| Qwen3-VL-8B | 8B | �?(frozen) |
-| SAM3 Image Encoder | ~100M | �?(frozen) |
-| SAM3 Detector | ~10M | �?|
-| Cross-Modal Adapter | ~5M | �?|
-| **Total** | **~7.1B** | **<5%** |
+| Qwen3-VL-8B | 8B | No (frozen) |
+| SAM3 Image Encoder | ~100M | No (frozen) |
+| SAM3 Detector | ~10M | Yes |
+| Cross-Modal Adapter | ~5M | Yes |
+| **Total** | **~8.1B** | **<5%** |
 
 ---
 
 ## Architecture Diagram
 
 ```
-┌─────────────────────────────────────────────────────────────────�?�?                       INPUT LAYER                               �?�?                                                                 �?�? Room Image (1024²)    Object Image (512²)    Text Instruction   �?�?        �?                     �?                       �?       �?└─────────┼──────────────────────┼────────────────────────┼────────�?          �?                     �?                       �?          �?                     �?                       �?┌─────────────────────────────────────────────────────────────────�?�?                     ENCODER LAYER (Frozen)                      �?�?                                                                 �?�? ┌─────────────────────�?       ┌──────────────────────────�?   �?�? �?SAM3 Image Encoder  �?       �?Qwen3-VL V-L Encoder     �?   �?�? �?Output: 256D/patch  �?       �?Output: 4096D/token      �?   �?�? └──────────┬──────────�?       └────────────┬─────────────�?   �?�?            �?                                �?                 �?�?            �?                       ┌────────▼─────────�?      �?�?            �?                       �?Adapter Module   �?      �?�?            �?                       �?4096D �?256D     �?      �?�?            �?                       �?+ Cross-Attn     �?      �?�?            �?                       └──────────────────�?      �?└─────────────┼───────────────────────────┬───────────────────────�?              �?                          �?              �?                          �?┌─────────────────────────────────────────────────────────────────�?�?                    FUSION & DECODER LAYER                       �?�?                                                                 �?�? ┌───────────────────────────────────────────────────────────�? �?�? �? Embedding Concat �?SAM3 Detector �?Placement Masks       �? �?�? └───────────────────────────────────────────────────────────�? �?└─────────────────────────────────────────────────────────────────�?              �?              �?┌─────────────────────────────────────────────────────────────────�?�?                  ADVANCED MODULES (Optional)                    �?�?                                                                 �?�? ┌───────────────�? ┌───────────────�? ┌───────────────────�?  �?�? �?Dual-Scale SAM�? �?H-MVP Collision�? �?Incremental VLA   �?  �?�? �?(1024+256)    �? �?Detector      �? �?Memory System     �?  �?�? └───────────────�? └───────────────�? └───────────────────�?  �?└─────────────────────────────────────────────────────────────────�?```
++-------------------------------------------------------------------+
+|                          INPUT LAYER                               |
+|                                                                    |
+|  Room Image (1024x1024)    Object Image (512x512)    Text Prompt   |
+|         |                          |                        |      |
++---------|--------------------------|------------------------|------+
+          |                          |                        |
+          v                          v                        v
++-------------------------------------------------------------------+
+|                      ENCODER LAYER (Frozen)                        |
+|                                                                    |
+|  +---------------------+        +----------------------------+     |
+|  | SAM3 Image Encoder  |        | Qwen3-VL Vision-Language   |     |
+|  | Output: 256D/patch  |        | Output: 4096D/token        |     |
+|  +----------+----------+        +-------------+--------------+     |
+|             |                                |                     |
+|             |                       +--------v---------+          |
+|             |                       | Adapter Module   |          |
+|             |                       | 4096D -> 256D    |          |
+|             |                       | + Cross-Attn     |          |
+|             |                       +------------------+          |
++-------------+------------------------------+----------------------+
+              |                              |
+              v                              v
++-------------------------------------------------------------------+
+|                     FUSION & DECODER LAYER                         |
+|                                                                    |
+|  +------------------------------------------------------------+    |
+|  |  Plane & Text Embeddings -> SAM3 Detector -> Placement Masks|    |
+|  +------------------------------------------------------------+    |
++-------------------------------------------------------------------+
+              |
+              v
++-------------------------------------------------------------------+
+|                   ADVANCED MODULES (Optional)                      |
+|                                                                    |
+|  +---------------+  +---------------+  +-------------------+       |
+|  | Dual-Scale SAM|  | H-MVP Collision|  | Incremental VLA   |       |
+|  | (1024+256)    |  | Detector      |  | Memory System     |       |
+|  +---------------+  +---------------+  +-------------------+       |
++-------------------------------------------------------------------+
+```
 
 ---
 
@@ -119,7 +161,7 @@ embeddings = encoder(object_image=pil_img, text_prompt="Place near window")
 Simple MLP for dimension reduction:
 
 ```
-Input (4096D) �?Linear(512) �?LayerNorm �?GELU �?Dropout �?Linear(256D)
+Input (4096D) -> Linear(512) -> LayerNorm -> GELU -> Dropout -> Linear(256D)
 ```
 
 #### CrossModalAdapter (Core)
@@ -138,10 +180,10 @@ output = adapter(qwen_embeddings)
 ```
 
 **Architecture**:
-1. Input projection: `4096D �?512D`
-2. Learnable queries: `64 × 512D`
+1. Input projection: `4096D -> 512D`
+2. Learnable queries: `64 x 512D`
 3. Cross-attention: Queries attend to input
-4. Output projection: `512D �?256D`
+4. Output projection: `512D -> 256D`
 
 **Why 64 queries?**
 - Matches DETR-style detector expectations
@@ -195,12 +237,17 @@ collision_score = detector.check_collision(
 
 **Workflow**:
 ```
-Initial Scene �?Build H-MVP
-      �?Place Object A
-      �?Update H-MVP (incremental, not rebuild)
-      �?Place Object B
-      �?Update H-MVP
-      �?...
+Initial Scene -> Build H-MVP
+      |
+Place Object A
+      |
+Update H-MVP (incremental, not rebuild)
+      |
+Place Object B
+      |
+Update H-MVP
+      |
+...
 ```
 
 **Key Methods**:
@@ -240,18 +287,54 @@ candidates = placer.extract(
 
 ```
 annotations.json
-       �?ObjectPlacementDataModule
-       �?┌─────────────────────────────────�?�?DataLoader (batch=4)            �?�? - plane_images: List[PIL]      �?�? - object_images: List[PIL]     �?�? - text_prompts: List[str]      �?�? - masks: Tensor[B, 1, H, W]    �?└────────────┬────────────────────�?             �?SAM3PlacementModel.forward()
-             �?┌─────────────────────────────────�?�?For each sample in batch:       �?�? 1. plane_image �?SAM3 encoder  �?�? 2. object+text �?Qwen �?Adapter�?�? 3. Combined �?SAM3 detector    �?�? 4. Output: masks               �?└────────────┬────────────────────�?             �?PlacementLoss(masks, targets)
-             �?┌─────────────────────────────────�?�?Loss Components:                �?�? - Dice Loss (weight=1.0)       �?�? - BCE Loss (weight=1.0)        �?└────────────┬────────────────────�?             �?backward() �?optimizer.step()
+      |
+ObjectPlacementDataModule
+      |
++----------------------------+
+| DataLoader (batch=4)       |
+|  - plane_images: List[PIL] |
+|  - object_images: List[PIL]|
+|  - text_prompts: List[str] |
+|  - masks: Tensor[B, 1, H, W]|
++------------|---------------+
+             v
+SAM3PlacementModel.forward()
+             |
++----------------------------+
+| For each sample in batch:  |
+|  1. plane_image -> SAM3 encoder  |
+|  2. object+text -> Qwen -> Adapter|
+|  3. Combined -> SAM3 detector    |
+|  4. Output: masks               |
++------------|---------------+
+             v
+PlacementLoss(masks, targets)
+             |
++----------------------------+
+| Loss Components:           |
+|  - Dice Loss (weight=1.0)  |
+|  - BCE Loss (weight=1.0)   |
++------------|---------------+
+             v
+backward() -> optimizer.step()
 ```
 
 ### Inference
 
 ```
 plane_image + object_image + text
-             �?PlacementPredictor.predict()
-             �?┌─────────────────────────────────�?�?1. Resize images                �?�?2. Model forward (no grad)      �?�?3. Apply threshold              �?�?4. Extract boxes & scores       �?�?5. Create heatmap visualization �?└────────────┬────────────────────�?             �?Results: {mask, heatmap, boxes, scores}
+             |
+PlacementPredictor.predict()
+             |
++----------------------------+
+| 1. Resize images           |
+| 2. Model forward (no grad) |
+| 3. Apply threshold         |
+| 4. Extract boxes & scores  |
+| 5. Create heatmap visualization|
++------------|---------------+
+             v
+Results: {mask, heatmap, boxes, scores}
 ```
 
 ---
@@ -261,9 +344,11 @@ plane_image + object_image + text
 ### Hierarchy
 
 ```
-base.yaml (所有默认�?
-    �?hmvp.yaml (启用 H-MVP)
-    �?incremental_vla.yaml (启用增量 VLA)
+base.yaml (all defaults)
+    |
+hmvp.yaml (enable H-MVP)
+    |
+incremental_vla.yaml (enable incremental VLA)
 ```
 
 ### Key Sections
@@ -349,44 +434,52 @@ class MyLoss(nn.Module):
 
 ```
 SAM-Q/
-├── configs/                     # Configuration files
-�?  ├── base.yaml               # Base configuration
-�?  ├── hmvp.yaml               # H-MVP extension
-�?  └── incremental_vla.yaml    # VLA extension
-�?├── src/
-�?  ├── models/                  # Model architectures
-�?  �?  ├── encoders/           # Encoder modules
-�?  �?  �?  └── qwen3vl_encoder.py
-�?  �?  ├── adapters/           # Adapter modules
-�?  �?  �?  ├── base_adapter.py
-�?  �?  �?  ├── cross_modal_adapter.py
-�?  �?  �?  └── presence_token_adapter.py
-�?  �?  ├── collision/          # Collision detection
-�?  �?  ├── vla/                # VLA components
-�?  �?  ├── sampling/           # Sampling strategies
-�?  �?  └── placement_model.py  # Main model
-�?  �?�?  ├── data/                    # Data pipeline
-�?  �?  ├── dataset.py
-�?  �?  ├── vla_dataset.py
-�?  �?  └── transforms.py
-�?  �?�?  ├── train/                   # Training framework
-�?  �?  ├── trainer.py
-�?  �?  ├── optimizer.py
-�?  �?  └── metrics.py
-�?  �?�?  ├── inference/               # Inference utilities
-�?  �?  ├── predictor.py
-�?  �?  └── visualizer.py
-�?  �?�?  └── utils/                   # Utilities
-�?      └── config.py
-�?├── tests/                       # Unit tests
-�?  ├── test_models/
-�?  └── test_data/
-�?├── scripts/                     # Helper scripts
-�?  ├── download_data.sh
-�?  └── evaluate.py
-�?├── main.py                      # CLI entry point
-├── README.md                    # Documentation
-└── ARCHITECTURE.md              # This file
+|-- configs/                     # Configuration files
+|   |-- base.yaml               # Base configuration
+|   |-- hmvp.yaml               # H-MVP extension
+|   +-- incremental_vla.yaml    # VLA extension
+|
+|-- src/
+|   |-- models/                  # Model architectures
+|   |   |-- encoders/           # Encoder modules
+|   |   |   +-- qwen3vl_encoder.py
+|   |   |-- adapters/           # Adapter modules
+|   |   |   |-- base_adapter.py
+|   |   |   |-- cross_modal_adapter.py
+|   |   |   +-- presence_token_adapter.py
+|   |   |-- collision/          # Collision detection
+|   |   |-- vla/                # VLA components
+|   |   |-- sampling/           # Sampling strategies
+|   |   +-- placement_model.py  # Main model
+|   |
+|   |-- data/                    # Data pipeline
+|   |   |-- dataset.py
+|   |   |-- vla_dataset.py
+|   |   +-- transforms.py
+|   |
+|   |-- train/                   # Training framework
+|   |   |-- trainer.py
+|   |   |-- optimizer.py
+|   |   +-- metrics.py
+|   |
+|   |-- inference/               # Inference utilities
+|   |   |-- predictor.py
+|   |   +-- visualizer.py
+|   |
+|   +-- utils/                   # Utilities
+|       +-- config.py
+|
+|-- tests/                       # Unit tests
+|   |-- test_models/
+|   +-- test_data/
+|
+|-- scripts/                     # Helper scripts
+|   |-- download_data.sh
+|   +-- evaluate.py
+|
+|-- main.py                      # CLI entry point
+|-- README.md                    # Documentation
++-- ARCHITECTURE.md              # This file
 ```
 
 ---
@@ -446,4 +539,4 @@ See [README.md](README.md) for contribution guidelines.
 ---
 
 **Version**: 1.0.0  
-**Last Updated**: 2026-04-08
+**Last Updated**: 2026-04-09

@@ -9,39 +9,87 @@
 </p>
 
 <p align="center">
-  <a href="#-overview">Overview</a> �?  <a href="#-architecture">Architecture</a> �?  <a href="#-installation">Installation</a> �?  <a href="#-quick-start">Quick Start</a> �?  <a href="#-training">Training</a> �?  <a href="#-inference">Inference</a> �?  <a href="#-dataset">Dataset</a> �?  <a href="#-citation">Citation</a>
+  <a href="#overview">Overview</a> •
+  <a href="#architecture">Architecture</a> •
+  <a href="#installation">Installation</a> •
+  <a href="#quick-start">Quick Start</a> •
+  <a href="#training">Training</a> •
+  <a href="#inference">Inference</a> •
+  <a href="#dataset">Dataset</a> •
+  <a href="#citation">Citation</a>
 </p>
 
 ---
-
-## 📖 Overview
+ 
+## Overview
 
 **SAM-Q** is a novel framework that unifies **Segment Anything Model 3 (SAM3)** and **Qwen3-VL** vision-language models for **semantically-aware object placement** in indoor scenes. Given a top-down view of a room, an object image, and a natural language instruction, SAM-Q predicts optimal placement positions that respect both geometric constraints and semantic affordances.
 
 ### Key Features
 
-- 🧠 **Language-Guided Placement**: Natural language instructions control placement semantics
-- 🔀 **Cross-Modal Fusion**: Novel adapter architecture bridges Qwen3-VL (4096D) and SAM3 (256D) embedding spaces
-- 🎯 **Hierarchical Collision Detection**: H-MVP (Hierarchical Multi-View Projection) enables 3D-aware placement
-- 🔄 **Incremental Memory**: Dynamic scene understanding that updates with each placement
-- �?**Parameter-Efficient**: Freezes foundation models, trains only <5% parameters
+- **Language-Guided Placement**: Natural language instructions control placement semantics
+- **Cross-Modal Fusion**: Novel adapter architecture bridges Qwen3-VL (4096D) and SAM3 (256D) embedding spaces
+- **Hierarchical Collision Detection**: H-MVP (Hierarchical Multi-View Projection) enables 3D-aware placement
+- **Incremental Memory**: Dynamic scene understanding that updates with each placement
+- **Parameter-Efficient**: Freezes foundation models, trains only <5% parameters
 
 ### Method Comparison
 
 | Method | Language Understanding | 3D Collision | Incremental | Real-time |
 |--------|----------------------|--------------|-------------|-----------|
-| Prior work [Chen et al. 2024] | �?| �?| �?| �?|
-| VLA-Placement [Wang et al. 2025] | �?| �?| �?| �?|
-| **SAM-Q (Ours)** | �?| �?| �?| �?|
+| Prior work [Chen et al. 2024] | No | Yes | No | Yes |
+| VLA-Placement [Wang et al. 2025] | Yes | No | No | No |
+| **SAM-Q (Ours)** | **Yes** | **Yes** | **Yes** | **Yes** |
 
 ---
 
-## 🏗�?Architecture
+## Architecture
 
 ### System Overview
 
 ```
-┌─────────────────────────────────────────────────────────────────────�?�?                          INPUT LAYER                                �?�? ┌──────────────────�? ┌──────────────────�? ┌──────────────────�? �?�? �? Room Top-Down    �? �? Object Top-Down �? �? Text Instruction �? �?�? �? View (1024²)    �? �? View (512²)     �? �? (Natural Lang.)  �? �?�? └────────┬─────────�? └────────┬─────────�? └────────┬─────────�? �?└───────────┼─────────────────────┼─────────────────────┼────────────�?            �?                    �?                    �?            �?                    �?                    �?┌─────────────────────────────────────────────────────────────────────�?�?                         ENCODER LAYER (Frozen)                      �?�? ┌─────────────────────────�?        ┌───────────────────────────�? �?�? �? SAM3 Image Encoder     �?        �? Qwen3-VL Vision-Language  �? �?�? �? (Spatial Features)     �?        �? Encoder (Multimodal)      �? �?�? �? Output: 256-dim/patch  �?        �? Output: 4096-dim/token    �? �?�? └────────────┬────────────�?        └──────────────┬────────────�? �?�?              �?                                    �?               �?�?              �?                           ┌────────▼──────────�?   �?�?              �?                           �? Adapter Module    �?   �?�?              �?                           �? 4096 �?256 dims  �?   �?�?              �?                           �? + Cross-Attn     �?   �?�?              �?                           └───────────────────�?   �?└───────────────┼─────────────────────────────┬───────────────────────�?                �?                            �?                �?                            �?┌─────────────────────────────────────────────────────────────────────�?�?                      FUSION & DECODER LAYER                         �?�? ┌───────────────────────────────────────────────────────────────�? �?�? �? Embedding Concatenation �?SAM3 Detector �?Placement Masks    �? �?�? └───────────────────────────────────────────────────────────────�? �?└─────────────────────────────────────────────────────────────────────�?                �?                �?┌─────────────────────────────────────────────────────────────────────�?�?                    ADVANCED MODULES (Optional)                      �?�? ┌──────────────────�? ┌──────────────────�? ┌──────────────────�? �?�? �? Dual-Scale SAM  �? �? H-MVP Collision �? �? Incremental VLA �? �?�? �? (1024+256)      �? �? Detector        �? �? Memory System   �? �?�? └──────────────────�? └──────────────────�? └──────────────────�? �?└─────────────────────────────────────────────────────────────────────�?```
++-------------------------------------------------------------------+
+|                          INPUT LAYER                               |
+|                                                                    |
+|  Room Image (1024x1024)    Object Image (512x512)    Text Prompt   |
+|         |                          |                        |      |
++---------|--------------------------|------------------------|------+
+          |                          |                        |
+          v                          v                        v
++-------------------------------------------------------------------+
+|                      ENCODER LAYER (Frozen)                        |
+|                                                                    |
+|  +---------------------+        +----------------------------+     |
+|  | SAM3 Image Encoder  |        | Qwen3-VL Vision-Language   |     |
+|  | Output: 256D/patch  |        | Output: 4096D/token        |     |
+|  +----------+----------+        +-------------+--------------+     |
+|             |                                |                     |
+|             |                       +--------v---------+          |
+|             |                       | Adapter Module   |          |
+|             |                       | 4096D -> 256D    |          |
+|             |                       | + Cross-Attn     |          |
+|             |                       +------------------+          |
++-------------+------------------------------+----------------------+
+              |                              |
+              v                              v
++-------------------------------------------------------------------+
+|                     FUSION & DECODER LAYER                         |
+|                                                                    |
+|  +------------------------------------------------------------+    |
+|  |  Plane & Text Embeddings -> SAM3 Detector -> Placement Masks|    |
+|  +------------------------------------------------------------+    |
++-------------------------------------------------------------------+
+              |
+              v
++-------------------------------------------------------------------+
+|                   ADVANCED MODULES (Optional)                      |
+|                                                                    |
+|  +---------------+  +---------------+  +-------------------+       |
+|  | Dual-Scale SAM|  | H-MVP Collision|  | Incremental VLA   |       |
+|  | (1024+256)    |  | Detector      |  | Memory System     |       |
+|  +---------------+  +---------------+  +-------------------+       |
++-------------------------------------------------------------------+
+```
 
 ### Core Components
 
@@ -55,7 +103,7 @@
 - **Purpose**: Projects Qwen3-VL embeddings to SAM3's embedding space
 - **Architecture**:
   ```
-  Input (4096D) �?Linear �?LayerNorm �?Cross-Attention (64 queries) �?Output Proj (256D)
+  Input (4096D) -> Linear -> LayerNorm -> Cross-Attention (64 queries) -> Output Proj (256D)
   ```
 - **Implementation**: `src/models/adapters/cross_modal_adapter.py`
 
@@ -77,13 +125,13 @@
 - **Purpose**: Maintains dynamic scene understanding across placements
 - **Workflow**:
   ```
-  Initial Scene �?Build H-MVP �?Place Object A �?Update H-MVP �?Place Object B �?...
+  Initial Scene -> Build H-MVP -> Place Object A -> Update H-MVP -> Place Object B -> ...
   ```
 - **Implementation**: `src/models/vla/incremental_vla.py`
 
 ---
 
-## 📦 Installation
+## Installation
 
 ### Requirements
 
@@ -119,36 +167,34 @@ pip install -r requirements.txt
 pip install git+https://github.com/facebookresearch/sam3.git
 ```
 
-### Step 3: Verify Installation
+### Step 3: Download Models
+
+```bash
+# Using ModelScope (recommended for China users)
+python scripts/download_models.py
+
+# Or using HuggingFace
+huggingface-cli download Qwen/Qwen3-VL-8B-Instruct --local-dir models/qwen3_vl
+huggingface-cli download facebook/sam3 --local-dir models/sam3
+```
+
+### Step 4: Verify Installation
 
 ```bash
 # Run sanity checks
 python -c "import torch; print(f'PyTorch: {torch.__version__}')"
 python -c "import transformers; print(f'Transformers: {transformers.__version__}')"
-python -c "from sam3.model_builder import build_sam3_image_model; print('SAM3: OK')"
 ```
 
 ---
 
-## 🚀 Quick Start
-
-### Download Pre-trained Models
-
-```bash
-# Create model directory
-mkdir -p checkpoints
-
-# Download Qwen3-VL-8B-Instruct (requires HuggingFace authentication)
-# Visit: https://huggingface.co/Qwen/Qwen3-VL-8B-Instruct
-
-# SAM3 will be downloaded automatically on first run
-```
+## Quick Start
 
 ### Basic Inference
 
 ```bash
 # Single placement prediction
-python main.py legacy_inference \
+python main.py predict \
   --checkpoint checkpoints/checkpoint_best.pt \
   --plane_image examples/room.png \
   --object_image examples/chair.png \
@@ -157,25 +203,14 @@ python main.py legacy_inference \
   --threshold 0.5
 ```
 
-### Interactive Demo
-
-```bash
-# Launch Gradio demo (requires additional `pip install gradio`)
-python main.py demo --config configs/config.yaml
-```
-
 ### Python API
 
 ```python
-from src.models.placement_model import SAM3PlacementModel
+from src.inference import PlacementPredictor
 from PIL import Image
 
-# Load model
-model = SAM3PlacementModel(
-    qwen_model_name="Qwen/Qwen3-VL-8B-Instruct",
-    checkpoint_path="checkpoints/checkpoint_best.pt"
-)
-model.eval()
+# Load predictor
+predictor = PlacementPredictor("checkpoints/checkpoint_best.pt")
 
 # Prepare inputs
 plane_image = Image.open("room.png").convert("RGB")
@@ -183,36 +218,35 @@ object_image = Image.open("chair.png").convert("RGB")
 text_prompt = "Place the chair near the window"
 
 # Predict placement
-with torch.no_grad():
-    results = model.predict(
-        plane_image=plane_image,
-        object_image=object_image,
-        text_prompt=text_prompt,
-        threshold=0.5
-    )
+results = predictor.predict(
+    plane_image=plane_image,
+    object_image=object_image,
+    text_prompt=text_prompt,
+    threshold=0.5
+)
 
-# Results contain: masks, boxes, scores, heatmap
+# Results contain: mask, heatmap, boxes, scores
 print(f"Found {len(results['boxes'])} valid placements")
 ```
 
 ---
 
-## 🎓 Training
+## Training
 
 ### Prepare Dataset
 
 ```
 data/
-├── annotations.json          # Metadata with splits
-├── plane_images/            # Room top-down views (1024x1024)
-�?  ├── scene_001.png
-�?  └── ...
-├── object_images/           # Object top-down views (512x512)
-�?  ├── obj_001.png
-�?  └── ...
-└── masks/                   # Ground truth placement masks
-    ├── scene_001_mask.png
-    └── ...
++-- annotations.json          # Metadata with splits
++-- plane_images/            # Room top-down views (1024x1024)
+|   +-- scene_001.png
+|   +-- ...
++-- object_images/           # Object top-down views (512x512)
+|   +-- obj_001.png
+|   +-- ...
++-- masks/                   # Ground truth placement masks
+    +-- scene_001_mask.png
+    +-- ...
 ```
 
 **annotations.json format**:
@@ -230,45 +264,15 @@ data/
 ]
 ```
 
-### Training Configuration
-
-Edit `configs/config.yaml`:
-```yaml
-# Data
-data_dir: "data/"
-batch_size: 4
-num_workers: 4
-
-# Model
-model:
-  qwen_model_name: "Qwen/Qwen3-VL-8B-Instruct"
-  sam3_input_dim: 256
-  qwen_hidden_dim: 4096
-  adapter_hidden_dim: 512
-
-# Freeze strategies
-freeze_qwen: true
-freeze_sam3_image_encoder: true
-
-# Optimizer
-optimizer:
-  lr: 1.0e-4
-  weight_decay: 1.0e-4
-
-# Training
-num_epochs: 100
-output_dir: "outputs/"
-```
-
 ### Run Training
 
 ```bash
 # Basic training
-python -m src.train.train --config configs/config.yaml
+python -m src.train --config configs/base.yaml
 
 # With overrides
-python -m src.train.train \
-  --config configs/config.yaml \
+python -m src.train \
+  --config configs/base.yaml \
   --data_dir /path/to/data \
   --output_dir /path/to/outputs
 ```
@@ -284,27 +288,26 @@ Training outputs are saved to:
 
 #### Dual-Scale SAM + H-MVP Training
 ```bash
-python -m src.train.train --config configs/sam2qhmvpl_config.yaml
+python -m src.train --config configs/hmvp.yaml
 ```
 
 #### Incremental VLA Training
 ```bash
-python -m src.train.train --config configs/sam2qvla_incremental_config.yaml
+python -m src.train --config configs/incremental_vla.yaml
 ```
 
 ---
 
-## 🔍 Inference
+## Inference
 
 ### Batch Inference
 
 ```bash
 # Process multiple samples
-python main.py inference \
+python main.py predict \
   --checkpoint checkpoints/checkpoint_best.pt \
   --input data/test_samples/ \
-  --output results/batch_results/ \
-  --config configs/config.yaml
+  --output results/batch_results/
 ```
 
 ### Output Format
@@ -319,8 +322,7 @@ Inference results are saved as:
     "placements": [
       {
         "box": [x1, y1, x2, y2],
-        "score": 0.95,
-        "mask_path": "results/scene_001_mask_0.png"
+        "score": 0.95
       }
     ]
   }
@@ -328,89 +330,58 @@ Inference results are saved as:
 
 ---
 
-## 🗂�?Project Structure
+## Project Structure
 
 ```
 SAM-Q/
-├── README.md                           # This file
-├── requirements.txt                    # Python dependencies
-├── main.py                             # CLI entry point
-�?├── configs/                            # Configuration files
-�?  ├── config.yaml                     # Base configuration
-�?  ├── sam2qhmvpl_config.yaml          # Dual-scale + H-MVP config
-�?  ├── sam2qvla_incremental_config.yaml# Incremental VLA config
-�?  └── vla_config.yaml                 # VLA-specific config
-�?├── src/
-�?  ├── models/                         # Model architectures
-�?  �?  ├── __init__.py
-�?  �?  ├── placement_model.py          # Main SAM3PlacementModel
-�?  �?  ├── losses.py                   # Loss functions
-�?  �?  �?�?  �?  ├── encoders/                   # Encoder modules
-�?  �?  �?  ├── __init__.py
-�?  �?  �?  └── qwen3vl_encoder.py      # Qwen3-VL wrapper
-�?  �?  �?�?  �?  ├── adapters/                   # Adapter modules
-�?  �?  �?  ├── __init__.py
-�?  �?  �?  ├── base_adapter.py         # Basic MLP adapter
-�?  �?  �?  ├── cross_modal_adapter.py  # Cross-attention adapter
-�?  �?  �?  └── presence_token_adapter.py
-�?  �?  �?�?  �?  ├── collision/                  # Collision detection
-�?  �?  �?  ├── __init__.py
-�?  �?  �?  └── hmvp_collision_detector.py
-�?  �?  �?�?  �?  ├── vla/                        # VLA components
-�?  �?  �?  ├── __init__.py
-�?  �?  �?  └── incremental_vla.py
-�?  �?  �?�?  �?  └── sampling/                   # Sampling strategies
-�?  �?      ├── __init__.py
-�?  �?      └── heatmap_guided_placer.py
-�?  �?�?  ├── data/                           # Data pipeline
-�?  �?  ├── __init__.py
-�?  �?  ├── dataset.py                  # Base dataset
-�?  �?  ├── vla_dataset.py              # VLA-specific dataset
-�?  �?  └── transforms.py               # Data augmentation
-�?  �?�?  ├── train/                          # Training framework
-�?  �?  ├── __init__.py
-�?  �?  ├── trainer.py                  # Trainer class
-�?  �?  ├── optimizer.py                # Optimizer utilities
-�?  �?  └── metrics.py                  # Evaluation metrics
-�?  �?�?  ├── inference/                      # Inference utilities
-�?  �?  ├── __init__.py
-�?  �?  ├── predictor.py                # PlacementPredictor
-�?  �?  └── visualizer.py               # Result visualization
-�?  �?�?  └── utils/                          # Utilities
-�?      ├── __init__.py
-�?      ├── config.py                   # Configuration parser
-�?      ├── asset_database.py           # 3D asset management
-�?      └── common.py                   # Common utilities
-�?├── scripts/                            # Helper scripts
-�?  ├── download_data.sh
-�?  ├── preprocess_data.py
-�?  └── evaluate.py
-�?└── assets/                             # Images for documentation
-    └── teaser.png
++-- configs/                     # Configuration files
+|   +-- base.yaml               # Base configuration
+|   +-- hmvp.yaml               # H-MVP extension
+|   +-- incremental_vla.yaml    # VLA extension
+|
++-- src/
+|   +-- models/                  # Model architectures
+|   |   +-- encoders/           # Encoder modules
+|   |   +-- adapters/           # Adapter modules
+|   |   +-- collision/          # Collision detection
+|   |   +-- vla/                # VLA components
+|   |   +-- sampling/           # Sampling strategies
+|   |   +-- placement_model.py  # Main model
+|   |
+|   +-- data/                    # Data pipeline
+|   +-- train/                   # Training framework
+|   +-- inference/               # Inference utilities
+|   +-- utils/                   # Utilities
+|
++-- tests/                       # Unit tests
++-- scripts/                     # Helper scripts
++-- models/                      # Downloaded models
+|   +-- qwen3_vl/
+|   +-- sam3/
+|
++-- main.py                      # CLI entry point
++-- README.md                    # Documentation
++-- ARCHITECTURE.md              # Architecture details
++-- CONTRIBUTING.md              # Contribution guide
++-- requirements.txt             # Dependencies
 ```
 
 ---
 
-## 📊 Results
+## Results
 
 ### Quantitative Evaluation
 
 | Metric | Baseline | SAM-Q (Ours) | Improvement |
 |--------|----------|--------------|-------------|
-| IoU �?| 0.62 | **0.78** | +25.8% |
-| Collision Rate �?| 18.5% | **6.2%** | -66.5% |
-| Semantic Alignment �?| 0.54 | **0.81** | +50.0% |
+| IoU | 0.62 | **0.78** | +25.8% |
+| Collision Rate | 18.5% | **6.2%** | -66.5% |
+| Semantic Alignment | 0.54 | **0.81** | +50.0% |
 | Inference Time (s) | 0.15 | **0.12** | -20.0% |
-
-### Qualitative Results
-
-<p align="center">
-  <img src="assets/results.png" alt="Qualitative Results" width="800"/>
-</p>
 
 ---
 
-## 🔧 Advanced Usage
+## Advanced Usage
 
 ### Custom Adapter Design
 
@@ -421,8 +392,8 @@ from src.models.adapters import CrossModalAdapter
 adapter = CrossModalAdapter(
     qwen_dim=4096,
     sam3_dim=256,
-    num_queries=64,      # Number of output queries
-    hidden_dim=512,      # Hidden layer dimension
+    num_queries=64,
+    hidden_dim=512,
 )
 ```
 
@@ -437,7 +408,6 @@ detector = HMVPCollisionDetector(
     early_out_threshold=0.1
 )
 
-# Check collision
 collision_score = detector.check_collision(
     scene_depths=scene_hmvp,
     object_depths=obj_hmvp,
@@ -445,29 +415,9 @@ collision_score = detector.check_collision(
 )
 ```
 
-### Incremental VLA Memory
-
-```python
-from src.models.vla import IncrementalHMVPMemory
-
-memory = IncrementalHMVPMemory(
-    update_threshold=0.3,
-    max_objects=50
-)
-
-# Initialize from scene
-memory.initialize_from_scene(scene_image)
-
-# Update after placement
-memory.update_with_new_object(
-    new_pose=predicted_pose,
-    new_shape=object_shape
-)
-```
-
 ---
 
-## 🤝 Contributing
+## Contributing
 
 We welcome contributions! Please follow these steps:
 
@@ -486,7 +436,7 @@ We follow [Google Python Style Guide](https://google.github.io/styleguide/pyguid
 
 ---
 
-## 📝 Citation
+## Citation
 
 If you find this work useful in your research, please cite:
 
@@ -501,13 +451,13 @@ If you find this work useful in your research, please cite:
 
 ---
 
-## 📄 License
+## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
 ---
 
-## 🙏 Acknowledgments
+## Acknowledgments
 
 - [SAM3](https://github.com/facebookresearch/sam3) - Segment Anything Model
 - [Qwen3-VL](https://huggingface.co/Qwen/Qwen3-VL-8B-Instruct) - Vision-Language Model
@@ -515,7 +465,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ---
 
-## 📧 Contact
+## Contact
 
 - **Questions**: Open an issue on GitHub
 - **Email**: your.email@example.com
@@ -524,5 +474,5 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ---
 
 <p align="center">
-  <strong>�?Star this repo if you find it helpful!</strong>
+  <strong>Star this repo if you find it helpful!</strong>
 </p>

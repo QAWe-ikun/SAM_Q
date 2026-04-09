@@ -152,27 +152,23 @@ class SAM3PlacementModel(nn.Module):
         
         # Encode plane image with SAM3 Image Encoder
         plane_embeddings = self._encode_plane_image(plane_image)
-        
+
         # Encode object + text with Qwen3-VL + Adapter
         text_embeddings = self._encode_object_and_text(object_image, text_prompt)
-        
-        # Combine embeddings for detector
-        combined_embeddings = self._combine_embeddings(
-            plane_embeddings, text_embeddings
-        )
-        
+
         # Run detector to get placement masks
+        # Note: SAM3 Detector fuses image and text embeddings internally
         masks = self.sam3_detector(
             image_embeddings=plane_embeddings,
             text_embeddings=text_embeddings,
         )
-        
+
         return {
             "masks": masks,
             "plane_embeddings": plane_embeddings,
             "text_embeddings": text_embeddings,
         }
-    
+
     def _encode_plane_image(self, image: Image.Image) -> torch.Tensor:
         """Encode plane image using SAM3 Image Encoder."""
         # Preprocess image for SAM3
@@ -200,18 +196,7 @@ class SAM3PlacementModel(nn.Module):
         projected = self.adapter(qwen_embeddings)
         
         return projected
-    
-    def _combine_embeddings(
-        self,
-        plane_embeddings: torch.Tensor,
-        text_embeddings: torch.Tensor,
-    ) -> torch.Tensor:
-        """Combine plane and text embeddings for detector."""
-        # Concatenate along sequence dimension
-        # Shape: (batch, plane_seq + text_seq, dim)
-        combined = torch.cat([plane_embeddings, text_embeddings], dim=1)
-        return combined
-    
+
     def predict(
         self,
         plane_image: Image.Image,
