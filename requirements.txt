@@ -23,6 +23,11 @@ numpy>=1.26.0,<2.0.0
 tqdm>=4.65.0
 pyyaml>=6.0
 einops>=0.7.0
+triton>=3.0.0
+pycocotools>=2.0.0
+
+# Attention
+flash-attn>=2.5.0
 
 # Training
 accelerate>=0.25.0

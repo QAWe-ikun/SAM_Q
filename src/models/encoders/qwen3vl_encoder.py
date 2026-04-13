@@ -54,16 +54,27 @@ class Qwen3VLEncoder(nn.Module):
             from transformers import Qwen3VLForConditionalGeneration, AutoProcessor
 
             self.processor = AutoProcessor.from_pretrained(self.model_name)
+
+            # Try flash_attention_2, fall back to sdpa/eager
+            attn_impl = "eager"
+            if self.device == "cuda":
+                try:
+                    import flash_attn  # noqa: F401
+                    attn_impl = "flash_attention_2"
+                except ImportError:
+                    attn_impl = "sdpa"  # PyTorch native, nearly same speed
+
             self.model = Qwen3VLForConditionalGeneration.from_pretrained(
                 self.model_name,
                 torch_dtype=self.dtype,
                 device_map=self.device,
-                attn_implementation="flash_attention_2" if self.device == "cuda" else "eager",
+                attn_implementation=attn_impl,
             )
             self.model.eval()
             
             # Set output dimension based on Qwen3-VL hidden size
-            self._output_dim = self.model.config.hidden_size
+            cfg = self.model.config
+            self._output_dim = getattr(cfg, "hidden_size", None) or cfg.text_config.hidden_size
 
             # Register [SEG] special token for SA2VA-style bridging
             self.processor.tokenizer.add_special_tokens(
@@ -103,13 +114,20 @@ class Qwen3VLEncoder(nn.Module):
             embeddings: Tensor of shape (batch_size, seq_len, hidden_dim)
         """
         self.load_model()
-        
+
         # Build conversation for Qwen3-VL
         messages = self._build_message(object_image, text_prompt)
-        
+
+        # Apply chat template to convert messages → text string
+        text = self.processor.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=False,
+        )
+
         # Process inputs
         inputs = self.processor(
-            text=messages,
+            text=[text],
             images=[object_image] if object_image else None,
             return_tensors="pt",
             padding=True,

@@ -135,35 +135,38 @@
 
 ### Requirements
 
-- **OS**: Linux (Ubuntu 20.04+) or Windows 10/11
+- **OS**: Linux (Ubuntu 20.04+, WSL2 支持) 或 Windows 10/11
 - **Python**: 3.10+
-- **GPU**: NVIDIA GPU with 16GB+ VRAM (A100/V100/RTX 4090 recommended)
-- **CUDA**: 11.8+
+- **GPU**: NVIDIA GPU，16GB+ 显存（推荐 A100/V100/RTX 4090）
+- **CUDA Toolkit**: 12.0+（flash-attn 编译需要，`nvcc --version` 检查）
 
-### Step 1: Create Environment
+### Step 1: 创建环境
 
 ```bash
-# Using conda (recommended)
-conda create -n samq python=3.10
+# 使用 conda（推荐）
+conda create -n samq python=3.12
 conda activate samq
 
-# Or using venv
+# 或使用 venv
 python -m venv samq-env
 source samq-env/bin/activate  # Linux/Mac
 # or
 samq-env\Scripts\activate  # Windows
 ```
 
-### Step 2: Install Dependencies
+### Step 2: 安装依赖
 
 ```bash
-# Install PyTorch (adjust CUDA version as needed)
-pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
+# 先装 PyTorch（根据 CUDA 版本调整，cu130 对应 CUDA 13.0）
+pip install torch torchvision --extra-index-url https://download.pytorch.org/whl/cu130
 
-# Install core dependencies
+# 装 flash-attn（需要先装好 torch，且 nvcc >= 12.0）
+pip install flash-attn --no-build-isolation
+
+# 装其余依赖
 pip install -r requirements.txt
 
-# Install SAM3
+# 装 SAM3
 pip install git+https://github.com/facebookresearch/sam3.git
 ```
 
