@@ -64,7 +64,8 @@ class PlacementPredictor:
         """Initialize model from checkpoint."""
         config = self.checkpoint.get("config", {})
         model_config = config.get("model", {})
-        
+        encoding_mode = model_config.get("encoding_mode", "cross_modal")
+
         model = SAM3PlacementModel(
             qwen_model_name=model_config.get(
                 "qwen", {}
@@ -73,6 +74,9 @@ class PlacementPredictor:
             qwen_hidden_dim=model_config.get("qwen", {}).get("hidden_dim", 4096),
             adapter_hidden_dim=model_config.get("adapter", {}).get("hidden_dim", 512),
             device=self.device,
+            mode=encoding_mode,
+            seg_projector_config=model_config.get("seg_token", {}),
+            action_head_config=model_config.get("action_head", {}),
         )
         
         # Load weights

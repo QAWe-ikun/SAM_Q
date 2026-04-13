@@ -103,7 +103,8 @@ class Trainer:
     def _init_model(self) -> SAM3PlacementModel:
         """Initialize model from configuration."""
         model_config = self.config.get("model", {})
-        
+        encoding_mode = model_config.get("encoding_mode", "cross_modal")
+
         model = SAM3PlacementModel(
             qwen_model_name=model_config.get("qwen", {}).get(
                 "model_name", "Qwen/Qwen3-VL-8B-Instruct"
@@ -112,6 +113,9 @@ class Trainer:
             qwen_hidden_dim=model_config.get("qwen", {}).get("hidden_dim", 4096),
             adapter_hidden_dim=model_config.get("adapter", {}).get("hidden_dim", 512),
             device=self.device,
+            mode=encoding_mode,
+            seg_projector_config=model_config.get("seg_token", {}),
+            action_head_config=model_config.get("action_head", {}),
         )
         
         # Freeze components

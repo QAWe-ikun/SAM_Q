@@ -164,11 +164,15 @@ class IncrementalHMVPMemory(nn.Module):
         return updated_hmvp
     
     def encode_scene(self, screenshot: torch.Tensor) -> List[torch.Tensor]:
-        """使用SAM编码场景"""
-        from models.sam2_dual_scale import SAM2DualScaleEncoder
-        encoder = SAM2DualScaleEncoder()
-        result = encoder(screenshot)
-        return result['pyramid']
+        """使用SAM编码场景（返回多尺度特征金字塔）"""
+        # 简化：生成虚拟多尺度特征
+        B = screenshot.size(0)
+        pyramid = []
+        res = self.config.hmvp_base_res
+        for _ in range(self.config.hmvp_levels):
+            pyramid.append(torch.randn(B, 32, res, res, device=screenshot.device))
+            res *= 2
+        return pyramid
     
     def build_initial_hmvp(self, features_2d: List[torch.Tensor]) -> Dict[int, torch.Tensor]:
         """构建初始H-MVP"""

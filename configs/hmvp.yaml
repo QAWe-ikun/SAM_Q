@@ -23,12 +23,6 @@ model:
 
 # Advanced modules
 advanced:
-  # Enable dual-scale SAM
-  dual_scale:
-    enabled: true
-    high_res: 1024
-    low_res: 256
-  
   # Enable H-MVP collision detection
   hmvp:
     enabled: true

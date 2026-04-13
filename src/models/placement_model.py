@@ -11,7 +11,8 @@ from typing import Optional, Dict, Any, Tuple, List
 from PIL import Image
 
 from .encoders.qwen3vl_encoder import Qwen3VLEncoder
-from .adapters import Adapter, CrossModalAdapter
+from .adapters import Adapter, CrossModalAdapter, SegTokenProjector
+from .action_head import ActionHead
 
 
 class SAM3PlacementModel(nn.Module):
@@ -33,10 +34,13 @@ class SAM3PlacementModel(nn.Module):
         adapter_hidden_dim: int = 512,
         device: Optional[str] = None,
         dtype: torch.dtype = torch.float16,
+        mode: str = "cross_modal",
+        seg_projector_config: Optional[Dict[str, Any]] = None,
+        action_head_config: Optional[Dict[str, Any]] = None,
     ):
         """
         Initialize the placement model.
-        
+
         Args:
             sam3_model: Pre-loaded SAM3 model (if None, will be loaded)
             qwen_model_name: HuggingFace model name for Qwen3-VL
@@ -45,35 +49,65 @@ class SAM3PlacementModel(nn.Module):
             adapter_hidden_dim: Adapter hidden dimension
             device: Device to run model on
             dtype: Data type for model
+            mode: Encoding mode - "cross_modal" (original) or "seg_token" (SA2VA-inspired)
+            seg_projector_config: Config dict for SegTokenProjector (used when mode="seg_token")
+            action_head_config: Config dict for ActionHead (None or {"enabled": false} to disable)
         """
         super().__init__()
-        
+
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.dtype = dtype
         self.sam3_input_dim = sam3_input_dim
         self.qwen_hidden_dim = qwen_hidden_dim
-        
+        self.mode = mode
+
         # Qwen3-VL Encoder (frozen during training)
         self.qwen_encoder = Qwen3VLEncoder(
             model_name=qwen_model_name,
             device=self.device,
             dtype=self.dtype,
         )
-        
-        # Adapter to project Qwen embeddings to SAM3 space
-        self.adapter = CrossModalAdapter(
-            qwen_dim=qwen_hidden_dim,
-            sam3_dim=sam3_input_dim,
-            hidden_dim=adapter_hidden_dim,
-        )
-        
+
+        # Adapter / Projector based on mode
+        if mode == "cross_modal":
+            self.adapter = CrossModalAdapter(
+                qwen_dim=qwen_hidden_dim,
+                sam3_dim=sam3_input_dim,
+                hidden_dim=adapter_hidden_dim,
+            )
+        elif mode == "seg_token":
+            seg_cfg = seg_projector_config or {}
+            self.seg_projector = SegTokenProjector(
+                qwen_dim=qwen_hidden_dim,
+                sam3_dim=sam3_input_dim,
+                num_output_tokens=seg_cfg.get("num_output_tokens", 64),
+                hidden_dim=seg_cfg.get("hidden_dim", adapter_hidden_dim),
+                dropout=seg_cfg.get("dropout", 0.1),
+            )
+        else:
+            raise ValueError(f"Unknown encoding mode: {mode}")
+
         # SAM3 components (will be loaded lazily)
         self.sam3_image_encoder = None
         self.sam3_detector = None
         self.sam3_model = sam3_model
-        
+
         # Placeholder for SAM3 dimensions
         self._sam3_loaded = False
+
+        # [SEG] token config for inference
+        self._seg_force_only = seg_projector_config.get("force_only_in_training", True) if seg_projector_config else True
+        self._seg_max_tokens = seg_projector_config.get("max_generate_tokens", 128) if seg_projector_config else 128
+
+        # Action head (optional, for VLA pose prediction)
+        ah_cfg = action_head_config or {}
+        if ah_cfg.get("enabled", False):
+            self.action_head = ActionHead(
+                input_dim=sam3_input_dim,
+                hidden_dim=ah_cfg.get("hidden_dim", 512),
+            )
+        else:
+            self.action_head = None
         
     def _load_sam3(self):
         """Lazy load SAM3 model components."""
@@ -117,15 +151,22 @@ class SAM3PlacementModel(nn.Module):
         self.sam3_image_encoder.eval()
         
     def freeze_all_except_adapter_and_detector(self):
-        """Freeze all components except adapter and detector."""
+        """Freeze all components except adapter/projector and detector."""
         self.freeze_qwen()
         self.freeze_sam3_image_encoder()
-        
-        # Make adapter and detector trainable
-        for param in self.adapter.parameters():
-            param.requires_grad = True
+
+        # Make adapter/projector and detector trainable
+        if self.mode == "cross_modal":
+            for param in self.adapter.parameters():
+                param.requires_grad = True
+        elif self.mode == "seg_token":
+            for param in self.seg_projector.parameters():
+                param.requires_grad = True
         for param in self.sam3_detector.parameters():
             param.requires_grad = True
+        if self.action_head is not None:
+            for param in self.action_head.parameters():
+                param.requires_grad = True
     
     def forward(
         self,
@@ -163,11 +204,22 @@ class SAM3PlacementModel(nn.Module):
             text_embeddings=text_embeddings,
         )
 
-        return {
+        output = {
             "masks": masks,
             "plane_embeddings": plane_embeddings,
             "text_embeddings": text_embeddings,
         }
+
+        # Action head: predict scale + 6D rotation in parallel
+        if self.action_head is not None:
+            action_output = self.action_head(text_embeddings)
+            output.update({
+                "scale": action_output["scale"],
+                "rotation_6d": action_output["rotation_6d"],
+                "rotation_matrix": action_output["rotation_matrix"],
+            })
+
+        return output
 
     def _encode_plane_image(self, image: Image.Image) -> torch.Tensor:
         """Encode plane image using SAM3 Image Encoder."""
@@ -185,17 +237,23 @@ class SAM3PlacementModel(nn.Module):
         object_image: Image.Image,
         text: str,
     ) -> torch.Tensor:
-        """Encode object image and text using Qwen3-VL + Adapter."""
-        # Get Qwen3-VL embeddings
-        qwen_embeddings = self.qwen_encoder(
+        """Encode object image and text using Qwen3-VL + Adapter/Projector."""
+        if self.mode == "cross_modal":
+            qwen_embeddings = self.qwen_encoder(
+                object_image=object_image,
+                text_prompt=text,
+            )
+            return self.adapter(qwen_embeddings)
+
+        # seg_token mode
+        force_only = self._seg_force_only if self.training else False
+        seg_hidden, _ = self.qwen_encoder.generate_with_seg(
             object_image=object_image,
             text_prompt=text,
+            max_new_tokens=self._seg_max_tokens,
+            force_only=force_only,
         )
-        
-        # Project to SAM3 space using adapter
-        projected = self.adapter(qwen_embeddings)
-        
-        return projected
+        return self.seg_projector(seg_hidden)
 
     def predict(
         self,

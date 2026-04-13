@@ -18,9 +18,12 @@ Main Models:
 """
 
 from .placement_model import SAM3PlacementModel, PlacementLoss, VLALoss
+from .action_head import ActionHead, rotation_6d_to_matrix
 
 __all__ = [
     "SAM3PlacementModel",
     "PlacementLoss",
     "VLALoss",
+    "ActionHead",
+    "rotation_6d_to_matrix",
 ]

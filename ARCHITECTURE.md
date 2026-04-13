@@ -113,7 +113,7 @@ Heavy models (Qwen3-VL, SAM3) are loaded lazily to:
 |                     FUSION & DECODER LAYER                         |
 |                                                                    |
 |  +------------------------------------------------------------+    |
-|  |  Plane & Text Embeddings -> SAM3 Detector -> Placement Masks|    |
+|  |  Plane & Text Embeddings -> SAM3 Detector -> Placement Masks|   |
 |  +------------------------------------------------------------+    |
 +-------------------------------------------------------------------+
               |
@@ -121,10 +121,9 @@ Heavy models (Qwen3-VL, SAM3) are loaded lazily to:
 +-------------------------------------------------------------------+
 |                   ADVANCED MODULES (Optional)                      |
 |                                                                    |
-|  +---------------+  +---------------+  +-------------------+       |
-|  | Dual-Scale SAM|  | H-MVP Collision|  | Incremental VLA   |       |
-|  | (1024+256)    |  | Detector      |  | Memory System     |       |
-|  +---------------+  +---------------+  +-------------------+       |
+|  +--------------------------+     +------------------------+       |
+|  | H-MVP Collision Detector |     | Incremental VLA System |       |
+|  +--------------------------+     +------------------------+       |
 +-------------------------------------------------------------------+
 ```
 
@@ -362,7 +361,7 @@ incremental_vla.yaml (enable incremental VLA)
 | `optimizer` | Optimizer | lr, weight_decay |
 | `scheduler` | LR scheduling | T_max, eta_min |
 | `training` | Training loop | num_epochs, save_dir |
-| `advanced` | Optional modules | dual_scale, hmvp |
+| `advanced` | Optional modules | hmvp |
 
 ### Usage
 

@@ -36,6 +36,9 @@ data:
 # Model Architecture
 # ----------------------------------------------------------------------------
 model:
+  # Encoding mode: "cross_modal" (original) or "seg_token" (SA2VA-inspired)
+  encoding_mode: "cross_modal"
+
   # Qwen3-VL Encoder
   qwen:
     model_name: "./models/qwen3_vl"
@@ -56,6 +59,19 @@ model:
     hidden_dim: 512
     num_queries: 64
     dropout: 0.1
+
+  # [SEG] Token Projector (only used when encoding_mode is "seg_token")
+  seg_token:
+    hidden_dim: 512
+    num_output_tokens: 64
+    max_generate_tokens: 128
+    dropout: 0.1
+    force_only_in_training: true
+
+  # Action Head (VLA pose prediction with 6D rotation)
+  action_head:
+    enabled: false
+    hidden_dim: 512
 
 # ----------------------------------------------------------------------------
 # Loss Configuration
@@ -131,12 +147,6 @@ inference:
 # Advanced Modules (Optional)
 # ----------------------------------------------------------------------------
 advanced:
-  # Dual-scale SAM encoder
-  dual_scale:
-    enabled: false
-    high_res: 1024
-    low_res: 256
-  
   # H-MVP Collision Detector
   hmvp:
     enabled: false

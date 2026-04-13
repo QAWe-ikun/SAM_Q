@@ -82,7 +82,7 @@ def download_model(model_id, local_dir, force=False, source_name="ModelScope"):
         # snapshot_download handles caching and resuming automatically
         result_dir = snapshot_download(
             model_id,
-            cache_dir=local_dir,
+            local_dir=local_dir,
             revision='master'
         )
         
