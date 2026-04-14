@@ -454,11 +454,7 @@ Inference results are saved as:
 ```
 SAM-Q/
 +-- configs/                     # Configuration files
-|   +-- base.yaml               # Base configuration
-|   +-- hmvp.yaml               # H-MVP collision detection
-|   +-- incremental_vla.yaml    # Incremental VLA memory
-|   +-- seg_token.yaml          # Multi-SEG token mode
-|   +-- vla.yaml                # VLA action output (position+rotation+scale)
+|   +-- config.yaml               # Configuration
 |
 +-- src/
 |   +-- models/                  # Model architectures
