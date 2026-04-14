@@ -38,10 +38,10 @@ class SAMQPlacementModel(nn.Module):
         sam3_input_dim: int = 256,
         qwen_hidden_dim: int = 4096,  # Qwen3-VL-8B hidden size
         adapter_hidden_dim: int = 512,
+        num_seg_tokens: int = 1,
         device: Optional[str] = None,
         dtype: torch.dtype = torch.float16,
-        mode: str = "cross_modal",
-        seg_projector_config: Optional[Dict[str, Any]] = None,
+        seg_token_config: Optional[Dict[str, Any]] = None,
         action_head_config: Optional[Dict[str, Any]] = None,
     ):
         """
@@ -53,10 +53,10 @@ class SAMQPlacementModel(nn.Module):
             sam3_input_dim: SAM3 Detector input dimension
             qwen_hidden_dim: Qwen3-VL hidden dimension
             adapter_hidden_dim: Adapter hidden dimension
+            num_seg_tokens: Number of [SEG] tokens. 1=single placement, >1=multi-placement.
             device: Device to run model on
             dtype: Data type for model
-            mode: Encoding mode - "cross_modal" (original) or "seg_token" (SA2VA-inspired)
-            seg_projector_config: Config dict for SegTokenProjector (used when mode="seg_token")
+            seg_token_config: Config for SegTokenProjector (when num_seg_tokens > 1)
             action_head_config: Config dict for ActionHead (None or {"enabled": false} to disable)
         """
         super().__init__()
@@ -65,24 +65,27 @@ class SAMQPlacementModel(nn.Module):
         self.dtype = dtype
         self.sam3_input_dim = sam3_input_dim
         self.qwen_hidden_dim = qwen_hidden_dim
-        self.mode = mode
+        self.num_seg_tokens = num_seg_tokens
 
         # Qwen3-VL Encoder (frozen during training)
         self.qwen_encoder = Qwen3VLEncoder(
             model_name=qwen_model_name,
             device=self.device,
             dtype=self.dtype,
+            num_seg_tokens=num_seg_tokens,
         )
 
-        # Adapter / Projector based on mode
-        if mode == "cross_modal":
-            self.adapter = CrossModalAdapter(
-                qwen_dim=qwen_hidden_dim,
-                sam3_dim=sam3_input_dim,
-                hidden_dim=adapter_hidden_dim,
-            )
-        elif mode == "seg_token":
-            seg_cfg = seg_projector_config or {}
+        # Adapter: CrossModalAdapter works for both single and multi-SEG
+        self.adapter = CrossModalAdapter(
+            qwen_dim=qwen_hidden_dim,
+            sam3_dim=sam3_input_dim,
+            hidden_dim=adapter_hidden_dim,
+        )
+
+        # SegTokenProjector: optional, used when num_seg_tokens > 1
+        self.seg_projector = None
+        if num_seg_tokens > 1:
+            seg_cfg = seg_token_config or {}
             self.seg_projector = SegTokenProjector(
                 qwen_dim=qwen_hidden_dim,
                 sam3_dim=sam3_input_dim,
@@ -90,8 +93,6 @@ class SAMQPlacementModel(nn.Module):
                 hidden_dim=seg_cfg.get("hidden_dim", adapter_hidden_dim),
                 dropout=seg_cfg.get("dropout", 0.1),
             )
-        else:
-            raise ValueError(f"Unknown encoding mode: {mode}")
 
         # SAM3 components (will be loaded lazily)
         self.sam3_vision_backbone = None   # Sam3DualViTDetNeck
@@ -104,8 +105,8 @@ class SAMQPlacementModel(nn.Module):
         self._sam3_loaded = False
 
         # [SEG] token config for inference
-        self._seg_force_only = seg_projector_config.get("force_only_in_training", True) if seg_projector_config else True
-        self._seg_max_tokens = seg_projector_config.get("max_generate_tokens", 128) if seg_projector_config else 128
+        self._seg_force_only = seg_token_config.get("force_only_in_training", True) if seg_token_config else True
+        self._seg_max_tokens = seg_token_config.get("max_generate_tokens", 128) if seg_token_config else 128
 
         # Action head (optional, for VLA pose prediction)
         ah_cfg = action_head_config or {}
@@ -118,9 +119,8 @@ class SAMQPlacementModel(nn.Module):
             self.action_head = None
 
         # Move trainable components to device
-        if mode == "cross_modal":
-            self.adapter.to(self.device)
-        elif mode == "seg_token":
+        self.adapter.to(self.device)
+        if self.seg_projector is not None:
             self.seg_projector.to(self.device)
         if self.action_head is not None:
             self.action_head.to(self.device)
@@ -181,15 +181,14 @@ class SAMQPlacementModel(nn.Module):
         self.sam3_vision_backbone.eval()
         
     def freeze_all_except_adapter_and_detector(self):
-        """Freeze all components except adapter/projector and detector."""
+        """Freeze all components except adapter and detector."""
         self.freeze_qwen()
         self.freeze_sam3_image_encoder()
 
-        # Make adapter/projector and detector trainable
-        if self.mode == "cross_modal":
-            for param in self.adapter.parameters():
-                param.requires_grad = True
-        elif self.mode == "seg_token":
+        # Make adapter and detector trainable
+        for param in self.adapter.parameters():
+            param.requires_grad = True
+        if self.seg_projector is not None:
             for param in self.seg_projector.parameters():
                 param.requires_grad = True
         for param in self.sam3_transformer.parameters():
@@ -336,12 +335,15 @@ class SAMQPlacementModel(nn.Module):
         text: str,
         images: Optional[List[Image.Image]] = None,
     ) -> torch.Tensor:
-        """Encode image(s) and text using Qwen3-VL + Adapter/Projector.
+        """Encode image(s) and text using Qwen3-VL [SEG] token + Adapter.
 
-        Both modes use the [SEG] token approach:
-        - Qwen3-VL first reasons/generates text, then outputs [SEG]
-        - [SEG] hidden state contains the full reasoning via self-attention
-        - Project to SAM3 prompt space
+        Qwen3-VL first reasons/generates text, then outputs [SEG].
+        The [SEG] hidden state contains the full reasoning via self-attention.
+        Then we project it to SAM3 prompt space.
+
+        num_seg_tokens=1:  CrossModalAdapter [B, 1, 4096] -> [B, 64, 256]
+        num_seg_tokens>1:  CrossModalAdapter [B, n, 4096] -> [B, n, 256]
+                          (optional SegTokenProjector for expansion)
         """
         force_only = self._seg_force_only if self.training else False
         seg_hidden, _ = self.qwen_encoder.generate_with_seg(
@@ -349,15 +351,20 @@ class SAMQPlacementModel(nn.Module):
             images=images,
             max_new_tokens=self._seg_max_tokens,
             force_only=force_only,
+            num_seg=self.num_seg_tokens,
         )
 
-        if self.mode == "cross_modal":
-            # CrossModalAdapter: [B, 1, 4096] -> [B, num_queries, 256]
-            seg_hidden_3d = seg_hidden.unsqueeze(1)  # [B, 4096] -> [B, 1, 4096]
-            return self.adapter(seg_hidden_3d.to(device=self.device, dtype=torch.float32))
+        if self.num_seg_tokens == 1:
+            # [B, 4096] -> [B, 1, 4096] -> CrossModalAdapter -> [B, 64, 256]
+            seg_3d = seg_hidden.unsqueeze(1)
+            return self.adapter(seg_3d.to(device=self.device, dtype=torch.float32))
 
-        # seg_token mode
-        return self.seg_projector(seg_hidden)
+        # Multi-SEG: [B, n, 4096] -> Adapter/Projector -> [B, n, 256]
+        seg_hidden_fp32 = seg_hidden.to(device=self.device, dtype=torch.float32)
+        if self.seg_projector is not None:
+            return self.seg_projector(seg_hidden_fp32)
+        
+        return self.adapter(seg_hidden_fp32)
 
     def predict(
         self,
