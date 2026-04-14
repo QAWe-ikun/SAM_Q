@@ -10,7 +10,7 @@ Architecture:
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Optional, Dict, Any, List, Tuple
+from typing import Optional, Dict, Any, List
 from PIL import Image
 
 from .encoders.qwen3vl_encoder import Qwen3VLEncoder
@@ -399,29 +399,6 @@ class SAMQPlacementModel(nn.Module):
             "rotation_deg": output["rotation_deg"],
             "scale_relative": output["scale_relative"],
         }
-
-    def _soft_argmax2d(self, heatmap: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Compute soft argmax of 2D heatmap.
-
-        Args:
-            heatmap: [B, num_candidates, H, W] or [B, 1, H, W]
-
-        Returns:
-            y_norm, x_norm: Normalized coordinates [0, 1]
-        """
-        B = heatmap.size(0)
-        # Merge num_candidates dimension
-        H, W = heatmap.shape[-2:]
-        probs = heatmap.view(B, -1).softmax(dim=-1).view(B, 1, H, W)
-
-        y_grid = torch.linspace(0, 1, H, device=heatmap.device).view(1, 1, H, 1).expand(B, 1, -1, W)
-        x_grid = torch.linspace(0, 1, W, device=heatmap.device).view(1, 1, 1, W).expand(B, 1, H, -1)
-
-        y_norm = (probs * y_grid).sum(dim=[1, 2, 3])
-        x_norm = (probs * x_grid).sum(dim=[1, 2, 3])
-
-        return y_norm, x_norm
 
 
 class PlacementLoss(nn.Module):
