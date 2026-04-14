@@ -22,7 +22,7 @@ import yaml
 project_root = Path(__file__).parent
 sys.path.insert(0, str(project_root))
 
-from models.placement_model import SAM3PlacementModel, PlacementLoss
+from models.placement_model import SAMQPlacementModel, PlacementLoss
 from data.dataset import ObjectPlacementDataModule
 
 
@@ -67,11 +67,11 @@ class Trainer:
         self.current_epoch = 0
         self.best_val_loss = float("inf")
         
-    def _init_model(self) -> SAM3PlacementModel:
+    def _init_model(self) -> SAMQPlacementModel:
         """Initialize the placement model."""
         model_config = self.config.get("model", {})
         
-        model = SAM3PlacementModel(
+        model = SAMQPlacementModel(
             qwen_model_name=model_config.get(
                 "qwen_model_name", "Qwen/Qwen3-VL-8B-Instruct"
             ),

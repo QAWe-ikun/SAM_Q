@@ -21,7 +21,7 @@ _SAM3_STD  = (0.5, 0.5, 0.5)
 _SAM3_SIZE = 1008  # SAM3 ViT input resolution
 
 
-class SAM3PlacementModel(nn.Module):
+class SAMQPlacementModel(nn.Module):
     """
     Object Placement Prediction Model using SAM3 + Qwen3-VL.
     

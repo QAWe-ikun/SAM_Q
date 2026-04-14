@@ -50,3 +50,7 @@ Thumbs.db
 # Claude
 .claude/
 CLAUDE.md
+
+# Qwen
+.qwen/
+QWEN.md

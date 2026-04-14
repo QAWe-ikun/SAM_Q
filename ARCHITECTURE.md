@@ -297,7 +297,7 @@ ObjectPlacementDataModule
 |  - masks: Tensor[B, 1, H, W]|
 +------------|---------------+
              v
-SAM3PlacementModel.forward()
+SAMQPlacementModel.forward()
              |
 +----------------------------+
 | For each sample in batch:  |

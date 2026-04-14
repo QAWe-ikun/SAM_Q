@@ -11,7 +11,7 @@ import numpy as np
 from pathlib import Path
 from typing import Optional, Dict, Any, Union
 
-from ..models import SAM3PlacementModel
+from ..models import SAMQPlacementModel
 
 
 class PlacementPredictor:
@@ -60,13 +60,13 @@ class PlacementPredictor:
         self.model = self._init_model()
         self.model.eval()
 
-    def _init_model(self) -> SAM3PlacementModel:
+    def _init_model(self) -> SAMQPlacementModel:
         """Initialize model from checkpoint."""
         config = self.checkpoint.get("config", {})
         model_config = config.get("model", {})
         encoding_mode = model_config.get("encoding_mode", "cross_modal")
 
-        model = SAM3PlacementModel(
+        model = SAMQPlacementModel(
             qwen_model_name=model_config.get(
                 "qwen", {}
             ).get("model_name", "Qwen/Qwen3-VL-8B-Instruct"),

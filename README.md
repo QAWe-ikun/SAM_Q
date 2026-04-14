@@ -349,6 +349,7 @@ SAM-Q/
 |   |   +-- sampling/           # Sampling strategies
 |   |   +-- placement_model.py  # Main model
 |   |
+|   +-- sam3/                    # SAM3 model
 |   +-- data/                    # Data pipeline
 |   +-- train/                   # Training framework
 |   +-- inference/               # Inference utilities
@@ -444,8 +445,8 @@ If you find this work useful in your research, please cite:
 ```bibtex
 @article{samq2026,
   title={SAM-Q: Segment Anything meets Vision-Language Models for Intelligent Object Placement},
-  author={Your Name and Co-Author Name},
-  journal={ACM Transactions on Graphics (SIGGRAPH 2026)},
+  author={Weijia Li},
+  journal={},
   year={2026}
 }
 ```

@@ -14,7 +14,7 @@ from tqdm import tqdm
 import yaml
 from datetime import datetime
 
-from ..models import SAM3PlacementModel, PlacementLoss
+from ..models import SAMQPlacementModel, PlacementLoss
 from .optimizer import create_optimizer, create_scheduler
 from .metrics import compute_metrics
 from ..utils.config import Config
@@ -36,7 +36,7 @@ class Trainer:
     def __init__(
         self,
         config: Dict[str, Any],
-        model: Optional[SAM3PlacementModel] = None,
+        model: Optional[SAMQPlacementModel] = None,
         device: Optional[str] = None,
     ):
         """
@@ -100,12 +100,12 @@ class Trainer:
         self.patience = training_config.get("patience", 20)
         self.patience_counter = 0
 
-    def _init_model(self) -> SAM3PlacementModel:
+    def _init_model(self) -> SAMQPlacementModel:
         """Initialize model from configuration."""
         model_config = self.config.get("model", {})
         encoding_mode = model_config.get("encoding_mode", "cross_modal")
 
-        model = SAM3PlacementModel(
+        model = SAMQPlacementModel(
             qwen_model_name=model_config.get("qwen", {}).get(
                 "model_name", "Qwen/Qwen3-VL-8B-Instruct"
             ),

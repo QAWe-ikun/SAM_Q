@@ -41,10 +41,10 @@ def main():
     print()
 
     # --- Build model ---
-    print("Building SAM3PlacementModel...")
-    from models import SAM3PlacementModel
+    print("Building SAMQPlacementModel...")
+    from models import SAMQPlacementModel
 
-    model = SAM3PlacementModel(
+    model = SAMQPlacementModel(
         qwen_model_name="./models/qwen3_vl",
         sam3_input_dim=256,
         qwen_hidden_dim=4096,

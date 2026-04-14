@@ -12,16 +12,16 @@ Structure:
     - sampling/: Sampling and placement strategies
     
 Main Models:
-    - SAM3PlacementModel: Main placement prediction model
+    - SAMQPlacementModel: Main placement prediction model
     - PlacementLoss: Loss functions for training
     - VLALoss: VLA-specific loss functions
 """
 
-from .placement_model import SAM3PlacementModel, PlacementLoss, VLALoss
+from .placement_model import SAMQPlacementModel, PlacementLoss, VLALoss
 from .action_head import ActionHead, rotation_6d_to_matrix
 
 __all__ = [
-    "SAM3PlacementModel",
+    "SAMQPlacementModel",
     "PlacementLoss",
     "VLALoss",
     "ActionHead",
