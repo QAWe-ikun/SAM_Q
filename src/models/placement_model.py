@@ -1,20 +1,21 @@
 """
 Placement Model - SAM3 with Qwen3-VL for Object Placement Prediction
 
-This module integrates Qwen3-VL as Text Encoder with SAM3 for
-predicting optimal object placement positions.
+Architecture:
+    Qwen3-VL → [SEG] token → 并行输出:
+        ├→ SAM3 Decoder → 摆放位置热力图
+        └→ SEGActionHead → 旋转角度 + 缩放比例
 """
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Tuple
 from PIL import Image
 
 from .encoders.qwen3vl_encoder import Qwen3VLEncoder
 from .adapters import CrossModalAdapter, SegTokenProjector
-from .action_head import ActionHead
-from .vla import UnifiedScaleVLA, SEGActionHead, VLAIterativeRefinement
+from .vla import SEGActionHead, VLAIterativeRefinement
 
 # SAM3 image normalization constants
 _SAM3_MEAN = (0.5, 0.5, 0.5)
@@ -37,15 +38,13 @@ class SAMQPlacementModel(nn.Module):
         sam3_model: Optional[nn.Module] = None,
         qwen_model_name: str = "Qwen/Qwen3-VL-8B-Instruct",
         sam3_input_dim: int = 256,
-        qwen_hidden_dim: int = 4096,  # Qwen3-VL-8B hidden size
+        qwen_hidden_dim: int = 4096,
         adapter_hidden_dim: int = 512,
         num_seg_tokens: int = 1,
         device: Optional[str] = None,
         dtype: torch.dtype = torch.float16,
         seg_token_config: Optional[Dict[str, Any]] = None,
         action_head_config: Optional[Dict[str, Any]] = None,
-        use_vla: bool = False,
-        vla_config: Optional[Dict[str, Any]] = None,
     ):
         """
         Initialize the placement model.
@@ -59,10 +58,8 @@ class SAMQPlacementModel(nn.Module):
             num_seg_tokens: Number of [SEG] tokens. 1=single placement, >1=multi-placement.
             device: Device to run model on
             dtype: Data type for model
-            seg_token_config: Config for SegTokenProjector (when num_seg_tokens > 1)
-            action_head_config: Config dict for ActionHead (None or {"enabled": false} to disable)
-            use_vla: Whether to use VLA mode with [EXEC] token (position + rotation + scale)
-            vla_config: Config for VLA module (pixels_per_meter, heatmap_size, etc.)
+            seg_token_config: Config for [SEG] token (heatmap, rotation, scale)
+            action_head_config: Config for SEGActionHead (rotation + scale)
         """
         super().__init__()
 
@@ -71,7 +68,6 @@ class SAMQPlacementModel(nn.Module):
         self.sam3_input_dim = sam3_input_dim
         self.qwen_hidden_dim = qwen_hidden_dim
         self.num_seg_tokens = num_seg_tokens
-        self.use_vla = use_vla
 
         # Qwen3-VL Encoder (frozen during training)
         self.qwen_encoder = Qwen3VLEncoder(
@@ -81,7 +77,7 @@ class SAMQPlacementModel(nn.Module):
             num_seg_tokens=num_seg_tokens,
         )
 
-        # Adapter: CrossModalAdapter works for both single and multi-SEG
+        # Adapter: [SEG] hidden state → SAM3 prompt embeddings
         self.adapter = CrossModalAdapter(
             qwen_dim=qwen_hidden_dim,
             sam3_dim=sam3_input_dim,
@@ -100,62 +96,42 @@ class SAMQPlacementModel(nn.Module):
                 dropout=seg_cfg.get("dropout", 0.1),
             )
 
+        # SEGActionHead: [SEG] hidden → rotation + scale (parallel to SAM3)
+        ah_cfg = action_head_config or {}
+        heatmap_size = ah_cfg.get("heatmap_size", 64)
+        self.seg_action_head = SEGActionHead(
+            hidden_dim=qwen_hidden_dim,
+            heatmap_size=heatmap_size,
+        )
+
         # SAM3 components (will be loaded lazily)
-        self.sam3_vision_backbone = None   # Sam3DualViTDetNeck
-        self.sam3_transformer = None       # TransformerWrapper (encoder + decoder)
-        self.sam3_seg_head = None          # UniversalSegmentationHead
-        self.sam3_dot_scoring = None       # DotProductScoring
+        self.sam3_vision_backbone = None
+        self.sam3_transformer = None
+        self.sam3_seg_head = None
+        self.sam3_dot_scoring = None
         self.sam3_model = sam3_model
 
-        # Placeholder for SAM3 dimensions
         self._sam3_loaded = False
 
-        # [SEG] token config for inference
+        # [SEG] token config
         self._seg_force_only = seg_token_config.get("force_only_in_training", True) if seg_token_config else True
         self._seg_max_tokens = seg_token_config.get("max_generate_tokens", 128) if seg_token_config else 128
 
-        # VLA mode: unified scale + [EXEC] token for action output
-        self.vla_module = None
+        # Optional iterative refinement
         self.vla_refinement = None
-        if use_vla:
-            vla_cfg = vla_config or {}
-            self.vla_module = UnifiedScaleVLA(
-                pixels_per_meter=vla_cfg.get("pixels_per_meter", 512),
-                model_input_size=vla_cfg.get("model_input_size", 1024),
-                hidden_dim=qwen_hidden_dim,
-                heatmap_size=vla_cfg.get("heatmap_size", 64),
+        if ah_cfg.get("use_iterative_refinement", False):
+            # Note: refinement uses same SEGActionHead, not separate module
+            self.vla_refinement = VLAIterativeRefinement(
+                vla_model=self,
+                max_iterations=ah_cfg.get("max_iterations", 3),
+                adjustment_threshold=ah_cfg.get("adjustment_threshold", 0.01),
             )
-            self.seg_action_head = SEGActionHead(
-                hidden_dim=qwen_hidden_dim,
-                heatmap_size=vla_cfg.get("heatmap_size", 64),
-            )
-            # Optional iterative refinement
-            if vla_cfg.get("use_iterative_refinement", False):
-                self.vla_refinement = VLAIterativeRefinement(
-                    vla_model=self.vla_module,
-                    max_iterations=vla_cfg.get("max_iterations", 3),
-                    adjustment_threshold=vla_cfg.get("adjustment_threshold", 0.01),
-                )
-
-        # Action head (optional, for legacy pose prediction)
-        ah_cfg = action_head_config or {}
-        if ah_cfg.get("enabled", False):
-            self.action_head = ActionHead(
-                input_dim=sam3_input_dim,
-                hidden_dim=ah_cfg.get("hidden_dim", 512),
-            )
-        else:
-            self.action_head = None
 
         # Move trainable components to device
         self.adapter.to(self.device)
+        self.seg_action_head.to(self.device)
         if self.seg_projector is not None:
             self.seg_projector.to(self.device)
-        if self.vla_module is not None:
-            self.vla_module.to(self.device)
-            self.exec_action_head.to(self.device)
-        if self.action_head is not None:
-            self.action_head.to(self.device)
         
     def _load_sam3(self):
         """Lazy load SAM3 model and extract components."""
@@ -213,32 +189,24 @@ class SAMQPlacementModel(nn.Module):
         self.sam3_vision_backbone.eval()
         
     def freeze_all_except_adapter_and_detector(self):
-        """Freeze all components except adapter and detector."""
+        """Freeze all components except adapter, action head, and detector."""
         self.freeze_qwen()
         self.freeze_sam3_image_encoder()
 
-        # Make adapter and detector trainable
+        # Make adapter, action head, and detector trainable
         for param in self.adapter.parameters():
+            param.requires_grad = True
+        for param in self.seg_action_head.parameters():
             param.requires_grad = True
         if self.seg_projector is not None:
             for param in self.seg_projector.parameters():
                 param.requires_grad = True
-
-        # VLA: make action head and exec action head trainable
-        if self.vla_module is not None:
-            # VLA preprocessor is frozen (fixed pixel-meter ratio)
-            for param in self.exec_action_head.parameters():
-                param.requires_grad = True
-
         for param in self.sam3_transformer.parameters():
             param.requires_grad = True
         for param in self.sam3_seg_head.parameters():
             param.requires_grad = True
         for param in self.sam3_dot_scoring.parameters():
             param.requires_grad = True
-        if self.action_head is not None:
-            for param in self.action_head.parameters():
-                param.requires_grad = True
     
     def forward(
         self,
@@ -248,39 +216,55 @@ class SAMQPlacementModel(nn.Module):
         **kwargs,
     ) -> Dict[str, torch.Tensor]:
         """
-        Forward pass for placement prediction.
+        Forward pass: [SEG] token → parallel outputs.
+
+        Qwen3-VL → [SEG] token
+            ├→ SAM3 Decoder → placement heatmap
+            └→ SEGActionHead → rotation + scale
 
         Args:
-            plane_image: Top-down view of the plane/room (for SAM3)
+            plane_image: Top-down view of the room (for SAM3)
             text_prompt: Text instruction with optional <image> placeholders
             images: List of PIL images for Qwen3-VL (e.g., [room_image, object_image])
-            **kwargs: Additional arguments (ignored, for compatibility)
 
         Returns:
-            output dict with masks, text_embeddings, and optional action outputs
+            output dict with:
+                - heatmap: [B, 1, H_heatmap, W_heatmap] placement heatmap
+                - rotation_deg: [B] rotation angle (-180 to 180)
+                - scale_relative: [B] relative scale (0.5 to 2.0)
+                - seg_hidden: [B, 4096] [SEG] token hidden state
         """
         self._load_sam3()
 
         # 1. Encode plane image with SAM3 vision backbone
         backbone_out = self._encode_plane_image(plane_image)
 
-        # 2. Encode images + text with Qwen3-VL + Adapter/Projector → [B, num_queries, 256]
-        text_embeddings = self._encode_qwen_multimodal(text_prompt, images)
+        # 2. Encode images + text with Qwen3-VL → [SEG] hidden state
+        seg_hidden, _ = self.qwen_encoder.generate_with_seg(
+            text_prompt=text_prompt,
+            images=images,
+            max_new_tokens=self._seg_max_tokens,
+            force_only=self._seg_force_only if self.training else False,
+            num_seg=self.num_seg_tokens,
+        )
 
-        # 3. Prepare prompt for SAM3 encoder (seq-first: [seq, B, 256], bfloat16)
+        # === Parallel Branch 1: SAM3 → Heatmap ===
+        # Project [SEG] to SAM3 prompt space
+        seg_3d = seg_hidden.unsqueeze(1)  # [B, 1, 4096]
+        text_embeddings = self.adapter(seg_3d.to(device=self.device, dtype=torch.float32))
+
         prompt = text_embeddings.permute(1, 0, 2).to(dtype=torch.bfloat16)
         prompt_mask = torch.zeros(
             text_embeddings.size(0), text_embeddings.size(1),
             dtype=torch.bool, device=self.device,
         )
 
-        # 4–6: Run SAM3 transformer + segmentation under autocast
         device_type = self.device.split(":")[0] if ":" in self.device else self.device
         with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
-            # 4. SAM3 transformer encoder (num_feature_levels=1, use last scale)
+            # SAM3 transformer encoder
             last_feat = backbone_out["img_feats"][-1]
             last_pos  = backbone_out["img_pos_embeds"][-1]
-            img_feats_seq = [last_feat.flatten(2).permute(2, 0, 1)]  # [H*W, B, C]
+            img_feats_seq = [last_feat.flatten(2).permute(2, 0, 1)]
             img_pos_seq   = [last_pos.flatten(2).permute(2, 0, 1)]
             feat_sizes    = [backbone_out["vis_feat_sizes"][-1]]
 
@@ -294,12 +278,12 @@ class SAMQPlacementModel(nn.Module):
                 feat_sizes=feat_sizes,
             )
 
-            # 5. SAM3 transformer decoder
+            # SAM3 transformer decoder
             B = text_embeddings.size(0)
             query_embed = self.sam3_transformer.decoder.query_embed.weight
             tgt = query_embed.unsqueeze(1).repeat(1, B, 1)
 
-            hs, reference_boxes, _, _ = self.sam3_transformer.decoder(
+            hs, _, _, _ = self.sam3_transformer.decoder(
                 tgt=tgt,
                 memory=memory["memory"],
                 memory_key_padding_mask=memory["padding_mask"],
@@ -312,8 +296,7 @@ class SAMQPlacementModel(nn.Module):
                 apply_dac=False,
             )
 
-            # 6. Segmentation head → masks
-            # hs: [num_layers, num_queries, B, d] — dot_scoring needs [num_layers, B, num_queries, d]
+            # Segmentation head → heatmap
             hs_4d = hs.permute(0, 2, 1, 3)  # [num_layers, B, num_queries, d]
             class_logits = self.sam3_dot_scoring(hs_4d, prompt, prompt_mask)
             masks = self.sam3_seg_head(
@@ -325,22 +308,22 @@ class SAMQPlacementModel(nn.Module):
                 prompt_mask=prompt_mask,
             )
 
-        output = {
-            "masks": masks,
-            "class_logits": class_logits,
-            "text_embeddings": text_embeddings,
+        # Extract heatmap from masks dict
+        if isinstance(masks, dict):
+            heatmap = masks.get("pred_masks", masks.get("semantic_seg"))
+        else:
+            heatmap = masks
+
+        # === Parallel Branch 2: SEGActionHead → rotation + scale ===
+        action_output = self.seg_action_head(seg_hidden)
+
+        return {
+            "heatmap": heatmap,            # [B, num_candidates, H, W] or [B, 1, H, W]
+            "rotation_deg": action_output["rotation"],   # [B]
+            "scale_relative": action_output["scale"],    # [B]
+            "seg_hidden": seg_hidden,      # [B, 4096]
+            "class_logits": class_logits,  # [num_layers, B, num_queries, 1]
         }
-
-        # 7. Action head (optional)
-        if self.action_head is not None:
-            action_output = self.action_head(text_embeddings)
-            output.update({
-                "scale": action_output["scale"],
-                "rotation_6d": action_output["rotation_6d"],
-                "rotation_matrix": action_output["rotation_matrix"],
-            })
-
-        return output
 
     def _encode_plane_image(self, image: Image.Image) -> Dict:
         """Encode plane image using SAM3 vision backbone."""
@@ -369,195 +352,91 @@ class SAMQPlacementModel(nn.Module):
             "vis_feat_sizes": vis_feat_sizes,
         }
 
-    def _encode_qwen_multimodal(
-        self,
-        text: str,
-        images: Optional[List[Image.Image]] = None,
-    ) -> torch.Tensor:
-        """Encode image(s) and text using Qwen3-VL [SEG] token + Adapter.
-
-        Qwen3-VL first reasons/generates text, then outputs [SEG].
-        The [SEG] hidden state contains the full reasoning via self-attention.
-        Then we project it to SAM3 prompt space.
-
-        num_seg_tokens=1:  CrossModalAdapter [B, 1, 4096] -> [B, 64, 256]
-        num_seg_tokens>1:  CrossModalAdapter [B, n, 4096] -> [B, n, 256]
-                          (optional SegTokenProjector for expansion)
-        """
-        force_only = self._seg_force_only if self.training else False
-        seg_hidden, _ = self.qwen_encoder.generate_with_seg(
-            text_prompt=text,
-            images=images,
-            max_new_tokens=self._seg_max_tokens,
-            force_only=force_only,
-            num_seg=self.num_seg_tokens,
-        )
-
-        if self.num_seg_tokens == 1:
-            # [B, 4096] -> [B, 1, 4096] -> CrossModalAdapter -> [B, 64, 256]
-            seg_3d = seg_hidden.unsqueeze(1)
-            return self.adapter(seg_3d.to(device=self.device, dtype=torch.float32))
-
-        # Multi-SEG: [B, n, 4096] -> Adapter/Projector -> [B, n, 256]
-        seg_hidden_fp32 = seg_hidden.to(device=self.device, dtype=torch.float32)
-        if self.seg_projector is not None:
-            return self.seg_projector(seg_hidden_fp32)
-        
-        return self.adapter(seg_hidden_fp32)
-
     def predict(
         self,
         plane_image: Image.Image,
         text_prompt: str,
         images: Optional[List[Image.Image]] = None,
+        scene_size_meters: float = 4.0,
         threshold: float = 0.5,
         top_k: int = 10,
     ) -> Dict[str, Any]:
         """
-        Inference method for placement prediction.
+        Inference: placement heatmap + rotation + scale.
 
         Args:
-            plane_image: Plane/room top-down view (for SAM3)
+            plane_image: Plane/room top-down view
             text_prompt: Placement instruction with optional <image> placeholders
             images: List of PIL images for Qwen3-VL
-            threshold: Confidence threshold for masks
-            top_k: Number of top-scoring masks to upsample (memory optimization)
+            scene_size_meters: Scene physical size in meters (for position conversion)
+            threshold: Confidence threshold for heatmap
+            top_k: Number of top placement candidates
 
         Returns:
-            results: Dictionary with masks, boxes, scores
+            results: Dictionary with position_meters, rotation_deg, scale_relative, heatmap
         """
         self.eval()
 
         with torch.no_grad():
             output = self.forward(plane_image, text_prompt, images=images)
 
-        # Extract mask tensor (SAM3 seg_head returns a dict)
-        masks = output.get("masks")
-        if isinstance(masks, dict):
-            masks = masks.get("pred_masks", masks.get("semantic_seg"))
-        if masks is None:
-            raise ValueError("No masks found in model output")
+        heatmap = output["heatmap"]
 
-        # Compute scores and select top-k (memory optimization)
-        scores = masks.amax(dim=(2, 3))  # [B, num_candidates]
-        top_k = min(top_k, scores.shape[1])
-        top_indices = scores.topk(top_k, dim=1).indices  # [B, top_k]
-
-        # Only upsample top-k masks
-        batch_idx = torch.arange(masks.size(0), device=masks.device).unsqueeze(1)
-        selected_masks = masks[batch_idx, top_indices]  # [B, top_k, H, W]
-
-        orig_size = plane_image.size[::-1]  # (H, W) from (W, H)
-        if selected_masks.shape[-2:] != orig_size:
-            selected_masks = F.interpolate(
-                selected_masks,
+        # Upsample heatmap to original plane_image size
+        orig_size = plane_image.size[::-1]  # (H, W)
+        if heatmap.shape[-2:] != orig_size:
+            heatmap = F.interpolate(
+                heatmap,
                 size=orig_size,
                 mode="bilinear",
                 align_corners=False,
             )
 
-        # Apply threshold
-        binary_masks = (selected_masks > threshold).float()
+        # Apply threshold and get top-k
+        binary_heatmap = (heatmap > threshold).float()
+        scores = heatmap.amax(dim=(2, 3))  # [B, num_candidates]
+        top_k = min(top_k, scores.shape[1])
+        top_indices = scores.topk(top_k, dim=1).indices
 
-        # Extract boxes and scores
-        boxes = self._masks_to_boxes(binary_masks)
-        final_scores = selected_masks.amax(dim=(2, 3))
+        # Position in meters
+        H, W = orig_size
+        y_norm, x_norm = self._soft_argmax2d(heatmap)
+        x_meters = x_norm * scene_size_meters
+        y_meters = y_norm * scene_size_meters
 
         return {
-            "masks": binary_masks,
-            "boxes": boxes,
-            "scores": final_scores,
+            "position_meters": torch.stack([x_meters, y_meters], dim=-1),
+            "position_norm": torch.stack([x_norm, y_norm], dim=-1),
+            "rotation_deg": output["rotation_deg"],
+            "scale_relative": output["scale_relative"],
+            "heatmap": heatmap,
+            "binary_heatmap": binary_heatmap,
+            "top_k_indices": top_indices,
+            "top_k_scores": scores.gather(1, top_indices),
         }
 
-    def predict_vla(
-        self,
-        obj_image: Image.Image,
-        obj_size_meters: float,
-        scene_image: Image.Image,
-        scene_size_meters: float,
-        text_prompt: str,
-        current_pose: Optional[Dict[str, float]] = None,
-    ) -> Dict[str, Any]:
+    def _soft_argmax2d(self, heatmap: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        VLA mode prediction: position + rotation + scale.
-
-        Uses unified pixel-meter encoding so VLM naturally understands
-        physical scale through image resolution.
+        Compute soft argmax of 2D heatmap.
 
         Args:
-            obj_image: Object top-down view
-            obj_size_meters: Object physical size in meters (e.g., 0.5 for 50cm chair)
-            scene_image: Scene top-down view
-            scene_size_meters: Scene physical size in meters (e.g., 4.0 for 4m room)
-            text_prompt: Placement instruction
-            current_pose: Current pose for iterative refinement (optional)
+            heatmap: [B, num_candidates, H, W] or [B, 1, H, W]
 
         Returns:
-            results: Dictionary with position_meters, rotation_deg, scale_relative, heatmap
+            y_norm, x_norm: Normalized coordinates [0, 1]
         """
-        if not self.use_vla:
-            raise RuntimeError("VLA mode not enabled. Set use_vla=True when creating model.")
+        B = heatmap.size(0)
+        # Merge num_candidates dimension
+        H, W = heatmap.shape[-2:]
+        probs = heatmap.view(B, -1).softmax(dim=-1).view(B, 1, H, W)
 
-        self.eval()
+        y_grid = torch.linspace(0, 1, H, device=heatmap.device).view(1, 1, H, 1).expand(B, 1, -1, W)
+        x_grid = torch.linspace(0, 1, W, device=heatmap.device).view(1, 1, 1, W).expand(B, 1, H, -1)
 
-        with torch.no_grad():
-            if self.vla_refinement is not None and current_pose is not None:
-                # Iterative refinement
-                result = self.vla_refinement(
-                    obj_image, obj_size_meters, scene_image, scene_size_meters,
-                    text_prompt, current_pose,
-                )
-                return result["final_pose"]
+        y_norm = (probs * y_grid).sum(dim=[1, 2, 3])
+        x_norm = (probs * x_grid).sum(dim=[1, 2, 3])
 
-            # Single pass
-            preprocessed = self.vla_module(
-                obj_image, obj_size_meters, scene_image, scene_size_meters, text_prompt
-            )
-
-            # Get [EXEC] token hidden state
-            exec_hidden = self.qwen_encoder.extract_exec_hidden(
-                text_prompt=text_prompt,
-                images=preprocessed["images"],
-            )
-
-            # Decode action
-            action = self.exec_action_head(exec_hidden)
-
-            # Convert to physical coordinates
-            heatmap = action["heatmap"]
-            y_norm, x_norm = self.vla_module._soft_argmax2d(heatmap)
-
-            x_meters = x_norm * scene_size_meters
-            y_meters = y_norm * scene_size_meters
-
-            return {
-                "position_meters": torch.stack([x_meters, y_meters], dim=-1),
-                "position_norm": torch.stack([x_norm, y_norm], dim=-1),
-                "rotation_deg": action["rotation"],
-                "scale_relative": action["scale"],
-                "heatmap": heatmap,
-            }
-    
-    def _masks_to_boxes(self, masks: torch.Tensor) -> torch.Tensor:
-        """Convert masks to bounding boxes."""
-        # Find bounding boxes from binary masks
-        # Shape: (batch, num_masks, 4) - (x1, y1, x2, y2)
-        boxes = []
-        for i, mask in enumerate(masks):
-            coords = torch.nonzero(mask)  # [N, 3] → (mask_idx, y, x)
-            if len(coords) > 0:
-                # Skip mask index, get y and x bounds
-                y_coords = coords[:, 1]
-                x_coords = coords[:, 2]
-                y_min, y_max = y_coords.min().item(), y_coords.max().item()
-                x_min, x_max = x_coords.min().item(), x_coords.max().item()
-                boxes.append(torch.tensor([x_min, y_min, x_max, y_max], device=masks.device))
-            else:
-                boxes.append(torch.zeros(4, device=masks.device))
-
-        return torch.stack(boxes) if boxes else torch.zeros(
-            masks.size(0), masks.size(1), 4, device=masks.device
-        )
+        return y_norm, x_norm
 
 
 class PlacementLoss(nn.Module):
