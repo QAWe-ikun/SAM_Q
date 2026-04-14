@@ -91,24 +91,18 @@ class Qwen3VLEncoder(nn.Module):
             cfg = self.model.config
             self._output_dim = getattr(cfg, "hidden_size", None) or cfg.text_config.hidden_size
 
-            # Register [SEG] special tokens for SA2VA-style bridging
-            # Single [SEG] for backward compatibility
-            self.processor.tokenizer.add_special_tokens(
-                {"additional_special_tokens": ["[SEG]"]}
-            )
-            self.seg_token_id = self.processor.tokenizer.convert_tokens_to_ids("[SEG]")
-
-            # Multi [SEG0]~[SEG63] for SA2VA-style training
+            # Register [SEG0]~[SEG{n-1}] tokens for SA2VA-style bridging
+            # When num_seg_tokens=1, registers only [SEG0] as the default SEG token
             seg_tokens = [f"[SEG{i}]" for i in range(self.num_seg_tokens)]
             self.processor.tokenizer.add_tokens(seg_tokens)
             self.model.resize_token_embeddings(len(self.processor.tokenizer))
             self.seg_token_ids = [
                 self.processor.tokenizer.convert_tokens_to_ids(t) for t in seg_tokens
             ]
+            self.seg_token_id = self.seg_token_ids[0]  # First SEG token as default
 
-            print(f"[Qwen3VLEncoder] Registered {self.num_seg_tokens} SEG tokens")
-            print(f"[Qwen3VLEncoder] Single [SEG] ID: {self.seg_token_id}")
-            print(f"[Qwen3VLEncoder] Multi [SEG0~SEG63] IDs: {self.seg_token_ids[:3]}...{self.seg_token_ids[-1]}")
+            print(f"[Qwen3VLEncoder] Registered {self.num_seg_tokens} SEG token(s): {seg_tokens}")
+            print(f"[Qwen3VLEncoder] Default [SEG] ID: {self.seg_token_id}")
 
         except ImportError as e:
             raise ImportError(
