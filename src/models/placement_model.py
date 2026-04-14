@@ -205,17 +205,18 @@ class SAMQPlacementModel(nn.Module):
     def forward(
         self,
         plane_image: Image.Image,
-        object_image: Image.Image,
         text_prompt: str,
+        images: Optional[List[Image.Image]] = None,
         **kwargs,
     ) -> Dict[str, torch.Tensor]:
         """
         Forward pass for placement prediction.
 
         Args:
-            plane_image: Top-down view of the plane/room
-            object_image: Top-down view of the object (for Qwen3-VL)
-            text_prompt: Text instruction for placement
+            plane_image: Top-down view of the plane/room (for SAM3)
+            text_prompt: Text instruction with optional <image> placeholders
+            images: List of PIL images for Qwen3-VL (e.g., [room_image, object_image])
+            **kwargs: Additional arguments (ignored, for compatibility)
 
         Returns:
             output dict with masks, text_embeddings, and optional action outputs
@@ -225,8 +226,8 @@ class SAMQPlacementModel(nn.Module):
         # 1. Encode plane image with SAM3 vision backbone
         backbone_out = self._encode_plane_image(plane_image)
 
-        # 2. Encode object + text with Qwen3-VL + Adapter → [B, num_queries, 256]
-        text_embeddings = self._encode_object_and_text(object_image, text_prompt)
+        # 2. Encode images + text with Qwen3-VL + Adapter/Projector → [B, num_queries, 256]
+        text_embeddings = self._encode_qwen_multimodal(text_prompt, images)
 
         # 3. Prepare prompt for SAM3 encoder (seq-first: [seq, B, 256], bfloat16)
         prompt = text_embeddings.permute(1, 0, 2).to(dtype=torch.bfloat16)
@@ -330,24 +331,24 @@ class SAMQPlacementModel(nn.Module):
             "vis_feat_sizes": vis_feat_sizes,
         }
 
-    def _encode_object_and_text(
+    def _encode_qwen_multimodal(
         self,
-        object_image: Image.Image,
         text: str,
+        images: Optional[List[Image.Image]] = None,
     ) -> torch.Tensor:
-        """Encode object image and text using Qwen3-VL + Adapter/Projector."""
+        """Encode image(s) and text using Qwen3-VL + Adapter/Projector."""
         if self.mode == "cross_modal":
             qwen_embeddings = self.qwen_encoder(
-                object_image=object_image,
                 text_prompt=text,
+                images=images,
             )
             return self.adapter(qwen_embeddings.to(device=self.device, dtype=torch.float32))
 
         # seg_token mode
         force_only = self._seg_force_only if self.training else False
         seg_hidden, _ = self.qwen_encoder.generate_with_seg(
-            object_image=object_image,
             text_prompt=text,
+            images=images,
             max_new_tokens=self._seg_max_tokens,
             force_only=force_only,
         )
@@ -356,26 +357,26 @@ class SAMQPlacementModel(nn.Module):
     def predict(
         self,
         plane_image: Image.Image,
-        object_image: Image.Image,
         text_prompt: str,
+        images: Optional[List[Image.Image]] = None,
         threshold: float = 0.5,
     ) -> Dict[str, Any]:
         """
         Inference method for placement prediction.
-        
+
         Args:
-            plane_image: Plane/room top-down view
-            object_image: Object top-down view
-            text_prompt: Placement instruction
+            plane_image: Plane/room top-down view (for SAM3)
+            text_prompt: Placement instruction with optional <image> placeholders
+            images: List of PIL images for Qwen3-VL
             threshold: Confidence threshold for masks
-            
+
         Returns:
             results: Dictionary with masks, boxes, scores
         """
         self.eval()
-        
+
         with torch.no_grad():
-            output = self.forward(plane_image, object_image, text_prompt)
+            output = self.forward(plane_image, text_prompt, images=images)
         
         masks = output["masks"]
         
