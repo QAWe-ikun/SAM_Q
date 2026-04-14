@@ -1,21 +1,22 @@
 # ============================================================================
 # SAM-Q VLA Configuration (Unified Scale VLA)
 # ============================================================================
-# Uses unified pixel-meter encoding + [EXEC] token for action output.
-# Qwen3-VL reasons first, then outputs [EXEC] token.
-# [EXEC] hidden state → position (heatmap) + rotation + scale
+# Uses unified pixel-meter encoding + [SEG] token for action output.
+# [SEG] serves dual purpose: segmentation + action output (position + rotation + scale)
+# Qwen3-VL reasons first, then outputs [SEG] token.
+# [SEG] hidden state → position (heatmap) + rotation + scale
 # ============================================================================
 
 _base_: "base.yaml"
 
 experiment:
   name: "samq_vla_unified_scale"
-  description: "SAM-Q with Unified Scale VLA and [EXEC] token action output"
+  description: "SAM-Q with Unified Scale VLA using [SEG] token for action output"
 
-# VLA mode: replaces standard SEG token approach
+# VLA mode: uses [SEG] token for both segmentation and action output
 model:
   use_vla: true
-  num_seg_tokens: 1  # Still use single [SEG] for segmentation if needed
+  num_seg_tokens: 1  # Single [SEG] serves dual purpose
 
   # VLA configuration
   vla:
@@ -26,7 +27,7 @@ model:
     max_iterations: 3               # Max refinement steps
     adjustment_threshold: 0.01      # Meters - stop when adjustment < this
 
-  # [EXEC] token config
+  # [SEG] token config (used for both segmentation and action)
   seg_token:
     hidden_dim: 512
     num_output_tokens: 64

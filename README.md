@@ -29,7 +29,7 @@
 
 - **Language-Guided Placement**: Natural language instructions control placement semantics
 - **[SEG] Token Bridging (SA2VA-style)**: Special `[SEG]` tokens bridge Qwen3-VL reasoning to SAM3 segmentation; hidden states dynamically computed via self-attention over image + text context
-- **[EXEC] Token Action Output (VLA)**: Single token outputs position (heatmap), rotation, and scale; unified pixel-meter encoding lets VLM naturally understand physical scale
+- **[SEG] Token Action Output (VLA)**: Same `[SEG]` token also outputs position (heatmap), rotation, and scale; unified pixel-meter encoding lets VLM naturally understand physical scale
 - **Cross-Modal Fusion**: Novel adapter architecture bridges Qwen3-VL (4096D) and SAM3 (256D) embedding spaces
 - **LoRA/QLoRA Fine-Tuning**: Parameter-efficient tuning with multi-SEG token support; trainable <0.1% of Qwen3-VL parameters
 - **Hierarchical Collision Detection**: H-MVP (Hierarchical Multi-View Projection) enables 3D-aware placement
@@ -145,7 +145,7 @@
 - **Key Design**:
   - Unified pixel-meter encoding: `pixels_per_meter=512` (1 pixel = 2mm)
   - VLM naturally understands scale through image resolution
-  - [EXEC] token serves dual purpose: image understanding + action output
+  - `[SEG]` token serves dual purpose: segmentation trigger + action output
   - Supports iterative refinement: feed back placed scene for adjustment
 - **Implementation**: `src/models/vla/unified_scale_vla.py`
 

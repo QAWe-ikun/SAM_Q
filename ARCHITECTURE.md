@@ -322,7 +322,7 @@ All images use same pixels_per_meter (512):
 VLM sees: "object is small, scene is large" → natural scale understanding
 ```
 
-**Output**: Single [EXEC] token → position (heatmap) + rotation + scale
+**Output**: Single [SEG] token → position (heatmap) + rotation + scale
 
 **Interface**:
 ```python
@@ -348,6 +348,10 @@ refinement = VLAIterativeRefinement(
     adjustment_threshold=0.01,  # meters
 )
 ```
+
+**[SEG] Token Dual Purpose**:
+- **Segmentation**: Triggers SAM3 mask generation
+- **Action Output**: Decoded to position + rotation + scale via `SEGActionHead`
 
 #### IncrementalHMVPMemory
 
@@ -468,9 +472,9 @@ base.yaml (all defaults)
     |
 hmvp.yaml (enable H-MVP)
     |
-incremental_vla.yaml (enable incremental VLA)
+incremental_vla.yaml (enable incremental VLA memory)
     |
-vla.yaml (enable VLA action output: position + rotation + scale)
+vla.yaml (enable VLA action output: position + rotation + scale via [SEG] token)
 ```
 
 ### Key Sections
@@ -561,7 +565,7 @@ SAM-Q/
 |   |-- hmvp.yaml               # H-MVP collision detection
 |   |-- incremental_vla.yaml    # Incremental VLA memory
 |   |-- seg_token.yaml          # Multi-SEG token mode
-|   +-- vla.yaml                # VLA action output (position+rotation+scale)
+|   +-- vla.yaml                # VLA action output via [SEG] token
 |
 |-- src/
 |   |-- models/                  # Model architectures
