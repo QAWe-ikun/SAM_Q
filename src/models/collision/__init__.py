@@ -11,8 +11,19 @@ from .hmvp_collision_detector import (
     DifferentiableHMVPOperations,
 )
 
+from .incremental_hmvp import (
+    IncrementalHMVPMemory,
+    IncrementalVLAActionPolicy,
+    IncrementalSpatialReasoner,
+    SAM2QVLAIncremental,
+)
+
 __all__ = [
     "HMVPCollisionDetector",
     "HierarchicalDepthMap",
     "DifferentiableHMVPOperations",
+    "IncrementalHMVPMemory",
+    "IncrementalVLAActionPolicy",
+    "IncrementalSpatialReasoner",
+    "SAM2QVLAIncremental",
 ]
