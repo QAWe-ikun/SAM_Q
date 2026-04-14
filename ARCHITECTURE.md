@@ -630,8 +630,7 @@ SAM-Q/
 |   +-- test_data/
 |
 |-- scripts/                     # Helper scripts
-|   |-- download_data.sh
-|   +-- evaluate.py
+|   +-- download_data.sh
 |
 |-- main.py                      # CLI entry point
 |-- README.md                    # Documentation
