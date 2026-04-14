@@ -1,17 +1,19 @@
 # ============================================================================
-# SAM-Q Base Configuration
+# SAM-Q Configuration
 # ============================================================================
-# This is the base configuration file for SAM-Q object placement system.
-# All paths and parameters are documented here for reproducibility.
+# Unified config for SAM-Q object placement system.
+# [SEG] token → parallel outputs:
+#   ├→ SAM3 Decoder    → placement heatmap (position)
+#   └→ SEGActionHead   → rotation_6d + rotation_matrix + scale_relative
 # ============================================================================
 
 # ----------------------------------------------------------------------------
 # Experiment Metadata
 # ----------------------------------------------------------------------------
 experiment:
-  name: "samq_base"
+  name: "samq"
   seed: 42
-  description: "Base configuration for SAM-Q object placement"
+  description: "SAM-Q object placement with parallel heatmap + rotation + scale"
 
 # ----------------------------------------------------------------------------
 # Data Configuration
@@ -21,11 +23,11 @@ data:
   train_split: "train"
   val_split: "val"
   test_split: "test"
-  
+
   # Image preprocessing
-  plane_image_size: [1024, 1024]  # Room top-down view
-  object_image_size: [512, 512]   # Object top-down view
-  
+  plane_image_size: [1024, 1024]
+  object_image_size: [1024, 1024]
+
   # DataLoader settings
   batch_size: 4
   num_workers: 4
@@ -36,7 +38,7 @@ data:
 # Model Architecture
 # ----------------------------------------------------------------------------
 model:
-  # Number of [SEG] tokens: 1=single placement, >1=multi-placement
+  # [SEG] tokens: 1=single placement, >1=multi-placement
   num_seg_tokens: 1
 
   # Qwen3-VL Encoder
@@ -44,7 +46,7 @@ model:
     model_name: "./models/qwen3_vl"
     hidden_dim: 4096
     freeze: true
-    attn_implementation: "flash_attention_2"  # or "eager"
+    attn_implementation: "flash_attention_2"
 
   # SAM3 Components
   sam3:
@@ -53,40 +55,31 @@ model:
     freeze_image_encoder: true
     freeze_detector: false
 
-  # Adapter (used for both single and multi-SEG)
+  # Adapter
   adapter:
-    type: "cross_modal"  # Options: "base", "cross_modal", "presence_token"
+    type: "cross_modal"
     hidden_dim: 512
     num_queries: 64
     dropout: 0.1
 
-  # [SEG] Token Projector (only used when num_seg_tokens > 1)
+  # [SEG] Token config
   seg_token:
-    hidden_dim: 512
-    num_output_tokens: 64
     max_generate_tokens: 128
     dropout: 0.1
     force_only_in_training: true
 
-  # Action Head (VLA pose prediction with 6D rotation)
+  # SEGActionHead (rotation + scale)
   action_head:
-    enabled: false
-    hidden_dim: 512
+    heatmap_size: 64
 
 # ----------------------------------------------------------------------------
 # Loss Configuration
 # ----------------------------------------------------------------------------
 loss:
-  type: "placement"  # Options: "placement", "vla"
-  
-  # Placement loss weights
-  dice_weight: 1.0
-  bce_weight: 1.0
-  
-  # VLA loss weights (only used when type is "vla")
+  type: "vla"
   heatmap_weight: 1.0
-  collision_weight: 0.5
-  semantic_weight: 0.3
+  rotation_6d_weight: 0.5
+  scale_weight: 0.3
 
 # ----------------------------------------------------------------------------
 # Optimizer Configuration
@@ -114,19 +107,19 @@ scheduler:
 training:
   num_epochs: 100
   device: "cuda"
-  
+
   # Checkpointing
   save_dir: "outputs/"
-  save_interval: 10  # Save every N epochs
-  save_best: true    # Save best model based on validation loss
-  
+  save_interval: 10
+  save_best: true
+
   # Logging
-  log_interval: 10   # Log every N batches
+  log_interval: 10
   use_wandb: false
   wandb_project: "sam-q"
-  
+
   # Validation
-  val_interval: 1    # Validate every N epochs
+  val_interval: 1
   early_stopping: false
   patience: 20
 
@@ -134,11 +127,10 @@ training:
 # Inference Configuration
 # ----------------------------------------------------------------------------
 inference:
-  checkpoint_path: null  # Path to model checkpoint
-  threshold: 0.5         # Confidence threshold
+  checkpoint_path: null
+  threshold: 0.5
   device: "cuda"
-  
-  # Output settings
+
   save_visualizations: true
   save_json: true
   output_dir: "results/"
@@ -147,15 +139,16 @@ inference:
 # Advanced Modules (Optional)
 # ----------------------------------------------------------------------------
 advanced:
-  # H-MVP Collision Detector
+  # H-MVP Collision Detector (for exact 3D position from heatmap)
   hmvp:
     enabled: false
     max_level: 4
     base_resolution: 8
     early_out_threshold: 0.1
-  
-  # Incremental VLA Memory
-  incremental_vla:
+
+  # Incremental H-MVP Memory (multi-step placement)
+  incremental_hmvp:
     enabled: false
     update_threshold: 0.3
     max_objects: 50
+
