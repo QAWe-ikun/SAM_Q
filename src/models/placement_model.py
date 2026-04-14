@@ -357,23 +357,21 @@ class SAMQPlacementModel(nn.Module):
         plane_image: Image.Image,
         text_prompt: str,
         images: Optional[List[Image.Image]] = None,
-        scene_size_meters: float = 4.0,
         threshold: float = 0.5,
-        top_k: int = 10,
     ) -> Dict[str, Any]:
         """
         Inference: placement heatmap + rotation + scale.
+        
+        Note: Exact position is determined by H-MVP from the heatmap.
 
         Args:
             plane_image: Plane/room top-down view
             text_prompt: Placement instruction with optional <image> placeholders
             images: List of PIL images for Qwen3-VL
-            scene_size_meters: Scene physical size in meters (for position conversion)
             threshold: Confidence threshold for heatmap
-            top_k: Number of top placement candidates
 
         Returns:
-            results: Dictionary with position_meters, rotation_deg, scale_relative, heatmap
+            results: Dictionary with heatmap, rotation_deg, scale_relative
         """
         self.eval()
 
@@ -392,27 +390,14 @@ class SAMQPlacementModel(nn.Module):
                 align_corners=False,
             )
 
-        # Apply threshold and get top-k
+        # Apply threshold
         binary_heatmap = (heatmap > threshold).float()
-        scores = heatmap.amax(dim=(2, 3))  # [B, num_candidates]
-        top_k = min(top_k, scores.shape[1])
-        top_indices = scores.topk(top_k, dim=1).indices
-
-        # Position in meters
-        H, W = orig_size
-        y_norm, x_norm = self._soft_argmax2d(heatmap)
-        x_meters = x_norm * scene_size_meters
-        y_meters = y_norm * scene_size_meters
 
         return {
-            "position_meters": torch.stack([x_meters, y_meters], dim=-1),
-            "position_norm": torch.stack([x_norm, y_norm], dim=-1),
-            "rotation_deg": output["rotation_deg"],
-            "scale_relative": output["scale_relative"],
             "heatmap": heatmap,
             "binary_heatmap": binary_heatmap,
-            "top_k_indices": top_indices,
-            "top_k_scores": scores.gather(1, top_indices),
+            "rotation_deg": output["rotation_deg"],
+            "scale_relative": output["scale_relative"],
         }
 
     def _soft_argmax2d(self, heatmap: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
