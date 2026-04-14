@@ -91,15 +91,20 @@ class Qwen3VLEncoder(nn.Module):
             cfg = self.model.config
             self._output_dim = getattr(cfg, "hidden_size", None) or cfg.text_config.hidden_size
 
-            # Register [SEG0]~[SEG{n-1}] tokens for SA2VA-style bridging
-            # When num_seg_tokens=1, registers only [SEG0] as the default SEG token
-            seg_tokens = [f"[SEG{i}]" for i in range(self.num_seg_tokens)]
+            # Register [SEG] token(s) for SA2VA-style bridging
+            # num_seg_tokens=1 → registers [SEG] (single mode)
+            # num_seg_tokens>1 → registers [SEG0]~[SEG{n-1}] (multi mode)
+            if self.num_seg_tokens == 1:
+                seg_tokens = ["[SEG]"]
+            else:
+                seg_tokens = [f"[SEG{i}]" for i in range(self.num_seg_tokens)]
+
             self.processor.tokenizer.add_tokens(seg_tokens)
             self.model.resize_token_embeddings(len(self.processor.tokenizer))
             self.seg_token_ids = [
                 self.processor.tokenizer.convert_tokens_to_ids(t) for t in seg_tokens
             ]
-            self.seg_token_id = self.seg_token_ids[0]  # First SEG token as default
+            self.seg_token_id = self.seg_token_ids[0]
 
             print(f"[Qwen3VLEncoder] Registered {self.num_seg_tokens} SEG token(s): {seg_tokens}")
             print(f"[Qwen3VLEncoder] Default [SEG] ID: {self.seg_token_id}")
