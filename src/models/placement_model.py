@@ -14,7 +14,7 @@ from PIL import Image
 from .encoders.qwen3vl_encoder import Qwen3VLEncoder
 from .adapters import CrossModalAdapter, SegTokenProjector
 from .action_head import ActionHead
-from .vla import UnifiedScaleVLA, EXECActionHead, VLAIterativeRefinement
+from .vla import UnifiedScaleVLA, SEGActionHead, VLAIterativeRefinement
 
 # SAM3 image normalization constants
 _SAM3_MEAN = (0.5, 0.5, 0.5)
@@ -125,7 +125,7 @@ class SAMQPlacementModel(nn.Module):
                 hidden_dim=qwen_hidden_dim,
                 heatmap_size=vla_cfg.get("heatmap_size", 64),
             )
-            self.exec_action_head = EXECActionHead(
+            self.seg_action_head = SEGActionHead(
                 hidden_dim=qwen_hidden_dim,
                 heatmap_size=vla_cfg.get("heatmap_size", 64),
             )

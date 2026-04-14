@@ -10,9 +10,9 @@ physical scale through image resolution, without explicit size injection.
 - Scene scaled similarly
 - VLM sees: "object is X pixels, scene is Y pixels" → natural scale understanding
 
-Uses a single [EXEC] token that serves as both:
-  - Image understanding token (replaces [SEG])
-  - Action token (position + rotation + scale output)
+Uses [SEG] token for dual purpose:
+  - Segmentation: triggers SAM3 mask generation
+  - Action output: position (heatmap) + rotation + scale
 """
 
 import torch
@@ -76,9 +76,9 @@ class UnifiedScalePreprocessor(nn.Module):
         return obj_scaled, scene_scaled
 
 
-class EXECActionHead(nn.Module):
+class SEGActionHead(nn.Module):
     """
-    Action head that decodes [EXEC] token hidden state into:
+    Action head that decodes [SEG] token hidden state into:
       - Coarse placement heatmap (position)
       - Rotation angle (degrees, -180 to 180)
       - Relative scale (1.0 = original size, 0.5-2.0 range)
@@ -93,7 +93,7 @@ class EXECActionHead(nn.Module):
         self.hidden_dim = hidden_dim
         self.heatmap_size = heatmap_size
 
-        # Project [EXEC] hidden to action features
+        # Project [SEG] hidden to action features
         self.proj = nn.Sequential(
             nn.Linear(hidden_dim, 512),
             nn.LayerNorm(512),
@@ -118,16 +118,16 @@ class EXECActionHead(nn.Module):
         )
 
     def forward(
-        self, exec_hidden: torch.Tensor
+        self, seg_hidden: torch.Tensor
     ) -> Dict[str, torch.Tensor]:
         """
         Args:
-            exec_hidden: [B, hidden_dim] hidden state at [EXEC] position
+            seg_hidden: [B, hidden_dim] hidden state at [SEG] position
 
         Returns:
             Dict with heatmap, rotation, scale
         """
-        features = self.proj(exec_hidden)  # [B, 512]
+        features = self.proj(seg_hidden)  # [B, 512]
 
         # Heatmap: [B, heatmap_size, heatmap_size]
         heatmap = self.heatmap_head(features).view(
@@ -153,10 +153,10 @@ class UnifiedScaleVLA(nn.Module):
 
     Architecture:
         Object (scaled to physical size) ──┐
-                                           ├→ Qwen3-VL → [EXEC] token → Action Head
+                                           ├→ Qwen3-VL → [SEG] token → Action Head
         Scene  (scaled to physical size) ──┘
 
-    The [EXEC] token's hidden state contains the full reasoning about:
+    The [SEG] token's hidden state contains the full reasoning about:
       - Where to place (decoded to heatmap)
       - How to rotate (decoded to angle)
       - How to scale (decoded to relative size)
@@ -178,17 +178,10 @@ class UnifiedScaleVLA(nn.Module):
             model_input_size=model_input_size,
         )
 
-        self.action_head = EXECActionHead(
+        self.action_head = SEGActionHead(
             hidden_dim=hidden_dim,
             heatmap_size=heatmap_size,
         )
-
-        # Register [EXEC] token ID (set after encoder loading)
-        self.exec_token_id: Optional[int] = None
-
-    def register_exec_token(self, token_id: int):
-        """Register the [EXEC] token ID from tokenizer."""
-        self.exec_token_id = token_id
 
     def forward(
         self,
@@ -236,19 +229,19 @@ class UnifiedScaleVLA(nn.Module):
         }
 
     def decode_action(
-        self, exec_hidden: torch.Tensor, scene_size_meters: float
+        self, seg_hidden: torch.Tensor, scene_size_meters: float
     ) -> Dict[str, torch.Tensor]:
         """
-        Decode [EXEC] hidden state into physical actions.
+        Decode [SEG] hidden state into physical actions.
 
         Args:
-            exec_hidden: [B, hidden_dim] from Qwen3-VL at [EXEC] position
+            seg_hidden: [B, hidden_dim] from Qwen3-VL at [SEG] position
             scene_size_meters: Scene physical size in meters
 
         Returns:
             Dict with position_meters, rotation_deg, scale_relative
         """
-        action = self.action_head(exec_hidden)
+        action = self.action_head(seg_hidden)
 
         # Convert heatmap to position (normalized [0,1])
         heatmap = action["heatmap"]  # [B, H, W]
