@@ -8,11 +8,11 @@ predicting optimal object placement positions.
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Optional, Dict, Any, Tuple, List
+from typing import Optional, Dict, Any, List
 from PIL import Image
 
 from .encoders.qwen3vl_encoder import Qwen3VLEncoder
-from .adapters import Adapter, CrossModalAdapter, SegTokenProjector
+from .adapters import CrossModalAdapter, SegTokenProjector
 from .action_head import ActionHead
 
 # SAM3 image normalization constants
@@ -435,17 +435,20 @@ class SAMQPlacementModel(nn.Module):
         # Find bounding boxes from binary masks
         # Shape: (batch, num_masks, 4) - (x1, y1, x2, y2)
         boxes = []
-        for mask in masks:
-            coords = torch.nonzero(mask)
+        for i, mask in enumerate(masks):
+            coords = torch.nonzero(mask)  # [N, 3] → (mask_idx, y, x)
             if len(coords) > 0:
-                y_min, x_min = coords.min(dim=0).values
-                y_max, x_max = coords.max(dim=0).values
-                boxes.append(torch.stack([x_min, y_min, x_max, y_max]))
+                # Skip mask index, get y and x bounds
+                y_coords = coords[:, 1]
+                x_coords = coords[:, 2]
+                y_min, y_max = y_coords.min().item(), y_coords.max().item()
+                x_min, x_max = x_coords.min().item(), x_coords.max().item()
+                boxes.append(torch.tensor([x_min, y_min, x_max, y_max], device=masks.device))
             else:
                 boxes.append(torch.zeros(4, device=masks.device))
-        
+
         return torch.stack(boxes) if boxes else torch.zeros(
-            masks.size(0), 4, device=masks.device
+            masks.size(0), masks.size(1), 4, device=masks.device
         )
 
 
