@@ -309,49 +309,74 @@ Update H-MVP
 
 ### 4. VLA Module (`src/models/vla/`)
 
-#### UnifiedScaleVLA
+#### Unified Architecture (Parallel SAM3 + SEGActionHead)
 
-**Core Idea**: Use unified pixel-meter encoding so VLM naturally understands physical scale through image resolution.
+**Core Idea**: Single `[SEG]` token feeds two parallel branches:
+- **SAM3 Decoder**: Generates placement heatmap (2D position)
+- **SEGActionHead**: Generates rotation angle + relative scale
 
-**How it works**:
 ```
-All images use same pixels_per_meter (512):
-  - Object: 0.5m chair → 256 pixels
-  - Scene:  4.0m room  → 2048 pixels
-
-VLM sees: "object is small, scene is large" → natural scale understanding
+Qwen3-VL → [SEG] hidden state [B, 4096]
+    ↓
+    ├→ CrossModalAdapter → SAM3 Decoder → Heatmap [B, num_candidates, H, W]
+    └→ SEGActionHead → rotation [B] + scale [B]
 ```
 
-**Output**: Single [SEG] token → position (heatmap) + rotation + scale
-
-**Interface**:
+**Output from `forward()`**:
 ```python
-vla = UnifiedScaleVLA(
-    pixels_per_meter=512,
-    heatmap_size=64,
+{
+    "heatmap": [B, num_candidates, H, W],   # SAM3 placement heatmap
+    "rotation_deg": [B],                     # -180 to 180 degrees
+    "scale_relative": [B],                   # 0.5x to 2.0x
+    "seg_hidden": [B, 4096],                # [SEG] token hidden state
+}
+```
+
+**Output from `predict()`**:
+```python
+{
+    "position_meters": [B, 2],               # Physical coordinates
+    "position_norm": [B, 2],                 # Normalized [0,1]
+    "rotation_deg": [B],                     # -180 to 180
+    "scale_relative": [B],                   # 0.5 to 2.0
+    "heatmap": [B, H, W],                    # Upsampled to original size
+}
+```
+
+**Usage**:
+```python
+model = SAMQPlacementModel(
+    qwen_model_name="./models/qwen3_vl",
+    sam3_input_dim=256,
+    qwen_hidden_dim=4096,
+    adapter_hidden_dim=512,
+    action_head_config={"heatmap_size": 64},
 )
 
-result = vla(
-    obj_image=chair_img,
-    obj_size_meters=0.5,
-    scene_image=room_img,
+output = model.predict(
+    plane_image=room_img,
+    text_prompt="Place the chair near the table",
+    images=[room_img, chair_img],
     scene_size_meters=4.0,
-    text_prompt="Place near the window",
 )
 ```
 
-**Iterative Refinement**: Feed back the placed scene for adjustment:
-```python
-refinement = VLAIterativeRefinement(
-    vla_model=vla,
-    max_iterations=3,
-    adjustment_threshold=0.01,  # meters
-)
-```
+#### SEGActionHead
 
-**[SEG] Token Dual Purpose**:
-- **Segmentation**: Triggers SAM3 mask generation
-- **Action Output**: Decoded to position + rotation + scale via `SEGActionHead`
+**Purpose**: Decode `[SEG]` hidden state into rotation and scale.
+
+**Architecture**:
+```
+[SEG] hidden [B, 4096]
+    ↓
+Linear(4096→512) → LayerNorm → GELU
+    ↓                    ↓
+Heatmap Head        Rotation Head    Scale Head
+    ↓                    ↓              ↓
+Linear→[H*W]       Linear→Tanh    Linear→Sigmoid
+    ↓              →[-1,1]×180   →[0,1]×1.5+0.5
+Heatmap         [-180, 180]°     [0.5, 2.0]x
+```
 
 #### IncrementalHMVPMemory
 
@@ -474,7 +499,7 @@ hmvp.yaml (enable H-MVP)
     |
 incremental_vla.yaml (enable incremental VLA memory)
     |
-vla.yaml (enable VLA action output: position + rotation + scale via [SEG] token)
+vla.yaml (parallel SAM3 + SEGActionHead: heatmap + rotation + scale)
 ```
 
 ### Key Sections
@@ -565,7 +590,7 @@ SAM-Q/
 |   |-- hmvp.yaml               # H-MVP collision detection
 |   |-- incremental_vla.yaml    # Incremental VLA memory
 |   |-- seg_token.yaml          # Multi-SEG token mode
-|   +-- vla.yaml                # VLA action output via [SEG] token
+|   +-- vla.yaml                # Parallel SAM3 + SEGActionHead
 |
 |-- src/
 |   |-- models/                  # Model architectures
@@ -579,9 +604,9 @@ SAM-Q/
 |   |   |   |-- hmvp_collision_detector.py
 |   |   |   +-- incremental_hmvp.py
 |   |   |-- vla/                # VLA action output
-|   |   |   +-- unified_scale_vla.py
+|   |   |   +-- unified_scale_vla.py  # SEGActionHead
 |   |   |-- sampling/           # Sampling strategies
-|   |   +-- placement_model.py  # Main model
+|   |   +-- placement_model.py  # Main model (unified predict)
 |   |
 |   |-- data/                    # Data pipeline
 |   |   |-- dataset.py

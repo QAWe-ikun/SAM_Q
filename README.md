@@ -132,22 +132,22 @@
   - Early-exit optimization for fast inference
 - **Implementation**: `src/models/collision/hmvp_collision_detector.py`
 
-#### 5. Incremental H-MVP Memory (Optional)
-- **Purpose**: Maintains dynamic scene understanding across placements
-- **Workflow**:
-  ```
-  Initial Scene -> Build H-MVP -> Place Object A -> Update H-MVP -> Place Object B -> ...
-  ```
-- **Implementation**: `src/models/collision/incremental_hmvp.py`
-
-#### 6. VLA Action Output (Optional)
+#### 5. VLA Action Output (Parallel with SAM3)
 - **Purpose**: Outputs position (heatmap), rotation, and scale for intelligent placement
+- **Architecture**: `[SEG]` token feeds two parallel branches:
+  ```
+  Qwen3-VL → [SEG] token
+      ├→ SAM3 Decoder → placement heatmap (position)
+      └→ SEGActionHead → rotation_deg + scale_relative
+  ```
 - **Key Design**:
-  - Unified pixel-meter encoding: `pixels_per_meter=512` (1 pixel = 2mm)
-  - VLM naturally understands scale through image resolution
-  - `[SEG]` token serves dual purpose: segmentation trigger + action output
-  - Supports iterative refinement: feed back placed scene for adjustment
-- **Implementation**: `src/models/vla/unified_scale_vla.py`
+  - Single `[SEG]` token serves as the shared representation
+  - SAM3 generates the placement heatmap (2D position)
+  - `SEGActionHead` generates rotation angle and relative scale
+  - Unified `predict()` returns all outputs in one call
+- **Implementation**:
+  - `src/models/placement_model.py` (unified forward)
+  - `src/models/vla/unified_scale_vla.py` (SEGActionHead)
 
 ---
 
@@ -224,30 +224,24 @@ python main.py predict \
   --threshold 0.5
 ```
 
-### Python API
+### VLA Action Output (Parallel with SAM3)
+
+The `[SEG]` token feeds two parallel branches:
 
 ```python
-from src.inference import PlacementPredictor
-from PIL import Image
-
-# Load predictor
-predictor = PlacementPredictor("checkpoints/checkpoint_best.pt")
-
-# Prepare inputs
-plane_image = Image.open("room.png").convert("RGB")
-object_image = Image.open("chair.png").convert("RGB")
-text_prompt = "Place the chair near the window"
-
-# Predict placement
-results = predictor.predict(
-    plane_image=plane_image,
-    object_image=object_image,
-    text_prompt=text_prompt,
-    threshold=0.5
+# Unified predict(): heatmap + rotation + scale in one call
+output = model.predict(
+    plane_image=room_img,
+    text_prompt="Place the chair near the window",
+    images=[room_img, chair_img],
+    scene_size_meters=4.0,    # Scene physical size (meters)
 )
 
-# Results contain: mask, heatmap, boxes, scores
-print(f"Found {len(results['boxes'])} valid placements")
+# Returns:
+#   position_meters:  [B, 2]   - Physical coordinates (meters)
+#   rotation_deg:     [B]      - Rotation angle (-180 to 180)
+#   scale_relative:   [B]      - Relative scale (0.5 to 2.0)
+#   heatmap:          [B, H, W] - Placement heatmap
 ```
 
 ---
