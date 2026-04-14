@@ -29,10 +29,11 @@
 
 - **Language-Guided Placement**: Natural language instructions control placement semantics
 - **[SEG] Token Bridging (SA2VA-style)**: Special `[SEG]` tokens bridge Qwen3-VL reasoning to SAM3 segmentation; hidden states dynamically computed via self-attention over image + text context
+- **[EXEC] Token Action Output (VLA)**: Single token outputs position (heatmap), rotation, and scale; unified pixel-meter encoding lets VLM naturally understand physical scale
 - **Cross-Modal Fusion**: Novel adapter architecture bridges Qwen3-VL (4096D) and SAM3 (256D) embedding spaces
 - **LoRA/QLoRA Fine-Tuning**: Parameter-efficient tuning with multi-SEG token support; trainable <0.1% of Qwen3-VL parameters
 - **Hierarchical Collision Detection**: H-MVP (Hierarchical Multi-View Projection) enables 3D-aware placement
-- **Incremental Memory**: Dynamic scene understanding that updates with each placement
+- **Incremental Memory**: Dynamic scene understanding that updates with each placement (`src/models/collision/incremental_hmvp.py`)
 - **Parameter-Efficient**: Freezes foundation models, trains only <5% parameters
 
 ### Method Comparison
@@ -131,13 +132,22 @@
   - Early-exit optimization for fast inference
 - **Implementation**: `src/models/collision/hmvp_collision_detector.py`
 
-#### 5. Incremental VLA Memory (Optional)
+#### 5. Incremental H-MVP Memory (Optional)
 - **Purpose**: Maintains dynamic scene understanding across placements
 - **Workflow**:
   ```
   Initial Scene -> Build H-MVP -> Place Object A -> Update H-MVP -> Place Object B -> ...
   ```
-- **Implementation**: `src/models/vla/incremental_vla.py`
+- **Implementation**: `src/models/collision/incremental_hmvp.py`
+
+#### 6. VLA Action Output (Optional)
+- **Purpose**: Outputs position (heatmap), rotation, and scale for intelligent placement
+- **Key Design**:
+  - Unified pixel-meter encoding: `pixels_per_meter=512` (1 pixel = 2mm)
+  - VLM naturally understands scale through image resolution
+  - [EXEC] token serves dual purpose: image understanding + action output
+  - Supports iterative refinement: feed back placed scene for adjustment
+- **Implementation**: `src/models/vla/unified_scale_vla.py`
 
 ---
 
@@ -307,6 +317,11 @@ python -m src.train --config configs/hmvp.yaml
 python -m src.train --config configs/incremental_vla.yaml
 ```
 
+#### VLA Mode (Position + Rotation + Scale)
+```bash
+python -m src.train --config configs/vla.yaml
+```
+
 ---
 
 ## Fine-Tuning Qwen3-VL with [SEG] Tokens
@@ -446,15 +461,17 @@ Inference results are saved as:
 SAM-Q/
 +-- configs/                     # Configuration files
 |   +-- base.yaml               # Base configuration
-|   +-- hmvp.yaml               # H-MVP extension
-|   +-- incremental_vla.yaml    # VLA extension
+|   +-- hmvp.yaml               # H-MVP collision detection
+|   +-- incremental_vla.yaml    # Incremental VLA memory
+|   +-- seg_token.yaml          # Multi-SEG token mode
+|   +-- vla.yaml                # VLA action output (position+rotation+scale)
 |
 +-- src/
 |   +-- models/                  # Model architectures
-|   |   +-- encoders/           # Encoder modules
-|   |   +-- adapters/           # Adapter modules
-|   |   +-- collision/          # Collision detection
-|   |   +-- vla/                # VLA components
+|   |   +-- encoders/           # Qwen3-VL encoder
+|   |   +-- adapters/           # Cross-modal adapters
+|   |   +-- collision/          # H-MVP + incremental memory
+|   |   +-- vla/                # VLA action output
 |   |   +-- sampling/           # Sampling strategies
 |   |   +-- placement_model.py  # Main model
 |   |

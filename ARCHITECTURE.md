@@ -33,7 +33,8 @@ SAM-Q is a modular framework for **semantically-aware object placement** in indo
 | Language-Guided Placement | Natural language controls placement semantics | `models/encoders/` |
 | Cross-Modal Fusion | Bridges 4096D (Qwen) to 256D (SAM3) | `models/adapters/` |
 | 3D Collision Detection | Prevents invalid placements | `models/collision/` |
-| Incremental Memory | Updates scene understanding | `models/vla/` |
+| Incremental Memory | Updates scene understanding | `models/collision/incremental_hmvp.py` |
+| VLA Action Output | Position + rotation + scale with unified pixel-meter encoding | `models/vla/unified_scale_vla.py` |
 | Heatmap-Guided Sampling | Multiple candidate extraction | `models/sampling/` |
 
 ---
@@ -280,9 +281,73 @@ collision_score = detector.check_collision(
 - `soft_depth_interval_overlap`: Smooth overlap calculation
 - `soft_max_pool2d`: Softmax-based max approximation
 
+#### IncrementalHMVPMemory
+
+**Innovation**: Dynamic scene understanding that updates with each placement.
+
+**Workflow**:
+```
+Initial Scene -> Build H-MVP
+      |
+Place Object A
+      |
+Update H-MVP (incremental, not rebuild)
+      |
+Place Object B
+      |
+Update H-MVP
+      |
+...
+```
+
+**Key Methods**:
+- `initialize_from_scene()`: Build initial H-MVP
+- `update_with_new_object()`: Incremental update
+- `update_with_object_movement()`: Handle object movement
+
 ---
 
-### 4. VLA Memory (`src/models/vla/`)
+### 4. VLA Module (`src/models/vla/`)
+
+#### UnifiedScaleVLA
+
+**Core Idea**: Use unified pixel-meter encoding so VLM naturally understands physical scale through image resolution.
+
+**How it works**:
+```
+All images use same pixels_per_meter (512):
+  - Object: 0.5m chair → 256 pixels
+  - Scene:  4.0m room  → 2048 pixels
+
+VLM sees: "object is small, scene is large" → natural scale understanding
+```
+
+**Output**: Single [EXEC] token → position (heatmap) + rotation + scale
+
+**Interface**:
+```python
+vla = UnifiedScaleVLA(
+    pixels_per_meter=512,
+    heatmap_size=64,
+)
+
+result = vla(
+    obj_image=chair_img,
+    obj_size_meters=0.5,
+    scene_image=room_img,
+    scene_size_meters=4.0,
+    text_prompt="Place near the window",
+)
+```
+
+**Iterative Refinement**: Feed back the placed scene for adjustment:
+```python
+refinement = VLAIterativeRefinement(
+    vla_model=vla,
+    max_iterations=3,
+    adjustment_threshold=0.01,  # meters
+)
+```
 
 #### IncrementalHMVPMemory
 
@@ -307,6 +372,8 @@ Update H-MVP
 - `initialize_from_scene()`: Build initial H-MVP
 - `update_with_new_object()`: Incremental update
 - `update_with_object_movement()`: Handle object movement
+
+**Implementation**: `src/models/collision/incremental_hmvp.py`
 
 ---
 
@@ -402,6 +469,8 @@ base.yaml (all defaults)
 hmvp.yaml (enable H-MVP)
     |
 incremental_vla.yaml (enable incremental VLA)
+    |
+vla.yaml (enable VLA action output: position + rotation + scale)
 ```
 
 ### Key Sections
@@ -489,8 +558,10 @@ class MyLoss(nn.Module):
 SAM-Q/
 |-- configs/                     # Configuration files
 |   |-- base.yaml               # Base configuration
-|   |-- hmvp.yaml               # H-MVP extension
-|   +-- incremental_vla.yaml    # VLA extension
+|   |-- hmvp.yaml               # H-MVP collision detection
+|   |-- incremental_vla.yaml    # Incremental VLA memory
+|   |-- seg_token.yaml          # Multi-SEG token mode
+|   +-- vla.yaml                # VLA action output (position+rotation+scale)
 |
 |-- src/
 |   |-- models/                  # Model architectures
@@ -501,7 +572,10 @@ SAM-Q/
 |   |   |   |-- cross_modal_adapter.py
 |   |   |   +-- presence_token_adapter.py
 |   |   |-- collision/          # Collision detection
-|   |   |-- vla/                # VLA components
+|   |   |   |-- hmvp_collision_detector.py
+|   |   |   +-- incremental_hmvp.py
+|   |   |-- vla/                # VLA action output
+|   |   |   +-- unified_scale_vla.py
 |   |   |-- sampling/           # Sampling strategies
 |   |   +-- placement_model.py  # Main model
 |   |
