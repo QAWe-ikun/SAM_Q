@@ -36,7 +36,7 @@ class Qwen3VLEncoder(nn.Module):
         model_name: str = "Qwen/Qwen3-VL-8B-Instruct",
         device: Optional[str] = None,
         dtype: torch.dtype = torch.float16,
-        num_seg_tokens: int = 64,
+        num_seg_tokens: int = 1,
     ):
         super().__init__()
 
@@ -685,7 +685,7 @@ class Qwen3VLEncoderWithProjection(nn.Module):
         sam3_input_dim: int = 256,
         device: Optional[str] = None,
         dtype: torch.dtype = torch.float16,
-        num_seg_tokens: int = 64,
+        num_seg_tokens: int = 1,
     ):
         super().__init__()
 
