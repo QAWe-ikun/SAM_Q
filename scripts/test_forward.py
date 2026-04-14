@@ -66,10 +66,12 @@ def main():
     # --- Forward pass ---
     print("Running forward pass...")
     with torch.no_grad():
-        output = model(
+        # Use predict() which includes mask upsampling to original size
+        output = model.predict(
             plane_image=plane_image,
             text_prompt=text_prompt,
             images=images,
+            threshold=0.5,
         )
 
     print("\n=== Output shapes ===")
