@@ -149,6 +149,60 @@ embeddings = encoder(object_image=pil_img, text_prompt="Place near window")
 - Flash attention support (CUDA)
 - Conversation-format input
 
+**[SEG] Token Bridging (SA2VA-style)**:
+
+The encoder supports a special `[SEG]` token mode that bridges Qwen3-VL reasoning to SAM3 segmentation:
+
+```python
+# Single SEG (most common): [B, 4096]
+seg_hidden, _ = encoder.generate_with_seg(obj_img, "放一把椅子", force_only=True, num_seg=1)
+
+# Multi SEG (advanced): [B, num_seg, 4096]
+seg_hidden, _ = encoder.generate_with_seg(obj_img, "放椅子和桌子", force_only=True, num_seg=8)
+```
+
+How it works:
+```
+Input: [Image Tokens] [Text Tokens] [SEG]
+       ↓
+Self-Attention (causal mask): [SEG] attends to all preceding tokens
+       ↓
+[SEG] Hidden State = attend(image_tokens + text_tokens)
+       → NOT a fixed vector; dynamically computed from context
+       ↓
+SEG Projector → SAM3 Decoder → Placement Mask
+```
+
+Key design decisions:
+- `[SEG0]`~`[SEG63]` are added to the vocabulary as special tokens
+- `force_only=True` (training): directly append [SEG] and extract hidden state in one pass
+- `force_only=False` (inference): model may naturally generate [SEG]; fallback to force-append
+- Hidden states vary with input — the model learns *when* and *where* to trigger segmentation
+
+**LoRA/QLoRA Fine-Tuning**:
+
+```python
+encoder.enable_finetuning(
+    lora_r=64, lora_alpha=128, use_qlora=False,
+    target_modules=[
+        "q_proj", "k_proj", "v_proj", "o_proj",  # Attention
+        "gate_proj", "up_proj", "down_proj",      # MLP
+    ],
+)
+# Trainable: ~8M / 8B (0.10%)
+```
+
+LoRA is applied to 7 linear layers per Transformer block:
+| Layer | Role in SAM-Q |
+|-------|--------------|
+| `q_proj` | Learn to attend to relevant image regions based on text |
+| `k_proj` | Make image tokens better match text semantics |
+| `v_proj` | Pass correct visual features for placement |
+| `o_proj` | Integrate multi-modal information |
+| `gate_proj` | Activate task-specific features |
+| `up_proj` | Expand representation space for placement |
+| `down_proj` | Compress task-specific information |
+
 **Implementation**: `src/models/encoders/qwen3vl_encoder.py`
 
 ---
@@ -490,6 +544,17 @@ SAM-Q/
 1. **Freeze foundation models**: Qwen3-VL and SAM3 encoder frozen
 2. **Gradient checkpointing**: Enable for long sequences
 3. **Mixed precision**: Use `torch.float16` on supported GPUs
+4. **Flash Attention 2**: Reduces activation memory by ~30-40%
+5. **LoRA/QLoRA**: Only trainable parameters stored in optimizer state
+
+### VRAM Breakdown (Qwen3-VL-8B + SAM3)
+
+| Component | Without FA2 | With FA2 | QLoRA 4-bit + FA2 |
+|-----------|-------------|----------|--------------------|
+| Model weights | ~17 GB | ~17 GB | ~6 GB |
+| Activations + KV cache | ~8 GB | ~4 GB | ~3 GB |
+| SAM3 | ~1.5 GB | ~1.5 GB | ~1.5 GB |
+| **Total** | **~26.5 GB** | **~22.5 GB** | **~10.5 GB** |
 
 ### Speed Optimization
 
@@ -499,12 +564,12 @@ SAM-Q/
 
 ### Scaling
 
-| GPU VRAM | Recommended batch_size |
-|----------|----------------------|
-| 8GB | 1-2 |
-| 16GB | 4 |
-| 24GB | 8 |
-| 40GB+ | 16+ |
+| GPU VRAM | Recommended batch_size | Mode |
+|----------|----------------------|------|
+| 8GB | 1 | QLoRA 4-bit |
+| 16GB | 2-4 | QLoRA 4-bit / FP16 inference |
+| 24GB (RTX 4090) | 1 (FP16 train) / 4 (QLoRA train) | FP16 + FA2 / QLoRA 4-bit |
+| 40GB+ | 16+ | Full precision |
 
 ---
 

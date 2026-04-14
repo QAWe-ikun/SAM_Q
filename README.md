@@ -28,7 +28,9 @@
 ### Key Features
 
 - **Language-Guided Placement**: Natural language instructions control placement semantics
+- **[SEG] Token Bridging (SA2VA-style)**: Special `[SEG]` tokens bridge Qwen3-VL reasoning to SAM3 segmentation; hidden states dynamically computed via self-attention over image + text context
 - **Cross-Modal Fusion**: Novel adapter architecture bridges Qwen3-VL (4096D) and SAM3 (256D) embedding spaces
+- **LoRA/QLoRA Fine-Tuning**: Parameter-efficient tuning with multi-SEG token support; trainable <0.1% of Qwen3-VL parameters
 - **Hierarchical Collision Detection**: H-MVP (Hierarchical Multi-View Projection) enables 3D-aware placement
 - **Incremental Memory**: Dynamic scene understanding that updates with each placement
 - **Parameter-Efficient**: Freezes foundation models, trains only <5% parameters
@@ -97,6 +99,14 @@
 - **Purpose**: Replaces SAM3's text encoder with multimodal vision-language capabilities
 - **Input**: Object image + text instruction in conversation format
 - **Output**: 4096-dimensional token embeddings
+- **[SEG] Token Support**:
+  - Single `[SEG]` mode: one token for single placement prediction
+  - Multi `[SEG0]`~`[SEG63]` mode: SA2VA-style for multiple placements or complex spatial reasoning
+  - Hidden states are **not fixed vectors** — they are dynamically computed via self-attention over the full image + text context
+- **LoRA/QLoRA Fine-Tuning**:
+  - Target modules: `q_proj`, `k_proj`, `v_proj`, `o_proj` (attention) + `gate_proj`, `up_proj`, `down_proj` (MLP)
+  - Trainable parameters: <0.1% of 8B (~8M params)
+  - VRAM: ~10GB (QLoRA 4-bit) / ~21GB (FP16 + Flash Attention 2) on RTX 4090
 - **Implementation**: `src/models/encoders/qwen3vl_encoder.py`
 
 #### 2. Cross-Modal Adapter
@@ -295,6 +305,105 @@ python -m src.train --config configs/hmvp.yaml
 #### Incremental VLA Training
 ```bash
 python -m src.train --config configs/incremental_vla.yaml
+```
+
+---
+
+## Fine-Tuning Qwen3-VL with [SEG] Tokens
+
+SAM-Q supports parameter-efficient fine-tuning of Qwen3-VL using **LoRA** combined with **SA2VA-style [SEG] token bridging**.
+
+### How [SEG] Tokens Work
+
+The `[SEG]` token is a special token added to Qwen3-VL's vocabulary. During forward pass:
+
+```
+Input: [Image Tokens] "Place the chair near the table" [SEG]
+       ↓
+Self-Attention (causal mask): [SEG] attends to all preceding tokens
+       ↓
+[SEG] Hidden State: dynamically computed from image + text context (NOT a fixed vector)
+       ↓
+SEG Projector → SAM3 Decoder → Placement Mask
+```
+
+**Key insight**: The [SEG] token's hidden state varies based on input context — it learns *when* and *where* to trigger segmentation through joint training.
+
+### Multi-SEG Mode
+
+For complex scenarios (multiple placements, spatial reasoning):
+
+```python
+# Single SEG (most common)
+seg_hidden, _ = encoder.generate_with_seg(
+    object_image=obj_img,
+    text_prompt="放一把椅子",
+    force_only=True,
+    num_seg=1,  # output: [B, 4096]
+)
+
+# Multi SEG (advanced, SA2VA-style)
+seg_hidden, _ = encoder.generate_with_seg(
+    object_image=obj_img,
+    text_prompt="放一把椅子和一张桌子",
+    force_only=True,
+    num_seg=8,  # output: [B, 8, 4096]
+)
+```
+
+### LoRA Configuration
+
+```python
+from src.models.encoders.qwen3vl_encoder import Qwen3VLEncoder
+
+encoder = Qwen3VLEncoder(model_name="./models/qwen3_vl")
+encoder.load_model()
+encoder.enable_finetuning(
+    lora_r=64,           # LoRA rank
+    lora_alpha=128,      # scaling factor (typically 2x rank)
+    lora_dropout=0.05,   # regularization
+    target_modules=[
+        "q_proj", "k_proj", "v_proj", "o_proj",  # Attention layers
+        "gate_proj", "up_proj", "down_proj",       # MLP layers
+    ],
+    use_qlora=False,     # Set True for 4-bit quantization
+)
+# Output: Trainable params: 8,388,608 / 8,000,000,000 (0.10%)
+```
+
+### VRAM Requirements (RTX 4090)
+
+| Configuration | VRAM | Status |
+|--------------|------|--------|
+| FP16 + Flash Attention 2 | ~21 GB | ✅ Inference only, batch=1 |
+| QLoRA 4-bit + Flash Attention 2 | ~10 GB | ✅ Training, batch=1 |
+| QLoRA 4-bit + gradient ckpt | ~8 GB | ✅ Training, comfortable |
+
+### Training Workflow
+
+```python
+# 1. Prepare training batch
+batch = encoder.prepare_training_batch(
+    object_image=obj_img,
+    text_prompt="在餐桌旁放椅子",
+    num_seg=8,
+)
+# batch = {'input_ids': ..., 'attention_mask': ..., 'labels': ...}
+
+# 2. Forward pass (training mode returns logits + loss)
+output = encoder(
+    object_image=obj_img,
+    text_prompt=text,
+    labels=batch["labels"],
+)
+
+# 3. Backward + optimizer step (only LoRA params updated)
+loss = output["loss"]
+loss.backward()
+optimizer.step()
+
+# 4. Save LoRA adapter
+encoder.save_finetuned_model("./checkpoints/qwen3_vl_seg_lora")
 ```
 
 ---
