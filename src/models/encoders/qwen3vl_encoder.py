@@ -383,9 +383,16 @@ class Qwen3VLEncoder(nn.Module):
             images=images,
         )
 
+        # Convert messages to text string via chat template
+        text = self.processor.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=False,
+        )
+
         # Tokenize input
         inputs = self.processor(
-            text=messages,
+            text=[text],
             images=image_list if image_list else None,
             return_tensors="pt",
             padding=True,
