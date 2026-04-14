@@ -1,7 +1,7 @@
 # SAM-Q-VLA-HMVP Requirements
 
 # PyTorch CUDA 13.2 — install from PyTorch's own wheel index
---extra-index-url https://download.pytorch.org/whl/cu130
+--extra-index-url https://download.pytorch.org/whl/cu124
 
 # Core
 torch>=2.0.0

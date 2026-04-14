@@ -157,17 +157,15 @@ samq-env\Scripts\activate  # Windows
 ### Step 2: 安装依赖
 
 ```bash
-# 先装 PyTorch（根据 CUDA 版本调整，cu130 对应 CUDA 13.0）
-pip install torch torchvision --extra-index-url https://download.pytorch.org/whl/cu130
+# 先装 PyTorch（根据 CUDA 版本调整，cu124 对应 CUDA 12.4）
+pip install torch torchvision --extra-index-url https://download.pytorch.org/whl/cu124
 
 # 装 flash-attn（需要先装好 torch，且 nvcc >= 12.0）
+# 如果仍不行，在线下载WHL，离线安装
 pip install flash-attn --no-build-isolation
 
 # 装其余依赖
 pip install -r requirements.txt
-
-# 装 SAM3
-pip install git+https://github.com/facebookresearch/sam3.git
 ```
 
 ### Step 3: Download Models
