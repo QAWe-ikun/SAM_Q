@@ -493,10 +493,14 @@ class Qwen3VLEncoder(nn.Module):
     ) -> Tuple[torch.Tensor, bool]:
         """Generate autoregressively, then extract [SEG] hidden state(s)."""
         with torch.no_grad():
+            # Clear invalid generation kwargs to suppress warning
             generated = self.model.generate(
                 **inputs,
                 max_new_tokens=max_new_tokens,
                 do_sample=False,
+                temperature=None,
+                top_p=None,
+                top_k=None,
             )
 
         # Check if any SEG tokens were generated
