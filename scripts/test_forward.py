@@ -60,8 +60,10 @@ def main():
     print("Model built OK\n")
 
     # --- Dummy inputs ---
-    plane_image  = make_dummy_image((1024, 1024))
-    object_image = make_dummy_image((512, 512))
+    # Note: All input images use the same size (1024x1024)
+    img_size = 1024
+    plane_image  = make_dummy_image((img_size, img_size))
+    object_image = make_dummy_image((img_size, img_size))
     text_prompt  = "这是房间<image>，把椅子<image>放在合适的位置"
     images       = [plane_image, object_image]
 
@@ -72,9 +74,7 @@ def main():
             plane_image=plane_image,
             text_prompt=text_prompt,
             images=images,
-            scene_size_meters=4.0,
             threshold=0.5,
-            top_k=10,
         )
 
     print("\n=== Output shapes ===")
