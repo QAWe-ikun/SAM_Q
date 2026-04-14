@@ -11,9 +11,6 @@ torchvision>=0.15.0
 transformers>=4.37.0
 qwen-vl-utils>=0.0.1
 
-# SAM3 (official release now available)
-# Install with: pip install git+https://github.com/facebookresearch/sam3.git
-
 # Image processing
 Pillow>=10.0.0
 opencv-python>=4.8.0,<4.13.0
