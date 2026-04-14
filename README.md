@@ -28,12 +28,11 @@
 ### Key Features
 
 - **Language-Guided Placement**: Natural language instructions control placement semantics
-- **[SEG] Token Bridging (SA2VA-style)**: Special `[SEG]` tokens bridge Qwen3-VL reasoning to SAM3 segmentation; hidden states dynamically computed via self-attention over image + text context
-- **[SEG] Token Action Output (VLA)**: Same `[SEG]` token also outputs position (heatmap), rotation, and scale; unified pixel-meter encoding lets VLM naturally understand physical scale
+- **[SEG] Token Parallel Output**: Single `[SEG]` token feeds two parallel branches — SAM3 Decoder (placement heatmap) + SEGActionHead (rotation + scale)
 - **Cross-Modal Fusion**: Novel adapter architecture bridges Qwen3-VL (4096D) and SAM3 (256D) embedding spaces
 - **LoRA/QLoRA Fine-Tuning**: Parameter-efficient tuning with multi-SEG token support; trainable <0.1% of Qwen3-VL parameters
 - **Hierarchical Collision Detection**: H-MVP (Hierarchical Multi-View Projection) enables 3D-aware placement
-- **Incremental Memory**: Dynamic scene understanding that updates with each placement (`src/models/collision/incremental_hmvp.py`)
+- **Incremental Memory**: Dynamic scene understanding that updates with each placement
 - **Parameter-Efficient**: Freezes foundation models, trains only <5% parameters
 
 ### Method Comparison
@@ -87,10 +86,11 @@
 +-------------------------------------------------------------------+
 |                   ADVANCED MODULES (Optional)                      |
 |                                                                    |
-|  +---------------+  +---------------+  +-------------------+       |
-|  | Dual-Scale SAM|  | H-MVP Collision|  | Incremental VLA   |       |
-|  | (1024+256)    |  | Detector      |  | Memory System     |       |
-|  +---------------+  +---------------+  +-------------------+       |
+|  +---------------+  +-------------------+  +-------------------+   |
+|  | SEGActionHead |  | H-MVP Collision   |  | Incremental VLA   |   |
+|  | (rotation +   |  | Detector          |  | Memory System     |   |
+|  |  scale)       |  | (3D collision)    |  | (dynamic scene)   |   |
+|  +---------------+  +-------------------+  +-------------------+   |
 +-------------------------------------------------------------------+
 ```
 
