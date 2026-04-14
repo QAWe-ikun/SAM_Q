@@ -1,23 +1,23 @@
 # ============================================================================
-# SAM-Q VLA Configuration
+# SAM-Q VLA Configuration (Unified Parallel Architecture)
 # ============================================================================
 # [SEG] token → parallel outputs:
-#   ├→ SAM3 Decoder → placement heatmap (position)
-#   └→ SEGActionHead → rotation_deg + scale_relative
+#   ├→ SAM3 Decoder    → placement heatmap (position)
+#   └→ SEGActionHead   → rotation_6d + rotation_matrix + scale_relative
 # ============================================================================
 
 _base_: "base.yaml"
 
 experiment:
   name: "samq_vla"
-  description: "SAM-Q with parallel heatmap + rotation + scale output"
+  description: "SAM-Q with unified parallel heatmap + rotation + scale output"
 
 model:
-  num_seg_tokens: 1  # Single [SEG] for all outputs
+  num_seg_tokens: 1  # Single [SEG] feeds both branches
 
-  # Action head config (rotation + scale)
+  # SEGActionHead config (rotation + scale)
   action_head:
-    heatmap_size: 64              # Action heatmap resolution
+    heatmap_size: 64              # Heatmap resolution
     use_iterative_refinement: false
     max_iterations: 3
     adjustment_threshold: 0.01    # Meters
@@ -34,9 +34,9 @@ training:
   batch_size: 2
   save_dir: "outputs_vla/"
 
-# VLA loss: heatmap + rotation + scale
+# VLA loss: heatmap + rotation (6D) + scale
 loss:
   type: "vla"
   heatmap_weight: 1.0
-  rotation_weight: 0.5
+  rotation_6d_weight: 0.5
   scale_weight: 0.3
