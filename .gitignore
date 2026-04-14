@@ -41,7 +41,8 @@ wheels/
 outputs/
 checkpoints/
 *.log
-models/
+# Only ignore top-level models/ (downloaded weights), NOT src/models/
+/models/
 
 # OS
 .DS_Store
