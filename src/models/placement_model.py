@@ -390,7 +390,12 @@ class SAMQPlacementModel(nn.Module):
         with torch.no_grad():
             output = self.forward(plane_image, text_prompt, images=images)
 
-        masks = output["masks"]
+        # Extract mask tensor (SAM3 seg_head returns a dict)
+        masks = output.get("masks")
+        if isinstance(masks, dict):
+            masks = masks.get("pred_masks", masks.get("semantic_seg"))
+        if masks is None:
+            raise ValueError("No masks found in model output")
 
         # Upsample masks to match original plane_image size
         orig_size = plane_image.size[::-1]  # (H, W) from (W, H)
@@ -405,7 +410,7 @@ class SAMQPlacementModel(nn.Module):
         # Apply threshold
         binary_masks = (masks > threshold).float()
 
-        # Extract boxes and scores (implementation depends on SAM3 output format)
+        # Extract boxes and scores
         boxes = self._masks_to_boxes(binary_masks)
         scores = masks.amax(dim=(2, 3))  # Simple confidence score
 
