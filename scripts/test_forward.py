@@ -68,20 +68,7 @@ def main():
     images       = [plane_image, object_image]
 
     # --- Forward pass ---
-    print("Running forward()...")
-    with torch.no_grad():
-        fwd_output = model.forward(
-            plane_image=plane_image,
-            text_prompt=text_prompt,
-            images=images,
-        )
-
-    print("\n=== Forward output ===")
-    for k, v in fwd_output.items():
-        if isinstance(v, torch.Tensor):
-            print(f"  {k}: {list(v.shape)}")
-
-    print("\nRunning predict()...")
+    print("Running predict()...")
     with torch.no_grad():
         output = model.predict(
             plane_image=plane_image,
