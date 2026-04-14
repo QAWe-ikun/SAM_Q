@@ -1,41 +1,34 @@
 # ============================================================================
-# SAM-Q VLA Configuration (Unified Scale VLA)
+# SAM-Q VLA Configuration
 # ============================================================================
-# Uses unified pixel-meter encoding + [SEG] token for action output.
-# [SEG] serves dual purpose: segmentation + action output (position + rotation + scale)
-# Qwen3-VL reasons first, then outputs [SEG] token.
-# [SEG] hidden state → position (heatmap) + rotation + scale
+# [SEG] token → parallel outputs:
+#   ├→ SAM3 Decoder → placement heatmap (position)
+#   └→ SEGActionHead → rotation_deg + scale_relative
 # ============================================================================
 
 _base_: "base.yaml"
 
 experiment:
-  name: "samq_vla_unified_scale"
-  description: "SAM-Q with Unified Scale VLA using [SEG] token for action output"
+  name: "samq_vla"
+  description: "SAM-Q with parallel heatmap + rotation + scale output"
 
-# VLA mode: uses [SEG] token for both segmentation and action output
 model:
-  use_vla: true
-  num_seg_tokens: 1  # Single [SEG] serves dual purpose
+  num_seg_tokens: 1  # Single [SEG] for all outputs
 
-  # VLA configuration
-  vla:
-    pixels_per_meter: 512           # 1 pixel = 2mm physical scale
-    model_input_size: 1024          # VLM input resolution
-    heatmap_size: 64                # Action heatmap resolution
-    use_iterative_refinement: false # Enable iterative adjustment
-    max_iterations: 3               # Max refinement steps
-    adjustment_threshold: 0.01      # Meters - stop when adjustment < this
+  # Action head config (rotation + scale)
+  action_head:
+    heatmap_size: 64              # Action heatmap resolution
+    use_iterative_refinement: false
+    max_iterations: 3
+    adjustment_threshold: 0.01    # Meters
 
-  # [SEG] token config (used for both segmentation and action)
+  # [SEG] token config
   seg_token:
-    hidden_dim: 512
-    num_output_tokens: 64
     max_generate_tokens: 128
     dropout: 0.1
     force_only_in_training: true
 
-# Training for VLA
+# Training
 training:
   num_epochs: 50
   batch_size: 2
