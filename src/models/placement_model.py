@@ -315,11 +315,14 @@ class SAMQPlacementModel(nn.Module):
             heatmap = masks
 
         # === Parallel Branch 2: SEGActionHead → rotation + scale ===
-        action_output = self.seg_action_head(seg_hidden)
+        # Convert to float32 for SEGActionHead (Qwen outputs float16)
+        seg_hidden_fp32 = seg_hidden.to(dtype=torch.float32)
+        action_output = self.seg_action_head(seg_hidden_fp32)
 
         return {
             "heatmap": heatmap,            # [B, num_candidates, H, W] or [B, 1, H, W]
-            "rotation_deg": action_output["rotation"],   # [B]
+            "rotation_6d": action_output["rotation_6d"],   # [B, 6]
+            "rotation_matrix": action_output["rotation_matrix"],  # [B, 3, 3]
             "scale_relative": action_output["scale"],    # [B]
             "seg_hidden": seg_hidden,      # [B, 4096]
             "class_logits": class_logits,  # [num_layers, B, num_queries, 1]
@@ -396,7 +399,8 @@ class SAMQPlacementModel(nn.Module):
         return {
             "heatmap": heatmap,
             "binary_heatmap": binary_heatmap,
-            "rotation_deg": output["rotation_deg"],
+            "rotation_6d": output["rotation_6d"],
+            "rotation_matrix": output["rotation_matrix"],
             "scale_relative": output["scale_relative"],
         }
 

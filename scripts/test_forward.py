@@ -68,7 +68,20 @@ def main():
     images       = [plane_image, object_image]
 
     # --- Forward pass ---
-    print("Running predict()...")
+    print("Running forward()...")
+    with torch.no_grad():
+        fwd_output = model.forward(
+            plane_image=plane_image,
+            text_prompt=text_prompt,
+            images=images,
+        )
+
+    print("\n=== Forward output ===")
+    for k, v in fwd_output.items():
+        if isinstance(v, torch.Tensor):
+            print(f"  {k}: {list(v.shape)}")
+
+    print("\nRunning predict()...")
     with torch.no_grad():
         output = model.predict(
             plane_image=plane_image,
@@ -77,16 +90,10 @@ def main():
             threshold=0.5,
         )
 
-    print("\n=== Output shapes ===")
+    print("\n=== Predict output ===")
     for k, v in output.items():
         if isinstance(v, torch.Tensor):
             print(f"  {k}: {list(v.shape)}")
-        elif isinstance(v, dict):
-            for kk, vv in v.items():
-                if isinstance(vv, torch.Tensor):
-                    print(f"  {k}.{kk}: {list(vv.shape)}")
-        else:
-            print(f"  {k}: {type(v).__name__}")
 
     print("\nForward pass completed successfully!")
 

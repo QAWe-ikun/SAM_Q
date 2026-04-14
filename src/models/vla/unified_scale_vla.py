@@ -76,11 +76,34 @@ class UnifiedScalePreprocessor(nn.Module):
         return obj_scaled, scene_scaled
 
 
+def rotation_6d_to_matrix(rot_6d: torch.Tensor) -> torch.Tensor:
+    """
+    Convert 6D rotation representation to 3x3 rotation matrix.
+    Uses Gram-Schmidt orthogonalization (Zhou et al. 2019).
+
+    Args:
+        rot_6d: [B, 6] first two columns of rotation matrix (a1, a2)
+
+    Returns:
+        matrix: [B, 3, 3] proper rotation matrix (orthonormal, det=+1)
+    """
+    import torch.nn.functional as F
+    a1 = rot_6d[:, 0:3]
+    a2 = rot_6d[:, 3:6]
+
+    b1 = F.normalize(a1, dim=-1)
+    b2 = a2 - (b1 * a2).sum(dim=-1, keepdim=True) * b1
+    b2 = F.normalize(b2, dim=-1)
+    b3 = torch.cross(b1, b2, dim=-1)
+
+    return torch.stack([b1, b2, b3], dim=-1)
+
+
 class SEGActionHead(nn.Module):
     """
     Action head that decodes [SEG] token hidden state into:
       - Coarse placement heatmap (position)
-      - Rotation angle (degrees, -180 to 180)
+      - 6D rotation representation (Zhou et al. 2019)
       - Relative scale (1.0 = original size, 0.5-2.0 range)
     """
 
@@ -105,11 +128,8 @@ class SEGActionHead(nn.Module):
             nn.Linear(512, heatmap_size * heatmap_size),
         )
 
-        # Rotation: -180 to 180 degrees
-        self.rotation_head = nn.Sequential(
-            nn.Linear(512, 1),
-            nn.Tanh(),  # [-1, 1] → scale to [-180, 180]
-        )
+        # Rotation: 6D representation (first two columns of rotation matrix)
+        self.rotation_head = nn.Linear(512, 6)
 
         # Scale: 0.5x to 2.0x
         self.scale_head = nn.Sequential(
@@ -125,7 +145,7 @@ class SEGActionHead(nn.Module):
             seg_hidden: [B, hidden_dim] hidden state at [SEG] position
 
         Returns:
-            Dict with heatmap, rotation, scale
+            Dict with heatmap, rotation_6d, rotation_matrix, scale
         """
         features = self.proj(seg_hidden)  # [B, 512]
 
@@ -134,15 +154,19 @@ class SEGActionHead(nn.Module):
             -1, self.heatmap_size, self.heatmap_size
         )
 
-        # Rotation: [B] in degrees [-180, 180]
-        rotation = self.rotation_head(features).squeeze(-1) * 180.0
+        # Rotation: 6D representation [B, 6]
+        rotation_6d = self.rotation_head(features)
+
+        # Convert to rotation matrix [B, 3, 3]
+        rotation_matrix = rotation_6d_to_matrix(rotation_6d)
 
         # Scale: [B] in range [0.5, 2.0]
         scale = self.scale_head(features).squeeze(-1) * 1.5 + 0.5
 
         return {
             "heatmap": heatmap,
-            "rotation": rotation,
+            "rotation_6d": rotation_6d,
+            "rotation_matrix": rotation_matrix,
             "scale": scale,
         }
 
