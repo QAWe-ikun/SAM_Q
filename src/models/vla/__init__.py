@@ -2,7 +2,8 @@
 VLA (Vision-Language-Action) Modules
 =====================================
 
-This package contains VLA-specific modules including incremental memory.
+This package contains VLA-specific modules including incremental memory
+and unified scale VLA for action output.
 """
 
 from .incremental_vla import (
@@ -12,9 +13,20 @@ from .incremental_vla import (
     SAM2QVLAIncremental,
 )
 
+from .unified_scale_vla import (
+    UnifiedScaleVLA,
+    UnifiedScalePreprocessor,
+    EXECActionHead,
+    VLAIterativeRefinement,
+)
+
 __all__ = [
     "IncrementalHMVPMemory",
     "IncrementalVLAActionPolicy",
     "IncrementalSpatialReasoner",
     "SAM2QVLAIncremental",
+    "UnifiedScaleVLA",
+    "UnifiedScalePreprocessor",
+    "EXECActionHead",
+    "VLAIterativeRefinement",
 ]

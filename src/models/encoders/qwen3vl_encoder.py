@@ -99,14 +99,24 @@ class Qwen3VLEncoder(nn.Module):
             else:
                 seg_tokens = [f"[SEG{i}]" for i in range(self.num_seg_tokens)]
 
-            self.processor.tokenizer.add_tokens(seg_tokens)
+            # Register [EXEC] token for VLA action output
+            exec_tokens = ["[EXEC]"]
+
+            # Combine all special tokens
+            all_special_tokens = seg_tokens + exec_tokens
+            self.processor.tokenizer.add_tokens(all_special_tokens)
             self.model.resize_token_embeddings(len(self.processor.tokenizer))
+
             self.seg_token_ids = [
                 self.processor.tokenizer.convert_tokens_to_ids(t) for t in seg_tokens
             ]
             self.seg_token_id = self.seg_token_ids[0]
 
-            print(f"[Qwen3VLEncoder] Registered {self.num_seg_tokens} SEG token(s): {seg_tokens}")
+            # [EXEC] token ID
+            self.exec_token_id = self.processor.tokenizer.convert_tokens_to_ids("[EXEC]")
+
+            print(f"[Qwen3VLEncoder] Registered {len(seg_tokens)} SEG token(s): {seg_tokens}")
+            print(f"[Qwen3VLEncoder] Registered [EXEC] token: ID={self.exec_token_id}")
             print(f"[Qwen3VLEncoder] Default [SEG] ID: {self.seg_token_id}")
 
         except ImportError as e:
@@ -691,6 +701,78 @@ class Qwen3VLEncoder(nn.Module):
         self.training_mode = False
         self.model.eval()
         print("[Qwen3VLEncoder] LoRA weights merged into base model.")
+
+    def extract_exec_hidden(
+        self,
+        text_prompt: str,
+        images: Optional[List[Image.Image]] = None,
+    ) -> torch.Tensor:
+        """
+        Extract [EXEC] token hidden state for VLA action decoding.
+
+        The [EXEC] token serves dual purpose:
+          - Image understanding (replaces [SEG] for segmentation)
+          - Action token (position + rotation + scale output)
+
+        Args:
+            text_prompt: Text instruction with <image> placeholders
+            images: List of PIL images
+
+        Returns:
+            exec_hidden: [B, hidden_dim] hidden state at [EXEC] position
+        """
+        self.load_model()
+
+        messages, image_list = self._build_message(
+            text_prompt=text_prompt,
+            images=images,
+        )
+
+        # Append [EXEC] token to messages
+        messages[0]["content"].append({"type": "text", "text": " [EXEC]"})
+
+        # Convert to text
+        text = self.processor.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=False,
+        )
+
+        # Tokenize
+        inputs = self.processor(
+            text=[text],
+            images=image_list if image_list else None,
+            return_tensors="pt",
+            padding=True,
+        ).to(self.device)
+
+        # Forward pass
+        outputs = self.model(
+            **inputs,
+            output_hidden_states=True,
+        )
+
+        hidden_states = outputs.hidden_states[-1]
+
+        # Find [EXEC] position
+        input_ids = inputs["input_ids"]
+        exec_positions = (input_ids == self.exec_token_id).nonzero(as_tuple=False)
+
+        if len(exec_positions) > 0:
+            # Extract hidden state at [EXEC] position
+            batch_size = input_ids.size(0)
+            exec_hidden_list = []
+            for b in range(batch_size):
+                exec_pos = exec_positions[exec_positions[:, 0] == b]
+                if len(exec_pos) > 0:
+                    exec_hidden_list.append(hidden_states[b, exec_pos[0, 1], :])
+                else:
+                    # Fallback: last token
+                    exec_hidden_list.append(hidden_states[b, -1, :])
+            return torch.stack(exec_hidden_list, dim=0)
+        else:
+            # Fallback: last token
+            return hidden_states[:, -1, :]
 
 
 class Qwen3VLEncoderWithProjection(nn.Module):
