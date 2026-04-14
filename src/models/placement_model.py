@@ -372,6 +372,7 @@ class SAMQPlacementModel(nn.Module):
         text_prompt: str,
         images: Optional[List[Image.Image]] = None,
         threshold: float = 0.5,
+        top_k: int = 10,
     ) -> Dict[str, Any]:
         """
         Inference method for placement prediction.
@@ -381,6 +382,7 @@ class SAMQPlacementModel(nn.Module):
             text_prompt: Placement instruction with optional <image> placeholders
             images: List of PIL images for Qwen3-VL
             threshold: Confidence threshold for masks
+            top_k: Number of top-scoring masks to upsample (memory optimization)
 
         Returns:
             results: Dictionary with masks, boxes, scores
@@ -397,27 +399,35 @@ class SAMQPlacementModel(nn.Module):
         if masks is None:
             raise ValueError("No masks found in model output")
 
-        # Upsample masks to match original plane_image size
+        # Compute scores and select top-k (memory optimization)
+        scores = masks.amax(dim=(2, 3))  # [B, num_candidates]
+        top_k = min(top_k, scores.shape[1])
+        top_indices = scores.topk(top_k, dim=1).indices  # [B, top_k]
+
+        # Only upsample top-k masks
+        batch_idx = torch.arange(masks.size(0), device=masks.device).unsqueeze(1)
+        selected_masks = masks[batch_idx, top_indices]  # [B, top_k, H, W]
+
         orig_size = plane_image.size[::-1]  # (H, W) from (W, H)
-        if masks.shape[-2:] != orig_size:
-            masks = F.interpolate(
-                masks,
+        if selected_masks.shape[-2:] != orig_size:
+            selected_masks = F.interpolate(
+                selected_masks,
                 size=orig_size,
                 mode="bilinear",
                 align_corners=False,
             )
 
         # Apply threshold
-        binary_masks = (masks > threshold).float()
+        binary_masks = (selected_masks > threshold).float()
 
         # Extract boxes and scores
         boxes = self._masks_to_boxes(binary_masks)
-        scores = masks.amax(dim=(2, 3))  # Simple confidence score
+        final_scores = selected_masks.amax(dim=(2, 3))
 
         return {
             "masks": binary_masks,
             "boxes": boxes,
-            "scores": scores,
+            "scores": final_scores,
         }
     
     def _masks_to_boxes(self, masks: torch.Tensor) -> torch.Tensor:
