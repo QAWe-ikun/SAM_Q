@@ -336,15 +336,13 @@ class SAMQPlacementModel(nn.Module):
         text: str,
         images: Optional[List[Image.Image]] = None,
     ) -> torch.Tensor:
-        """Encode image(s) and text using Qwen3-VL + Adapter/Projector."""
-        if self.mode == "cross_modal":
-            qwen_embeddings = self.qwen_encoder(
-                text_prompt=text,
-                images=images,
-            )
-            return self.adapter(qwen_embeddings.to(device=self.device, dtype=torch.float32))
+        """Encode image(s) and text using Qwen3-VL + Adapter/Projector.
 
-        # seg_token mode
+        Both modes use the [SEG] token approach:
+        - Qwen3-VL first reasons/generates text, then outputs [SEG]
+        - [SEG] hidden state contains the full reasoning via self-attention
+        - Project to SAM3 prompt space
+        """
         force_only = self._seg_force_only if self.training else False
         seg_hidden, _ = self.qwen_encoder.generate_with_seg(
             text_prompt=text,
@@ -352,6 +350,13 @@ class SAMQPlacementModel(nn.Module):
             max_new_tokens=self._seg_max_tokens,
             force_only=force_only,
         )
+
+        if self.mode == "cross_modal":
+            # CrossModalAdapter: [B, 1, 4096] -> [B, num_queries, 256]
+            seg_hidden_3d = seg_hidden.unsqueeze(1)  # [B, 4096] -> [B, 1, 4096]
+            return self.adapter(seg_hidden_3d.to(device=self.device, dtype=torch.float32))
+
+        # seg_token mode
         return self.seg_projector(seg_hidden)
 
     def predict(
