@@ -213,8 +213,8 @@ class Qwen3VLEncoder(nn.Module):
     
     def forward(
         self,
-        object_image: Optional[Image.Image] = None,
-        text_prompt: Optional[str] = None,
+        text_prompt: str,
+        images: Optional[List[Image.Image]] = None,
         labels: Optional[torch.Tensor] = None,
         **kwargs,
     ) -> torch.Tensor | Dict[str, torch.Tensor]:
@@ -222,8 +222,8 @@ class Qwen3VLEncoder(nn.Module):
         Forward pass through Qwen3-VL.
 
         Args:
-            object_image: PIL Image of the object (top-down view)
-            text_prompt: Text description for placement instruction
+            text_prompt: Text with optional <image> placeholders
+            images: List of PIL images in order
             labels: Label token IDs for computing loss (training mode only)
             **kwargs: Additional arguments for model
 
@@ -236,7 +236,10 @@ class Qwen3VLEncoder(nn.Module):
         self.load_model()
 
         # Build conversation for Qwen3-VL
-        messages = self._build_message(object_image, text_prompt)
+        messages, image_list = self._build_message(
+            text_prompt=text_prompt or "",
+            images=images,
+        )
 
         # Apply chat template to convert messages → text string
         text = self.processor.apply_chat_template(
@@ -246,9 +249,10 @@ class Qwen3VLEncoder(nn.Module):
         )
 
         # Process inputs
+        # image_list contains PIL images in the order they appear in messages
         inputs = self.processor(
             text=[text],
-            images=[object_image] if object_image else None,
+            images=image_list if image_list else None,
             return_tensors="pt",
             padding=True,
         ).to(self.device)
@@ -278,59 +282,85 @@ class Qwen3VLEncoder(nn.Module):
         # Extract last hidden state
         embeddings = outputs.hidden_states[-1]
         return embeddings
-    
+
     def _build_message(
         self,
-        object_image: Optional[Image.Image],
-        text_prompt: Optional[str],
-    ) -> list:
+        text_prompt: str,
+        images: Optional[List[Image.Image]] = None,
+    ) -> Tuple[list, List[Image.Image]]:
         """
-        Build conversation message for Qwen3-VL.
-        
+        Build conversation message for Qwen3-VL with flexible image placement.
+
+        Images are embedded at <image> placeholders in the text.
+        If no <image> placeholders found, images are prepended to the text.
+
         Args:
-            object_image: Object top-down view image
-            text_prompt: Placement text prompt
-            
+            text_prompt: Text with optional <image> placeholders
+            images: List of PIL images in the order they should appear
+
         Returns:
             messages: Formatted message list for Qwen3-VL
+            image_list: List of PIL images in the order they appear
+
+        Examples:
+            >>> # No placeholder: images prepended to text
+            >>> _build_message("Describe this", images=[obj])
+            >>> # → [image, "Describe this"]
+
+            >>> # With placeholders: images embedded at positions
+            >>> _build_message("房间<image>，放椅子<image>在角落", images=[room, chair])
+            >>> # → ["房间", image(room), "，放椅子", image(chair), "在角落"]
         """
-        default_prompt = "Describe the object and suggest good placement positions."
-        
-        if object_image is not None:
-            content = [
-                {"type": "image"},
-                {"type": "text", "text": text_prompt or default_prompt},
-            ]
+        if images:
+            image_list = list(images)
         else:
-            content = [
-                {"type": "text", "text": text_prompt or default_prompt},
-            ]
-        
-        messages = [
-            {
-                "role": "user",
-                "content": content,
-            }
-        ]
-        
-        return messages
+            image_list = []
+
+        # Parse text for <image> placeholders
+        if "<image>" in text_prompt and image_list:
+            parts = text_prompt.split("<image>")
+            content = []
+            img_idx = 0
+
+            for i, part in enumerate(parts):
+                if part.strip():
+                    content.append({"type": "text", "text": part.strip()})
+                # After each part (except last), insert image if available
+                if i < len(parts) - 1 and img_idx < len(image_list):
+                    content.append({"type": "image"})
+                    img_idx += 1
+
+            # Handle case where text ends with <image>
+            if text_prompt.endswith("<image>") and img_idx < len(image_list):
+                content.append({"type": "image"})
+                img_idx += 1
+        else:
+            # No placeholders: prepend all images
+            content = []
+            for _ in image_list:
+                content.append({"type": "image"})
+            if text_prompt.strip():
+                content.append({"type": "text", "text": text_prompt.strip()})
+
+        messages = [{"role": "user", "content": content}]
+        return messages, image_list
     
     def encode_text_only(self, text: str) -> torch.Tensor:
         """Encode text-only prompt without image."""
         return self.forward(text_prompt=text)
-    
+
     def encode_multimodal(
         self,
-        image: Image.Image,
         text: str,
+        images: Optional[List[Image.Image]] = None,
     ) -> torch.Tensor:
-        """Encode combined image and text input."""
-        return self.forward(object_image=image, text_prompt=text)
+        """Encode combined image(s) and text input."""
+        return self.forward(text_prompt=text, images=images)
 
     def generate_with_seg(
         self,
-        object_image: Optional[Image.Image] = None,
-        text_prompt: Optional[str] = None,
+        text_prompt: str,
+        images: Optional[List[Image.Image]] = None,
         max_new_tokens: int = 128,
         force_only: bool = True,
         num_seg: int = 1,
@@ -361,12 +391,15 @@ class Qwen3VLEncoder(nn.Module):
         """
         self.load_model()
 
-        messages = self._build_message(object_image, text_prompt)
+        messages, image_list = self._build_message(
+            text_prompt=text_prompt,
+            images=images,
+        )
 
         # Tokenize input
         inputs = self.processor(
             text=messages,
-            images=[object_image] if object_image else None,
+            images=image_list if image_list else None,
             return_tensors="pt",
             padding=True,
         ).to(self.device)
@@ -561,8 +594,8 @@ class Qwen3VLEncoder(nn.Module):
 
     def prepare_training_batch(
         self,
-        object_image: Optional[Image.Image] = None,
-        text_prompt: Optional[str] = None,
+        text_prompt: str,
+        images: Optional[List[Image.Image]] = None,
         seg_response: Optional[str] = None,
         num_seg: int = 8,
     ) -> Dict[str, torch.Tensor]:
@@ -573,8 +606,8 @@ class Qwen3VLEncoder(nn.Module):
         assistant response contains [SEG] tokens.
 
         Args:
-            object_image: Object image
-            text_prompt: User instruction
+            text_prompt: User instruction. Use <image> placeholders for images.
+            images: List of PIL images in order
             seg_response: Custom assistant response (if None, auto-generated with SEG tokens)
             num_seg: Number of SEG tokens to include in response
 
@@ -584,7 +617,10 @@ class Qwen3VLEncoder(nn.Module):
         self.load_model()
 
         # Build user message
-        user_content = self._build_message(object_image, text_prompt)
+        user_messages, user_images = self._build_message(
+            text_prompt=text_prompt,
+            images=images,
+        )
 
         # Build assistant response with SEG tokens
         if seg_response is None:
@@ -592,7 +628,7 @@ class Qwen3VLEncoder(nn.Module):
             seg_response = f"放置位置：{seg_tokens_str}"
 
         # Full conversation
-        messages = user_content + [
+        messages = user_messages + [
             {"role": "assistant", "content": seg_response}
         ]
 
@@ -606,7 +642,7 @@ class Qwen3VLEncoder(nn.Module):
         # Process
         inputs = self.processor(
             text=[text],
-            images=[object_image] if object_image else None,
+            images=user_images if user_images else None,
             return_tensors="pt",
             padding=True,
         )
@@ -615,14 +651,10 @@ class Qwen3VLEncoder(nn.Module):
         labels = inputs["input_ids"].clone()
 
         # Mask out user portion in labels (only compute loss on assistant response)
-        # Find where assistant response starts
-        assistant_pattern = self.processor.tokenizer.encode(
-            "assistant", add_special_tokens=False
-        )
         # Simplified: mask all tokens up to a reasonable point
         # For production, implement precise masking based on chat template
         user_text = self.processor.apply_chat_template(
-            user_content,
+            user_messages,
             tokenize=False,
             add_generation_prompt=True,
         )
@@ -711,8 +743,8 @@ class Qwen3VLEncoderWithProjection(nn.Module):
 
     def forward(
         self,
-        object_image: Optional[Image.Image] = None,
-        text_prompt: Optional[str] = None,
+        text_prompt: str,
+        images: Optional[List[Image.Image]] = None,
         labels: Optional[torch.Tensor] = None,
         num_seg: int = 1,
         force_only: bool = True,
@@ -721,8 +753,8 @@ class Qwen3VLEncoderWithProjection(nn.Module):
         Forward pass with projection.
 
         Args:
-            object_image: Object image
-            text_prompt: Text prompt
+            text_prompt: Text with optional <image> placeholders
+            images: List of PIL images in order
             labels: Labels for training mode
             num_seg: Number of SEG tokens to use
             force_only: Force SEG tokens (training) or generate (inference)
@@ -736,8 +768,8 @@ class Qwen3VLEncoderWithProjection(nn.Module):
         # Training mode: get logits + hidden states
         if self.encoder.training_mode or labels is not None:
             encoder_output = self.encoder(
-                object_image=object_image,
                 text_prompt=text_prompt,
+                images=images,
                 labels=labels,
             )
             # Project SEG hidden states
@@ -748,8 +780,8 @@ class Qwen3VLEncoderWithProjection(nn.Module):
 
         # Inference mode: extract and project SEG hidden states
         seg_hidden, was_natural = self.encoder.generate_with_seg(
-            object_image=object_image,
             text_prompt=text_prompt,
+            images=images,
             force_only=force_only,
             num_seg=num_seg,
         )
