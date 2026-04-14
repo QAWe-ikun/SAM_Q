@@ -68,7 +68,6 @@ def main():
     with torch.no_grad():
         output = model(
             plane_image=plane_image,
-            object_image=object_image,
             text_prompt=text_prompt,
             images=images,
         )
