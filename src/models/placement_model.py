@@ -389,16 +389,26 @@ class SAMQPlacementModel(nn.Module):
 
         with torch.no_grad():
             output = self.forward(plane_image, text_prompt, images=images)
-        
+
         masks = output["masks"]
-        
+
+        # Upsample masks to match original plane_image size
+        orig_size = plane_image.size[::-1]  # (H, W) from (W, H)
+        if masks.shape[-2:] != orig_size:
+            masks = F.interpolate(
+                masks,
+                size=orig_size,
+                mode="bilinear",
+                align_corners=False,
+            )
+
         # Apply threshold
         binary_masks = (masks > threshold).float()
-        
+
         # Extract boxes and scores (implementation depends on SAM3 output format)
         boxes = self._masks_to_boxes(binary_masks)
         scores = masks.amax(dim=(2, 3))  # Simple confidence score
-        
+
         return {
             "masks": binary_masks,
             "boxes": boxes,
