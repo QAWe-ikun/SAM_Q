@@ -59,7 +59,9 @@ def main():
     # --- Dummy inputs ---
     plane_image  = make_dummy_image((1024, 1024))
     object_image = make_dummy_image((512, 512))
-    text_prompt  = "Place the chair near the window"
+    # New style: use <image> placeholders for flexible positioning
+    text_prompt  = "这是房间<image>，把椅子<image>放在合适的位置"
+    images       = [plane_image, object_image]
 
     # --- Forward pass ---
     print("Running forward pass...")
@@ -68,6 +70,7 @@ def main():
             plane_image=plane_image,
             object_image=object_image,
             text_prompt=text_prompt,
+            images=images,
         )
 
     print("\n=== Output shapes ===")
