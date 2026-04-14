@@ -36,8 +36,8 @@ data:
 # Model Architecture
 # ----------------------------------------------------------------------------
 model:
-  # Encoding mode: "cross_modal" (original) or "seg_token" (SA2VA-inspired)
-  encoding_mode: "cross_modal"
+  # Number of [SEG] tokens: 1=single placement, >1=multi-placement
+  num_seg_tokens: 1
 
   # Qwen3-VL Encoder
   qwen:
@@ -45,22 +45,22 @@ model:
     hidden_dim: 4096
     freeze: true
     attn_implementation: "flash_attention_2"  # or "eager"
-  
+
   # SAM3 Components
   sam3:
     model_name: "./models/sam3"
     input_dim: 256
     freeze_image_encoder: true
     freeze_detector: false
-  
-  # Adapter
+
+  # Adapter (used for both single and multi-SEG)
   adapter:
     type: "cross_modal"  # Options: "base", "cross_modal", "presence_token"
     hidden_dim: 512
     num_queries: 64
     dropout: 0.1
 
-  # [SEG] Token Projector (only used when encoding_mode is "seg_token")
+  # [SEG] Token Projector (only used when num_seg_tokens > 1)
   seg_token:
     hidden_dim: 512
     num_output_tokens: 64

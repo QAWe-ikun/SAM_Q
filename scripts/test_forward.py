@@ -33,11 +33,11 @@ def make_dummy_image(size):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
-    parser.add_argument("--mode", default="cross_modal", choices=["cross_modal", "seg_token"])
+    parser.add_argument("--num_seg_tokens", default=1, type=int)
     args = parser.parse_args()
 
-    print(f"Device: {args.device}")
-    print(f"Mode:   {args.mode}")
+    print(f"Device:         {args.device}")
+    print(f"num_seg_tokens: {args.num_seg_tokens}")
     print()
 
     # --- Build model ---
@@ -49,8 +49,8 @@ def main():
         sam3_input_dim=256,
         qwen_hidden_dim=4096,
         adapter_hidden_dim=512,
+        num_seg_tokens=args.num_seg_tokens,
         device=args.device,
-        mode=args.mode,
     )
     model.freeze_all_except_adapter_and_detector()
     model.eval()

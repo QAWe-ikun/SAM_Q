@@ -1,18 +1,18 @@
 # ============================================================================
 # SAM-Q [SEG] Token Configuration (SA2VA-inspired)
 # ============================================================================
-# Inherits from base.yaml, enables [SEG] token bridging mode.
-# LLM reasons about the instruction, then [SEG] hidden state becomes SAM3 prompt.
+# Inherits from base.yaml, enables multi-SEG token bridging mode.
+# Qwen3-VL reasons first, then outputs multiple [SEG0]~[SEG{n-1}] tokens.
 # ============================================================================
 
 _base_: "base.yaml"
 
 experiment:
   name: "samq_seg_token"
-  description: "SAM-Q with SA2VA-inspired [SEG] token bridging"
+  description: "SAM-Q with SA2VA-inspired multi-SEG token bridging"
 
 model:
-  encoding_mode: "seg_token"
+  num_seg_tokens: 64
 
   seg_token:
     hidden_dim: 512

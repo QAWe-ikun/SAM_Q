@@ -103,7 +103,7 @@ class Trainer:
     def _init_model(self) -> SAMQPlacementModel:
         """Initialize model from configuration."""
         model_config = self.config.get("model", {})
-        encoding_mode = model_config.get("encoding_mode", "cross_modal")
+        num_seg_tokens = model_config.get("num_seg_tokens", 1)
 
         model = SAMQPlacementModel(
             qwen_model_name=model_config.get("qwen", {}).get(
@@ -112,9 +112,9 @@ class Trainer:
             sam3_input_dim=model_config.get("sam3", {}).get("input_dim", 256),
             qwen_hidden_dim=model_config.get("qwen", {}).get("hidden_dim", 4096),
             adapter_hidden_dim=model_config.get("adapter", {}).get("hidden_dim", 512),
+            num_seg_tokens=num_seg_tokens,
             device=self.device,
-            mode=encoding_mode,
-            seg_projector_config=model_config.get("seg_token", {}),
+            seg_token_config=model_config.get("seg_token", {}),
             action_head_config=model_config.get("action_head", {}),
         )
         
