@@ -224,6 +224,8 @@ python main.py predict \
   --threshold 0.5
 ```
 
+**Note:** `--object_image` is used internally as part of the `images` list alongside the plane image. The model receives `[plane_image, object_image]` for multi-image reasoning.
+
 ### Python API
 
 ```python

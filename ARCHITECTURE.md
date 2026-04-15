@@ -625,11 +625,8 @@ SAM-Q/
 |   +-- utils/                   # Utilities
 |       +-- config.py
 |
-|-- tests/                       # Unit tests
-|   |-- test_models/
-|   +-- test_data/
-|
 |-- scripts/                     # Helper scripts
+|   |-- download_models.py
 |   +-- download_data.sh
 |
 |-- main.py                      # CLI entry point

@@ -156,23 +156,28 @@ class Trainer:
         for batch_idx, batch in enumerate(progress_bar):
             # Move data to device
             masks = batch["masks"].to(self.device)
-            
+
             # Process each sample
             batch_loss = 0.0
             for i in range(len(batch["plane_images"])):
                 plane_image = batch["plane_images"][i]
                 object_image = batch["object_images"][i]
                 text_prompt = batch["text_prompts"][i]
-                
-                # Forward pass
+
+                # Forward pass - new API: images list
                 output = self.model(
                     plane_image=plane_image,
-                    object_image=object_image,
                     text_prompt=text_prompt,
+                    images=[plane_image, object_image],
                 )
-                
+
                 # Compute loss
-                loss_dict = self.criterion(output["masks"], masks[i:i+1])
+                loss_dict = self.criterion(
+                    output["heatmap"],
+                    masks[i:i+1],
+                    output.get("rotation_6d"),
+                    output.get("scale_relative"),
+                )
                 batch_loss += loss_dict["total"]
             
             # Average loss
@@ -229,20 +234,25 @@ class Trainer:
         
         for batch in tqdm(dataloader, desc="Validation", leave=False):
             masks = batch["masks"].to(self.device)
-            
+
             batch_loss = 0.0
             for i in range(len(batch["plane_images"])):
                 plane_image = batch["plane_images"][i]
                 object_image = batch["object_images"][i]
                 text_prompt = batch["text_prompts"][i]
-                
+
                 output = self.model(
                     plane_image=plane_image,
-                    object_image=object_image,
                     text_prompt=text_prompt,
+                    images=[plane_image, object_image],
                 )
-                
-                loss_dict = self.criterion(output["masks"], masks[i:i+1])
+
+                loss_dict = self.criterion(
+                    output["heatmap"],
+                    masks[i:i+1],
+                    output.get("rotation_6d"),
+                    output.get("scale_relative"),
+                )
                 batch_loss += loss_dict["total"]
                 
                 # Compute metrics

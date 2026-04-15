@@ -164,6 +164,8 @@ def run_train(args):
     print("=" * 60)
 
     from src.utils.config import Config
+    from src.data.dataset import ObjectPlacementDataset
+    from torch.utils.data import DataLoader
     from src.train import Trainer
 
     # Load configuration
@@ -175,11 +177,58 @@ def run_train(args):
     if args.output_dir:
         config["training"]["save_dir"] = args.output_dir
 
+    # Initialize datasets
+    data_config = config.get("data", {})
+    data_dir = data_config.get("root_dir", "data/")
+
+    train_dataset = ObjectPlacementDataset(
+        data_dir=data_dir,
+        plane_image_size=tuple(data_config.get("plane_image_size", [1024, 1024])),
+        object_image_size=tuple(data_config.get("object_image_size", [1024, 1024])),
+        split="train",
+    )
+
+    val_dataset = ObjectPlacementDataset(
+        data_dir=data_dir,
+        plane_image_size=tuple(data_config.get("plane_image_size", [1024, 1024])),
+        object_image_size=tuple(data_config.get("object_image_size", [1024, 1024])),
+        split="val",
+    )
+
+    # Create DataLoaders
+    batch_size = data_config.get("batch_size", 2)
+    num_workers = data_config.get("num_workers", 4)
+
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=num_workers,
+        collate_fn=train_dataset._collate_fn if hasattr(train_dataset, '_collate_fn') else None,
+    )
+
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+        collate_fn=val_dataset._collate_fn if hasattr(val_dataset, '_collate_fn') else None,
+    )
+
+    print(f"\nDataset info:")
+    print(f"  Training samples: {len(train_dataset)}")
+    print(f"  Validation samples: {len(val_dataset)}")
+    print(f"  Batch size: {batch_size}")
+    print(f"  Data directory: {data_dir}")
+
     # Initialize trainer
     trainer = Trainer(config)
 
     # Start training
-    trainer.train()
+    trainer.train(
+        train_loader=train_loader,
+        val_loader=val_loader,
+    )
 
 
 def run_predict(args):

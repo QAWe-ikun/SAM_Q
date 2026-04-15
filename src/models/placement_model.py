@@ -425,31 +425,46 @@ class PlacementLoss(nn.Module):
         self,
         predicted_masks: torch.Tensor,
         target_masks: torch.Tensor,
+        pred_rotation_6d: Optional[torch.Tensor] = None,
+        pred_scale: Optional[torch.Tensor] = None,
     ) -> Dict[str, torch.Tensor]:
         """
         Compute placement prediction loss.
-        
+
         Args:
-            predicted_masks: Predicted masks (logits)
-            target_masks: Ground truth masks
-            
+            predicted_masks: Predicted masks (logits) [B, num_candidates, H, W]
+            target_masks: Ground truth masks [B, 1, H, W]
+            pred_rotation_6d: Predicted 6D rotation [B, 6] (optional)
+            pred_scale: Predicted scale [B] (optional)
+
         Returns:
             losses: Dictionary with total and component losses
         """
+        losses = {"total": torch.tensor(0.0, device=predicted_masks.device)}
+
         # BCE loss
         bce_loss = self.bce_loss(predicted_masks, target_masks)
-        
+        losses["bce"] = bce_loss
+        losses["total"] = losses["total"] + self.bce_weight * bce_loss
+
         # Dice loss
         dice_loss = self._dice_loss(predicted_masks, target_masks)
-        
-        # Total loss
-        total_loss = self.dice_weight * dice_loss + self.bce_weight * bce_loss
-        
-        return {
-            "total": total_loss,
-            "dice": dice_loss,
-            "bce": bce_loss,
-        }
+        losses["dice"] = dice_loss
+        losses["total"] = losses["total"] + self.dice_weight * dice_loss
+
+        # Rotation loss (regularization if no target)
+        if pred_rotation_6d is not None:
+            rotation_loss = pred_rotation_6d.pow(2).mean()  # L2 regularization
+            losses["rotation"] = rotation_loss
+            losses["total"] = losses["total"] + rotation_loss
+
+        # Scale loss (regularization around 1.0)
+        if pred_scale is not None:
+            scale_loss = (pred_scale - 1.0).pow(2).mean()
+            losses["scale"] = scale_loss
+            losses["total"] = losses["total"] + scale_loss
+
+        return losses
     
     def _dice_loss(
         self,
