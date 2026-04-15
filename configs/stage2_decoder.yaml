@@ -1,0 +1,80 @@
+# ============================================================================
+# Stage 2: Adapter + SAM3 Decoder Training
+# ============================================================================
+# Goal: Train [SEG] hidden state → physical space mapping
+# Loss: Dice + BCE (heatmap) + rotation L2 + scale L2
+# Trainable: Adapter + SAM3 Decoder (Projector + SEGActionHead)
+# Requires: Stage 1 LoRA checkpoint
+# ============================================================================
+
+experiment:
+  name: "stage2_decoder"
+  seed: 42
+  description: "Stage 2: Train Adapter + SAM3 Decoder for heatmap + rotation + scale"
+
+data:
+  root_dir: "data/"
+  batch_size: 4
+  num_workers: 4
+  pin_memory: true
+  plane_image_size: [1024, 1024]
+  object_image_size: [1024, 1024]
+
+model:
+  num_seg_tokens: 1
+
+  qwen:
+    model_name: "./models/qwen3_vl"
+    hidden_dim: 4096
+    freeze: true  # ← Frozen, use Stage 1 LoRA
+    lora_checkpoint: "outputs/stage1_lora/checkpoint_best.pt"  # ← Load Stage 1
+    attn_implementation: "flash_attention_2"
+
+  sam3:
+    model_name: "./models/sam3"
+    input_dim: 256
+    freeze_image_encoder: true  # SAM3 image encoder frozen
+    freeze_detector: false      # ← SAM3 decoder trainable
+
+  adapter:
+    freeze: false  # ← Trainable
+    hidden_dim: 512
+    num_queries: 64
+    dropout: 0.1
+
+  seg_token:
+    projector_hidden_dim: 1024  # 4096 → 1024 → 256
+    dropout: 0.1
+
+  action_head:
+    heatmap_size: 64
+
+loss:
+  type: "placement"
+  dice_weight: 1.0
+  bce_weight: 1.0
+  rotation_weight: 0.5
+  scale_weight: 0.3
+
+optimizer:
+  type: "AdamW"
+  lr: 1.0e-3  # Full parameter learning rate (larger than LoRA)
+  weight_decay: 1.0e-4
+  betas: [0.9, 0.999]
+
+scheduler:
+  type: "CosineAnnealingLR"
+  T_max: 50
+  eta_min: 1.0e-6
+  warmup_epochs: 5
+
+training:
+  num_epochs: 50
+  device: "cuda"
+  save_dir: "outputs/stage2_full/"
+  save_interval: 10
+  save_best: true
+  log_interval: 10
+  val_interval: 1
+  early_stopping: true
+  patience: 20
