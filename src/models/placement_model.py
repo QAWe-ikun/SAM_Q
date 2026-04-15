@@ -210,13 +210,20 @@ class SAMQPlacementModel(nn.Module):
     
     def forward(
         self,
-        plane_image: Image.Image,
-        text_prompt: str,
-        images: Optional[List[Image.Image]] = None,
+        plane_image,
+        text_prompt: str = "",
+        images: Optional[List] = None,
+        seg_hidden: Optional[torch.Tensor] = None,
         **kwargs,
     ) -> Dict[str, torch.Tensor]:
         """
         Forward pass: [SEG] token → parallel outputs.
+
+        Args:
+            plane_image: 房间俯视图（PIL.Image 或 Tensor）
+            text_prompt: 文本指令
+            images: Qwen3-VL 图片列表（seg_hidden 为 None 时需要）
+            seg_hidden: 预提取的 [SEG] hidden state [B, hidden_dim]（有值时跳过 Qwen3-VL）
 
         Qwen3-VL → [SEG] token
             ├→ SAM3 Decoder → placement heatmap
@@ -239,14 +246,20 @@ class SAMQPlacementModel(nn.Module):
         # 1. Encode plane image with SAM3 vision backbone
         backbone_out = self._encode_plane_image(plane_image)
 
-        # 2. Encode images + text with Qwen3-VL → [SEG] hidden state
-        seg_hidden, _ = self.qwen_encoder.generate_with_seg(
-            text_prompt=text_prompt,
-            images=images,
-            max_new_tokens=self._seg_max_tokens,
-            force_only=self._seg_force_only if self.training else False,
-            num_seg=self.num_seg_tokens,
-        )
+        # 2. [SEG] hidden state: 预提取 or Qwen3-VL 在线推理
+        if seg_hidden is None:
+            seg_hidden, _ = self.qwen_encoder.generate_with_seg(
+                text_prompt=text_prompt,
+                images=images,
+                max_new_tokens=self._seg_max_tokens,
+                force_only=self._seg_force_only if self.training else False,
+                num_seg=self.num_seg_tokens,
+            )
+        else:
+            # 预提取的 seg_hidden 可能是 [hidden_dim]，需要确保 [B, hidden_dim]
+            if seg_hidden.dim() == 1:
+                seg_hidden = seg_hidden.unsqueeze(0)
+            seg_hidden = seg_hidden.to(self.device)
 
         # === Parallel Branch 1: SAM3 → Heatmap ===
         # Project [SEG] to SAM3 prompt space

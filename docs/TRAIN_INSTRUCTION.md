@@ -330,12 +330,15 @@ for batch in dataloader:
 ```bash
 # ─────────────────────────────────────────────
 # 阶段 1: Qwen3-VL LoRA 微调
+# 训练结束后自动提取 [SEG] features 到 data/seg_features/
 # ─────────────────────────────────────────────
 python main.py train --config configs/stage1_qwen_lora.yaml
 # 输出: outputs/stage1_lora/checkpoint_best.pt
+# 自动生成: data/seg_features/*.pt
 
 # ─────────────────────────────────────────────
 # 阶段 2: Adapter + SAM3 Decoder 训练
+# 直接读取 seg_features，不加载 Qwen3-VL（省 ~16GB 显存）
 # ─────────────────────────────────────────────
 python main.py train --config configs/stage2_decoder.yaml
 # 输出: outputs/stage2_full/checkpoint_best.pt

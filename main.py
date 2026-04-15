@@ -186,6 +186,7 @@ def run_train(args):
     data_config = config.get("data", {})
     data_dir = data_config.get("root_dir", "data/")
     ann_file = data_config.get("ann_file", "annotations.json")
+    seg_feature_dir = data_config.get("seg_feature_dir", None)
 
     train_dataset = ObjectPlacementDataset(
         data_dir=data_dir,
@@ -193,6 +194,7 @@ def run_train(args):
         object_image_size=tuple(data_config.get("object_image_size", [1024, 1024])),
         split="train",
         ann_file=ann_file,
+        seg_feature_dir=seg_feature_dir,
     )
 
     val_dataset = ObjectPlacementDataset(
@@ -201,6 +203,7 @@ def run_train(args):
         object_image_size=tuple(data_config.get("object_image_size", [1024, 1024])),
         split="val",
         ann_file=ann_file,
+        seg_feature_dir=seg_feature_dir,
     )
 
     # Create DataLoaders

@@ -13,8 +13,9 @@ experiment:
   description: "Stage 2: Train Adapter + SAM3 Decoder for heatmap + rotation + scale"
 
 data:
-  root_dir: "data/stage2/"
-  ann_file: "stage2_annotations.json"
+  root_dir: "data/"
+  ann_file: "annotations.json"
+  seg_feature_dir: "data/seg_features/"  # 预提取的 [SEG] hidden states
   batch_size: 4
   num_workers: 4
   pin_memory: true

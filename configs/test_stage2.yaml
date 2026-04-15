@@ -1,17 +1,21 @@
 # ============================================================================
-# Test Training Configuration - Stage 2 (Adapter + SAM3 Decoder)
+# Test Stage 2: Adapter + SAM3 Decoder 训练
 # ============================================================================
-# Quick test config with minimal data
+# 前置条件:
+#   1. 已完成 Stage 1: python main.py train --config configs/test_stage1.yaml
+#   2. 已预提取: python scripts/extract_seg_features.py --config configs/test_stage1.yaml --output_dir data/seg_features/
+# 本阶段不加载 Qwen3-VL，直接读取预提取的 [SEG] hidden states
 # ============================================================================
 
 experiment:
   name: "test_stage2"
   seed: 42
-  description: "Test Stage 2: Adapter + SAM3 Decoder training"
+  description: "Test Stage 2: Adapter + SAM3 Decoder (preextracted seg features)"
 
 data:
   root_dir: "data/"
   ann_file: "annotations.json"
+  seg_feature_dir: "data/seg_features/"
   batch_size: 1
   num_workers: 0
   pin_memory: false
@@ -24,17 +28,17 @@ model:
   qwen:
     model_name: "./models/qwen3_vl"
     hidden_dim: 4096
-    freeze: true  # ← Stage 2 冻结 Qwen
+    freeze: true
     attn_implementation: "flash_attention_2"
 
   sam3:
     model_name: "./models/sam3"
     input_dim: 256
     freeze_image_encoder: true
-    freeze_detector: false  # ← Stage 2 解冻 decoder
+    freeze_detector: false
 
   adapter:
-    freeze: false  # ← Stage 2 解冻
+    freeze: false
     hidden_dim: 512
     num_queries: 64
     dropout: 0.1
@@ -47,7 +51,7 @@ model:
     heatmap_size: 64
 
 loss:
-  type: "placement"  # ← placement loss (Dice + BCE + rotation + scale)
+  type: "placement"
   dice_weight: 1.0
   bce_weight: 1.0
   rotation_weight: 0.5
@@ -68,7 +72,7 @@ scheduler:
 training:
   num_epochs: 3
   device: "cuda"
-  save_dir: "/mnt/f/output/stage2"
+  save_dir: "/mnt/f/output/test_stage2"
   save_interval: 1
   save_best: true
   log_interval: 1

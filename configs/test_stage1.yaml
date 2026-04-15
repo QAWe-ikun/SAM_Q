@@ -1,24 +1,25 @@
 # ============================================================================
-# Stage 1: Qwen3-VL LoRA Fine-tuning
+# Test Stage 1: Qwen3-VL LoRA 微调
 # ============================================================================
-# Goal: Teach Qwen3-VL to output [SEG] token based on text + images
-# Loss: Language modeling (next-token prediction)
-# Trainable: Qwen3-VL LoRA only (~0.1% of 8B params)
+# 测试用最小配置，3 epoch 快速跑通
+# 训练完后运行预提取:
+#   python scripts/extract_seg_features.py --config configs/test_stage1.yaml --output_dir data/seg_features/
+# 然后用 test_stage2.yaml 训练 Stage 2
 # ============================================================================
 
 experiment:
-  name: "stage1_qwen_lora"
+  name: "test_stage1"
   seed: 42
-  description: "Stage 1: Fine-tune Qwen3-VL with LoRA to output [SEG] token"
+  description: "Test Stage 1: Qwen3-VL LoRA fine-tuning"
 
 data:
   root_dir: "data/"
   ann_file: "annotations.json"
-  batch_size: 2
-  num_workers: 4
-  pin_memory: true
-  plane_image_size: [1024, 1024]
-  object_image_size: [1024, 1024]
+  batch_size: 1
+  num_workers: 0
+  pin_memory: false
+  plane_image_size: [256, 256]
+  object_image_size: [256, 256]
 
 model:
   num_seg_tokens: 1
@@ -26,33 +27,28 @@ model:
   qwen:
     model_name: "./models/qwen3_vl"
     hidden_dim: 4096
-    freeze: false  # ← Enable LoRA training
+    freeze: false
     attn_implementation: "flash_attention_2"
 
     lora:
       enabled: true
-      r: 64
-      alpha: 128
+      r: 8
+      alpha: 16
       dropout: 0.05
       target_modules:
         - "q_proj"
-        - "k_proj"
         - "v_proj"
-        - "o_proj"
-        - "gate_proj"
-        - "up_proj"
-        - "down_proj"
-      use_qlora: false  # Set true if VRAM < 12GB
+      use_qlora: false
       bias: "none"
 
   sam3:
     model_name: "./models/sam3"
     input_dim: 256
     freeze_image_encoder: true
-    freeze_detector: true  # ← Frozen in Stage 1
+    freeze_detector: true
 
   adapter:
-    freeze: true  # ← Frozen in Stage 1
+    freeze: true
     hidden_dim: 512
     num_queries: 64
     dropout: 0.1
@@ -65,12 +61,12 @@ model:
     heatmap_size: 64
 
 loss:
-  type: "lm"  # Language modeling loss
+  type: "lm"
   label_smoothing: 0.0
 
 optimizer:
   type: "AdamW"
-  lr: 1.0e-4  # LoRA learning rate
+  lr: 1.0e-4
   weight_decay: 1.0e-4
   betas: [0.9, 0.999]
 
@@ -78,13 +74,13 @@ scheduler:
   type: "CosineAnnealingLR"
   T_max: 3
   eta_min: 1.0e-6
-  warmup_epochs: 1
+  warmup_epochs: 0
 
 training:
-  num_epochs: 3  # 2-5 epochs typically sufficient
+  num_epochs: 3
   device: "cuda"
-  save_dir: "outputs/stage1_lora/"
+  save_dir: "/mnt/f/output/test_stage1"
   save_interval: 1
   save_best: true
-  log_interval: 10
+  log_interval: 1
   early_stopping: false

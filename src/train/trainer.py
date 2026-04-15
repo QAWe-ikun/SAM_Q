@@ -215,6 +215,11 @@ class Trainer:
                     p.requires_grad = True
             print("[Trainer] Stage 2: Adapter unfrozen")
 
+        # 检测是否使用预提取 seg features
+        seg_dir = self.config.get("data", {}).get("seg_feature_dir")
+        if seg_dir:
+            print(f"[Trainer] 使用预提取 [SEG] features: {seg_dir}，跳过 Qwen3-VL")
+
     def _load_lora_checkpoint(self, lora_ckpt: str):
         """加载 Stage 1 的 LoRA checkpoint。"""
         try:
@@ -350,6 +355,9 @@ class Trainer:
             plane_images_batch = batch["plane_images"].to(self.device)
             object_images_batch = batch["object_images"].to(self.device)
             masks = batch["masks"].to(self.device)
+            seg_hidden_batch = batch.get("seg_hidden")  # [B, hidden_dim] 或 None
+            if seg_hidden_batch is not None:
+                seg_hidden_batch = seg_hidden_batch.to(self.device)
 
             # Process each sample
             batch_loss = 0.0
@@ -357,12 +365,14 @@ class Trainer:
                 plane_image = plane_images_batch[i]
                 object_image = object_images_batch[i]
                 text_prompt = batch["text_prompts"][i]
+                seg_hidden_i = seg_hidden_batch[i] if seg_hidden_batch is not None else None
 
-                # Forward pass - new API: images list
+                # Forward pass
                 output = self.model(
                     plane_image=plane_image,
                     text_prompt=text_prompt,
-                    images=[plane_image, object_image],
+                    images=[plane_image, object_image] if seg_hidden_i is None else None,
+                    seg_hidden=seg_hidden_i,
                 )
 
                 # Compute loss
@@ -435,17 +445,22 @@ class Trainer:
             plane_images_batch = batch["plane_images"].to(self.device)
             object_images_batch = batch["object_images"].to(self.device)
             masks = batch["masks"].to(self.device)
+            seg_hidden_batch = batch.get("seg_hidden")
+            if seg_hidden_batch is not None:
+                seg_hidden_batch = seg_hidden_batch.to(self.device)
 
             batch_loss = 0.0
             for i in range(len(batch["plane_images"])):
                 plane_image = plane_images_batch[i]
                 object_image = object_images_batch[i]
                 text_prompt = batch["text_prompts"][i]
+                seg_hidden_i = seg_hidden_batch[i] if seg_hidden_batch is not None else None
 
                 output = self.model(
                     plane_image=plane_image,
                     text_prompt=text_prompt,
-                    images=[plane_image, object_image],
+                    images=[plane_image, object_image] if seg_hidden_i is None else None,
+                    seg_hidden=seg_hidden_i,
                 )
 
                 gt_rot = batch.get("rotation_6d")
@@ -569,6 +584,54 @@ class Trainer:
         # Save final checkpoint
         self._save_checkpoint("final", float("inf"))
         print(f"\nTraining completed! Results saved to: {self.output_dir}")
+
+        # Stage 1 训练完自动提取 [SEG] features
+        if self.stage == "lm":
+            seg_dir = Path(self.config.get("data", {}).get("root_dir", "data/")) / "seg_features"
+            self._extract_seg_features(train_loader, seg_dir)
+            if val_loader is not None:
+                self._extract_seg_features(val_loader, seg_dir)
+
+    @torch.no_grad()
+    def _extract_seg_features(self, dataloader: DataLoader, output_dir: Path) -> None:
+        """Stage 1 训练完后，自动提取 [SEG] hidden states 保存到 data/seg_features/。"""
+        output_dir.mkdir(parents=True, exist_ok=True)
+        self.model.eval()
+        self.model.qwen_encoder.load_model()
+
+        print(f"\n{'=' * 60}")
+        print(f"提取 [SEG] features → {output_dir}")
+        print(f"{'=' * 60}")
+
+        count = 0
+        dataset = dataloader.dataset
+
+        for idx in tqdm(range(len(dataset)), desc="提取 [SEG]", leave=False):
+            sample = dataset[idx]
+            ann = dataset.annotations[idx]
+            sample_id = ann.get("id", ann.get("scene_id", f"{dataset.split}_{idx:06d}"))
+
+            out_path = output_dir / f"{sample_id}.pt"
+            if out_path.exists():
+                count += 1
+                continue
+
+            plane_img = sample["plane_image"]
+            obj_img = sample["object_image"]
+            text_prompt = sample["text_prompt"]
+
+            seg_hidden, _ = self.model.qwen_encoder.generate_with_seg(
+                text_prompt=text_prompt,
+                images=[plane_img, obj_img],
+                force_only=True,
+                num_seg=self.config.get("model", {}).get("num_seg_tokens", 1),
+            )
+
+            seg_hidden = seg_hidden.squeeze(0).cpu().float()
+            torch.save({"seg_hidden": seg_hidden, "sample_id": sample_id}, out_path)
+            count += 1
+
+        print(f"完成: {count} 个特征已保存到 {output_dir}")
 
     def _save_checkpoint(self, epoch: Any, val_loss: float) -> None:
         """

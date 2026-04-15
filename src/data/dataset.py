@@ -43,6 +43,7 @@ class ObjectPlacementDataset(Dataset):
         transform: Optional[Any] = None,
         split: str = "train",
         ann_file: str = "annotations.json",
+        seg_feature_dir: Optional[str] = None,
     ):
         """
         Initialize the dataset.
@@ -53,9 +54,8 @@ class ObjectPlacementDataset(Dataset):
             object_image_size: Target size for object images
             transform: Optional transforms to apply
             split: Dataset split ('train', 'val', 'test')
-            ann_file: Annotation filename (default: annotations.json)
-                      Stage 1 使用 stage1_annotations.json
-                      Stage 2 使用 stage2_annotations.json
+            ann_file: Annotation filename
+            seg_feature_dir: 预提取 [SEG] hidden states 的目录（Stage 2 用）
         """
         self.data_dir = Path(data_dir)
         self.plane_image_size = plane_image_size
@@ -63,6 +63,7 @@ class ObjectPlacementDataset(Dataset):
         self.transform = transform
         self.split = split
         self.ann_file = ann_file
+        self.seg_feature_dir = Path(seg_feature_dir) if seg_feature_dir else None
 
         # Load annotations
         self.annotations = self._load_annotations()
@@ -129,14 +130,24 @@ class ObjectPlacementDataset(Dataset):
         plane_tensor = torch.from_numpy(np.array(plane_image, dtype=np.float32) / 255.0).permute(2, 0, 1)
         object_tensor = torch.from_numpy(np.array(object_image, dtype=np.float32) / 255.0).permute(2, 0, 1)
 
+        # 预提取的 [SEG] hidden state（Stage 2 用）
+        seg_hidden = None
+        if self.seg_feature_dir is not None:
+            sample_id = ann.get("id", ann.get("scene_id", f"{self.split}_{idx:06d}"))
+            seg_path = self.seg_feature_dir / f"{sample_id}.pt"
+            if seg_path.exists():
+                seg_data = torch.load(seg_path, map_location="cpu", weights_only=True)
+                seg_hidden = seg_data["seg_hidden"]  # [hidden_dim]
+
         return {
             "plane_image": plane_tensor,
             "object_image": object_tensor,
             "text_prompt": text_prompt,
             "response": response,
             "mask": mask,
-            "rotation_6d": rotation_6d,   # None 或 [6]
-            "scale": scale,               # None 或 [1]
+            "rotation_6d": rotation_6d,
+            "scale": scale,
+            "seg_hidden": seg_hidden,     # None 或 [hidden_dim]
             "metadata": {
                 "scene_id": ann.get("scene_id", idx),
                 "object_id": ann.get("object_id", None),
@@ -175,14 +186,19 @@ class ObjectPlacementDataset(Dataset):
         rotation_6d = torch.stack(rot_list) if all(r is not None for r in rot_list) else None
         scale = torch.stack(scale_list) if all(s is not None for s in scale_list) else None
 
+        # seg_hidden: 预提取时 stack，否则为 None
+        seg_list = [item.get("seg_hidden") for item in batch]
+        seg_hidden = torch.stack(seg_list) if all(s is not None for s in seg_list) else None
+
         return {
             "plane_images": plane_images,
             "object_images": object_images,
             "text_prompts": text_prompts,
             "responses": responses,
             "masks": masks,
-            "rotation_6d": rotation_6d,   # [B, 6] 或 None
-            "scale": scale,               # [B, 1] 或 None
+            "rotation_6d": rotation_6d,
+            "scale": scale,
+            "seg_hidden": seg_hidden,     # [B, hidden_dim] 或 None
             "metadata": metadata,
         }
 

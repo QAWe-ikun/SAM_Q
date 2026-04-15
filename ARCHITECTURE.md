@@ -114,7 +114,7 @@ Heavy models (Qwen3-VL, SAM3) are loaded lazily to:
 |                     FUSION & DECODER LAYER                         |
 |                                                                    |
 |  +------------------------------------------------------------+    |
-|  |  Plane & Text Embeddings -> SAM3 Detector -> Placement Masks|   |
+|  | Plane & Text Embeddings -> SAM3 Detector -> Placement Masks|    |
 |  +------------------------------------------------------------+    |
 +-------------------------------------------------------------------+
               |
@@ -123,7 +123,7 @@ Heavy models (Qwen3-VL, SAM3) are loaded lazily to:
 |                   ADVANCED MODULES (Optional)                      |
 |                                                                    |
 |  +--------------------------+     +------------------------+       |
-|  | H-MVP Collision Detector |     | Incremental VLA System |       |
+|  | H-MVP Collision Detector |     |       VLA System       |       |
 |  +--------------------------+     +------------------------+       |
 +-------------------------------------------------------------------+
 ```
