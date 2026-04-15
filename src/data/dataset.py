@@ -86,42 +86,41 @@ class ObjectPlacementDataset(Dataset):
     def __getitem__(self, idx: int) -> Dict[str, Any]:
         """
         Get a single sample.
-        
+
         Returns:
             sample: Dictionary containing:
-                - plane_image: Plane/room top-down view (PIL Image)
-                - object_image: Object top-down view (PIL Image)
+                - plane_image: Plane/room top-down view (Tensor) [3, H, W]
+                - object_image: Object top-down view (Tensor) [3, H, W]
                 - text_prompt: Placement instruction (str)
-                - mask: Ground truth placement mask (Tensor)
+                - mask: Ground truth placement mask (Tensor) [1, H, W]
                 - metadata: Additional info
         """
         ann = self.annotations[idx]
-        
+
         # Load images
         plane_image = self._load_image(
             self.data_dir / ann["plane_image_path"],
             self.plane_image_size,
         )
-        
+
         object_image = self._load_image(
             self.data_dir / ann["object_image_path"],
             self.object_image_size,
         )
-        
+
         # Load mask
         mask = self._load_mask(self.data_dir / ann["mask_path"])
-        
+
         # Get text prompt
         text_prompt = ann.get("text_prompt", "Place the object here.")
-        
-        # Apply transforms if specified
-        if self.transform:
-            plane_image = self.transform(plane_image)
-            object_image = self.transform(object_image)
-        
+
+        # Convert PIL images to tensors [3, H, W]
+        plane_tensor = torch.from_numpy(np.array(plane_image, dtype=np.float32) / 255.0).permute(2, 0, 1)
+        object_tensor = torch.from_numpy(np.array(object_image, dtype=np.float32) / 255.0).permute(2, 0, 1)
+
         return {
-            "plane_image": plane_image,
-            "object_image": object_image,
+            "plane_image": plane_tensor,
+            "object_image": object_tensor,
             "text_prompt": text_prompt,
             "mask": mask,
             "metadata": {
@@ -243,12 +242,13 @@ class ObjectPlacementDataModule:
     
     def _collate_fn(self, batch: List[Dict]) -> Dict[str, Any]:
         """Collate function for DataLoader."""
-        plane_images = [item["plane_image"] for item in batch]
-        object_images = [item["object_image"] for item in batch]
+        # Images and masks are now tensors, stack them
+        plane_images = torch.stack([item["plane_image"] for item in batch])
+        object_images = torch.stack([item["object_image"] for item in batch])
         text_prompts = [item["text_prompt"] for item in batch]
         masks = torch.stack([item["mask"] for item in batch])
         metadata = [item["metadata"] for item in batch]
-        
+
         return {
             "plane_images": plane_images,
             "object_images": object_images,

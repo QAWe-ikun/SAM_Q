@@ -155,13 +155,15 @@ class Trainer:
         
         for batch_idx, batch in enumerate(progress_bar):
             # Move data to device
+            plane_images_batch = batch["plane_images"].to(self.device)
+            object_images_batch = batch["object_images"].to(self.device)
             masks = batch["masks"].to(self.device)
 
             # Process each sample
             batch_loss = 0.0
             for i in range(len(batch["plane_images"])):
-                plane_image = batch["plane_images"][i]
-                object_image = batch["object_images"][i]
+                plane_image = plane_images_batch[i]
+                object_image = object_images_batch[i]
                 text_prompt = batch["text_prompts"][i]
 
                 # Forward pass - new API: images list
@@ -233,12 +235,14 @@ class Trainer:
         }
         
         for batch in tqdm(dataloader, desc="Validation", leave=False):
+            plane_images_batch = batch["plane_images"].to(self.device)
+            object_images_batch = batch["object_images"].to(self.device)
             masks = batch["masks"].to(self.device)
 
             batch_loss = 0.0
             for i in range(len(batch["plane_images"])):
-                plane_image = batch["plane_images"][i]
-                object_image = batch["object_images"][i]
+                plane_image = plane_images_batch[i]
+                object_image = object_images_batch[i]
                 text_prompt = batch["text_prompts"][i]
 
                 output = self.model(

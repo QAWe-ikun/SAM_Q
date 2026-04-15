@@ -1,0 +1,29 @@
+[
+  {
+    "scene_id": "scene_001",
+    "object_id": "chair_001",
+    "plane_image_path": "plane_images/scene_001.png",
+    "object_image_path": "object_images/chair_001.png",
+    "mask_path": "masks/scene_001_mask.png",
+    "text_prompt": "把椅子放在桌子旁边",
+    "split": "train"
+  },
+  {
+    "scene_id": "scene_002",
+    "object_id": "chair_001",
+    "plane_image_path": "plane_images/scene_002.png",
+    "object_image_path": "object_images/chair_001.png",
+    "mask_path": "masks/scene_002_mask.png",
+    "text_prompt": "把椅子放在桌子旁边",
+    "split": "train"
+  },
+  {
+    "scene_id": "scene_003",
+    "object_id": "chair_002",
+    "plane_image_path": "plane_images/scene_003.png",
+    "object_image_path": "object_images/chair_002.png",
+    "mask_path": "masks/scene_003_mask.png",
+    "text_prompt": "把椅子放在桌子旁边",
+    "split": "val"
+  }
+]
