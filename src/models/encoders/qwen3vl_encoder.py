@@ -85,7 +85,8 @@ class Qwen3VLEncoder(nn.Module):
                 device_map=self.device,
                 attn_implementation=attn_impl,
             )
-            self.model.eval()
+            # Disable KV cache by default (required for gradient checkpointing in training)
+            self.model.config.use_cache = False
 
             # Set output dimension based on Qwen3-VL hidden size
             cfg = self.model.config
@@ -111,6 +112,9 @@ class Qwen3VLEncoder(nn.Module):
             # For VLA: [SEG] serves dual purpose (segmentation + action)
             # Use seg_token_id as the action token ID
             self.exec_token_id = self.seg_token_id
+
+            # Default to eval mode (training mode is enabled by enable_finetuning)
+            self.model.eval()
 
             print(f"[Qwen3VLEncoder] Registered {len(seg_tokens)} SEG token(s): {seg_tokens}")
             print(f"[Qwen3VLEncoder] [SEG] token ID (also used as [EXEC]): {self.seg_token_id}")
@@ -196,12 +200,6 @@ class Qwen3VLEncoder(nn.Module):
         # For transformer-based models
         if hasattr(self.model, "base_model") and hasattr(self.model.base_model, "gradient_checkpointing_enable"):
             self.model.base_model.gradient_checkpointing_enable()
-
-        # Disable KV cache for training with gradient checkpointing
-        if hasattr(self.model, "config"):
-            self.model.config.use_cache = False
-        if hasattr(self.model, "base_model") and hasattr(self.model.base_model, "config"):
-            self.model.base_model.config.use_cache = False
 
         # Print trainable parameters
         trainable_params, all_param = self.model.get_nb_trainable_parameters()
