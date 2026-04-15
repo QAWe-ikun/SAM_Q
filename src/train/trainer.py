@@ -122,6 +122,7 @@ class Trainer:
             qwen_model_name=model_config.get("qwen", {}).get(
                 "model_name", "Qwen/Qwen3-VL-8B-Instruct"
             ),
+            qwen_lora_path=model_config.get("qwen", {}).get("lora_path"),
             sam3_checkpoint_path=model_config.get("sam3", {}).get("checkpoint_path"),
             sam3_input_dim=model_config.get("sam3", {}).get("input_dim", 256),
             qwen_hidden_dim=model_config.get("qwen", {}).get("hidden_dim", 4096),

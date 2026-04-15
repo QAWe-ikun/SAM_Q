@@ -39,6 +39,7 @@ class SAMQPlacementModel(nn.Module):
         sam3_model: Optional[nn.Module] = None,
         sam3_checkpoint_path: Optional[str] = None,
         qwen_model_name: str = "Qwen/Qwen3-VL-8B-Instruct",
+        qwen_lora_path: Optional[str] = None,
         sam3_input_dim: int = 256,
         qwen_hidden_dim: int = 4096,
         adapter_hidden_dim: int = 512,
@@ -52,8 +53,11 @@ class SAMQPlacementModel(nn.Module):
         Initialize the placement model.
 
         Args:
-            sam3_model: Pre-loaded SAM3 model (if None, will be loaded)
-            qwen_model_name: HuggingFace model name for Qwen3-VL
+            sam3_model: Pre-loaded SAM3 model (if None, will be loaded via SAM3Loader)
+            sam3_checkpoint_path: Path to SAM3 checkpoint file (.pt). If None, uses default search path.
+            qwen_model_name: HuggingFace model name or local path for Qwen3-VL
+            qwen_lora_path: Path to Qwen3-VL LoRA adapter directory (Stage 1 fine-tuned weights).
+                           If provided, the LoRA adapter will be loaded for inference.
             sam3_input_dim: SAM3 Detector input dimension
             qwen_hidden_dim: Qwen3-VL hidden dimension
             adapter_hidden_dim: Adapter hidden dimension
@@ -135,6 +139,10 @@ class SAMQPlacementModel(nn.Module):
         self.seg_action_head.to(self.device)
         if self.seg_projector is not None:
             self.seg_projector.to(self.device)
+
+        # Load Qwen3-VL LoRA adapter if provided (Stage 1 fine-tuned weights)
+        if qwen_lora_path is not None:
+            self.qwen_encoder.load_lora_adapter(qwen_lora_path)
         
     def _load_sam3(self):
         """Lazy load SAM3 model via SAM3Loader."""

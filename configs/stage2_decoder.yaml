@@ -27,7 +27,7 @@ model:
     model_name: "./models/qwen3_vl"
     hidden_dim: 4096
     freeze: true  # ← Frozen, use Stage 1 LoRA
-    lora_checkpoint: "outputs/stage1_lora/checkpoint_best.pt"  # ← Load Stage 1
+    lora_path: "outputs/stage1_lora/"  # ← Load Stage 1 LoRA adapter
     attn_implementation: "flash_attention_2"
 
   sam3:

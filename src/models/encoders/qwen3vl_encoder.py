@@ -622,6 +622,51 @@ class Qwen3VLEncoder(nn.Module):
 
         return seg_hidden, was_natural
 
+    def load_lora_adapter(self, lora_path: str):
+        """
+        Load a pre-trained LoRA adapter into the model.
+
+        This is used to load Stage 1 fine-tuned weights for inference.
+
+        Args:
+            lora_path: Path to the LoRA adapter directory
+        """
+        try:
+            from peft import PeftModel
+        except ImportError as e:
+            raise ImportError(
+                "Please install peft: pip install peft"
+            ) from e
+
+        self.load_model(use_cache=True)  # Inference mode
+
+        # Load the LoRA adapter on top of the base model
+        self.model = PeftModel.from_pretrained(self.model, lora_path)
+        self.model.eval()
+        self.training_mode = False
+
+        print(f"[Qwen3VLEncoder] Loaded LoRA adapter from {lora_path}")
+
+    def merge_lora(self):
+        """
+        Merge LoRA weights into the base model and return merged model.
+
+        This is useful for inference speedup after fine-tuning.
+        """
+        try:
+            from peft import PeftModel
+        except ImportError as e:
+            raise ImportError(
+                "Please install peft: pip install peft"
+            ) from e
+
+        if not isinstance(self.model, PeftModel):
+            print("[Qwen3VLEncoder] Model is not a PeftModel, skipping merge.")
+            return
+
+        self.model = self.model.merge_and_unload()
+        print("[Qwen3VLEncoder] LoRA weights merged into base model.")
+
 
 class Qwen3VLEncoderWithProjection(nn.Module):
     """
