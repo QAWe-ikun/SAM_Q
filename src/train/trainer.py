@@ -64,8 +64,8 @@ class Trainer:
         self.model = model or self._init_model()
 
         # 根据 loss.type 确定训练阶段
-        # stage1 (lm)        → Qwen3-VL LoRA 微调，语言模型损失
-        # stage2 (placement) → Adapter + SAM3 Decoder，placement 损失
+        # stage1 (lm)        → Qwen3-VL LoRA 微调, 语言模型损失
+        # stage2 (placement) → Adapter + SAM3 Decoder, placement 损失
         loss_config = config.get("loss", {})
         self.stage = loss_config.get("type", "placement")  # "lm" | "placement"
         print(f"[Trainer] Training stage: {self.stage}")
@@ -215,7 +215,7 @@ class Trainer:
         # 检测是否使用预提取 seg features
         seg_dir = self.config.get("data", {}).get("seg_feature_dir")
         if seg_dir:
-            print(f"[Trainer] 使用预提取 [SEG] features: {seg_dir}，跳过 Qwen3-VL")
+            print(f"[Trainer] 使用预提取 [SEG] features: {seg_dir}, 跳过 Qwen3-VL")
 
     def _load_lora_checkpoint(self, lora_ckpt: str):
         """加载 Stage 1 的 LoRA checkpoint。"""
@@ -239,10 +239,10 @@ class Trainer:
         log_interval: int = 10,
     ) -> Dict[str, float]:
         """
-        Stage 1 训练：next-token prediction loss，教 Qwen3-VL 输出 [SEG]。
+        Stage 1 训练: next-token prediction loss, 教 Qwen3-VL 输出 [SEG]。
 
         Dataset 需要提供 `response` 字段（含 [SEG] 的 GPT 回复）。
-        如果 dataset 没有 `response`，自动使用 "好的，我将为您放置物体。[SEG]" 作为目标。
+        如果 dataset 没有 `response`, 自动使用 "好的, 我将为您放置物体。[SEG]" 作为目标。
         """
         self.model.qwen_encoder.load_model()
         self.model.train()
@@ -269,7 +269,7 @@ class Trainer:
                 text_prompt = batch["text_prompts"][i]
                 response = batch.get("responses", [None] * batch_size)[i]
                 if response is None:
-                    response = "好的，我将为您放置物体。[SEG]"
+                    response = "好的, 我将为您放置物体。[SEG]"
 
                 # 构造 messages（input + target）
                 messages, image_list = self.model.qwen_encoder._build_message(
@@ -289,11 +289,11 @@ class Trainer:
                     padding=True,
                 ).to(self.device)
 
-                # 计算 LM loss（labels = input_ids，prefix 部分设为 -100）
+                # 计算 LM loss（labels = input_ids, prefix 部分设为 -100）
                 input_ids = inputs["input_ids"]
                 labels = input_ids.clone()
 
-                # 找到 assistant 回复起始位置，之前的 token 不计入 loss
+                # 找到 assistant 回复起始位置, 之前的 token 不计入 loss
                 response_tokens = tokenizer(response, add_special_tokens=False)["input_ids"]
                 resp_len = len(response_tokens)
                 labels[:, :-resp_len] = -100  # 只对回复部分计算 loss
@@ -593,7 +593,7 @@ class Trainer:
 
     @torch.no_grad()
     def _extract_seg_features(self, dataloader: DataLoader, output_dir: Path) -> None:
-        """Stage 1 训练完后，自动提取 [SEG] hidden states 保存到 data/seg_features/。"""
+        """Stage 1 训练完后, 自动提取 [SEG] hidden states 保存到 data/seg_features/。"""
         output_dir.mkdir(parents=True, exist_ok=True)
         self.model.eval()
         self.model.qwen_encoder.load_model()
