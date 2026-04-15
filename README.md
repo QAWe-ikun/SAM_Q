@@ -220,31 +220,48 @@ python main.py predict \
   --plane_image examples/room.png \
   --object_image examples/chair.png \
   --prompt "Place the chair near the dining table" \
-  --output results/output.png \
+  --output results/ \
   --threshold 0.5
 ```
 
-### VLA Action Output (Parallel with SAM3)
-
-The `[SEG]` token feeds two parallel branches:
+### Python API
 
 ```python
-# Unified predict(): heatmap + rotation + scale in one call
-output = model.predict(
-    plane_image=room_img,
-    text_prompt="Place the chair near the window",
-    images=[room_img, chair_img],
-    scene_size_meters=4.0,    # Scene physical size (meters)
+from src.models import SAMQPlacementModel
+from PIL import Image
+
+# Load model
+model = SAMQPlacementModel(
+    qwen_model_name="./models/qwen3_vl",
+    sam3_input_dim=256,
+    qwen_hidden_dim=4096,
+    adapter_hidden_dim=512,
+    device="cuda",
+    action_head_config={"heatmap_size": 64},
 )
 
-# Returns:
-#   position_meters:  [B, 2]   - Physical coordinates (meters)
-#   rotation_deg:     [B]      - Rotation angle (-180 to 180)
-#   scale_relative:   [B]      - Relative scale (0.5 to 2.0)
-#   heatmap:          [B, H, W] - Placement heatmap
+# Load checkpoint
+checkpoint = torch.load("checkpoints/checkpoint_best.pt", map_location="cuda")
+model.load_state_dict(checkpoint["model_state_dict"])
+model.eval()
+
+# Predict
+room_img = Image.open("examples/room.png").convert("RGB")
+chair_img = Image.open("examples/chair.png").convert("RGB")
+
+output = model.predict(
+    plane_image=room_img,
+    text_prompt="Place the chair near the dining table",
+    images=[room_img, chair_img],
+    threshold=0.5,
+)
+
+# Results
+print(f"Scale: {output['scale_relative']}")
 ```
 
 ---
+
 
 ## Training
 
@@ -256,7 +273,7 @@ data/
 +-- plane_images/            # Room top-down views (1024x1024)
 |   +-- scene_001.png
 |   +-- ...
-+-- object_images/           # Object top-down views (512x512)
++-- object_images/           # Object top-down views (1024x1024)
 |   +-- obj_001.png
 |   +-- ...
 +-- masks/                   # Ground truth placement masks
@@ -283,11 +300,11 @@ data/
 
 ```bash
 # Basic training
-python -m src.train --config configs/base.yaml
+python main.py train --config configs/config.yaml
 
 # With overrides
-python -m src.train \
-  --config configs/base.yaml \
+python main.py train \
+  --config configs/config.yaml \
   --data_dir /path/to/data \
   --output_dir /path/to/outputs
 ```
@@ -299,21 +316,20 @@ Training outputs are saved to:
 - `outputs/checkpoint_best.pt` - Best validation loss checkpoint
 - `outputs/checkpoint_final.pt` - Final checkpoint
 
-### Advanced Training Strategies
+### Training with H-MVP or Incremental Memory
 
-#### Dual-Scale SAM + H-MVP Training
-```bash
-python -m src.train --config configs/hmvp.yaml
+To enable H-MVP collision detection, edit `configs/config.yaml`:
+```yaml
+advanced:
+  hmvp:
+    enabled: true
 ```
 
-#### Incremental VLA Training
-```bash
-python -m src.train --config configs/incremental_vla.yaml
-```
-
-#### VLA Mode (Position + Rotation + Scale)
-```bash
-python -m src.train --config configs/vla.yaml
+To enable incremental H-MVP memory:
+```yaml
+advanced:
+  incremental_hmvp:
+    enabled: true
 ```
 
 ---

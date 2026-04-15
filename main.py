@@ -162,39 +162,24 @@ def run_train(args):
     print("=" * 60)
     print("SAM-Q Training")
     print("=" * 60)
-    
+
     from src.utils.config import Config
-    from src.data import ObjectPlacementDataModule
     from src.train import Trainer
-    
+
     # Load configuration
     config = Config(args.config).to_dict()
-    
+
     # Override with command line args
     if args.data_dir:
         config["data"]["root_dir"] = args.data_dir
     if args.output_dir:
         config["training"]["save_dir"] = args.output_dir
-    
-    # Initialize data module
-    data_config = config.get("data", {})
-    data_module = ObjectPlacementDataModule(
-        data_dir=data_config.get("root_dir", "data/"),
-        batch_size=data_config.get("batch_size", 4),
-        num_workers=data_config.get("num_workers", 4),
-        plane_image_size=tuple(data_config.get("plane_image_size", [1024, 1024])),
-        object_image_size=tuple(data_config.get("object_image_size", [512, 512])),
-    )
-    data_module.setup("fit")
-    
+
     # Initialize trainer
     trainer = Trainer(config)
-    
+
     # Start training
-    trainer.train(
-        train_loader=data_module.train_dataloader(),
-        val_loader=data_module.val_dataloader(),
-    )
+    trainer.train()
 
 
 def run_predict(args):
@@ -202,71 +187,84 @@ def run_predict(args):
     print("=" * 60)
     print("SAM-Q Prediction")
     print("=" * 60)
-    
-    from src.inference import PlacementPredictor
+
+    from src.models import SAMQPlacementModel
+    from src.inference import visualize_results
     from PIL import Image
     import json
+    import torch
     from pathlib import Path
-    
-    # Initialize predictor
-    predictor = PlacementPredictor(
-        checkpoint_path=args.checkpoint,
-        threshold=args.threshold,
+
+    # Load checkpoint to get config
+    checkpoint = torch.load(args.checkpoint, map_location="cpu")
+    model_config = checkpoint.get("config", {}).get("model", {})
+
+    # Initialize model
+    model = SAMQPlacementModel(
+        qwen_model_name=model_config.get("qwen", {}).get(
+            "model_name", "./models/qwen3_vl"
+        ),
+        sam3_input_dim=model_config.get("sam3", {}).get("input_dim", 256),
+        qwen_hidden_dim=model_config.get("qwen", {}).get("hidden_dim", 4096),
+        adapter_hidden_dim=model_config.get("adapter", {}).get("hidden_dim", 512),
+        num_seg_tokens=model_config.get("num_seg_tokens", 1),
+        device="cuda" if torch.cuda.is_available() else "cpu",
+        action_head_config=model_config.get("action_head", {"heatmap_size": 64}),
     )
-    
-    # Run prediction
+
+    # Load weights
+    model.load_state_dict(checkpoint["model_state_dict"])
+    model.eval()
+
+    # Load images
+    plane_image = Image.open(args.plane_image).convert("RGB")
+    object_image = Image.open(args.object_image).convert("RGB")
+
+    # Run prediction (matching README API)
     print(f"\nLoading images...")
     print(f"  Plane image: {args.plane_image}")
     print(f"  Object image: {args.object_image}")
     print(f"  Prompt: {args.prompt}")
-    
-    results = predictor.predict(
-        plane_image=args.plane_image,
-        object_image=args.object_image,
+
+    output = model.predict(
+        plane_image=plane_image,
         text_prompt=args.prompt,
+        images=[plane_image, object_image],
         threshold=args.threshold,
     )
-    
+
     # Print results
     print(f"\n{'='*60}")
     print(f"Prediction Results:")
     print(f"{'='*60}")
-    print(f"  Number of detected regions: {len(results['scores'])}")
-    for i, (box, score) in enumerate(zip(results['boxes'], results['scores'])):
-        print(f"  Box {i}: [{box[0]:.0f}, {box[1]:.0f}, {box[2]:.0f}, {box[3]:.0f}] "
-              f"(score: {score:.3f})")
-    
+    print(f"  Heatmap shape: {output['heatmap'].shape}")
+    print(f"  Rotation 6D: {output['rotation_6d'].tolist()}")
+    print(f"  Scale: {output['scale_relative'].tolist()}")
+
     # Save results
     output_dir = Path(args.output)
     output_dir.mkdir(parents=True, exist_ok=True)
-    
+
     # Save visualization
-    from src.inference import visualize_results
     viz_path = output_dir / "prediction.png"
     visualize_results(
-        plane_image=Image.open(args.plane_image),
-        results=results,
+        plane_image=plane_image,
+        results={"heatmap": output["heatmap"], "binary_heatmap": output["binary_heatmap"]},
         output_path=viz_path,
     )
-    
+
     # Save metadata
-    import numpy as np
     results_json = {
-        "num_placements": len(results["scores"]),
-        "placements": [
-            {
-                "box": box.tolist(),
-                "score": float(score),
-            }
-            for box, score in zip(results["boxes"], results["scores"])
-        ],
-        "image_size": list(results["image_size"]),
+        "rotation_6d": output["rotation_6d"].tolist(),
+        "rotation_matrix": output["rotation_matrix"].tolist(),
+        "scale_relative": output["scale_relative"].tolist(),
+        "heatmap_shape": list(output["heatmap"].shape),
     }
-    
+
     json_path = output_dir / "results.json"
     with open(json_path, 'w', encoding='utf-8') as f:
         json.dump(results_json, f, indent=2)
-    
+
     print(f"\n✓ Results saved to:")
     print(f"  Visualization: {viz_path}")
     print(f"  Metadata: {json_path}")
@@ -305,43 +303,65 @@ def run_demo(args):
     print("=" * 60)
     print("\nNote: Gradio is required for the demo.")
     print("Install with: pip install gradio")
-    
+
     try:
         import gradio as gr
     except ImportError:
         print("\nError: Gradio not installed.")
         print("Install with: pip install gradio")
         return
-    
-    from src.inference import PlacementPredictor
+
+    from src.models import SAMQPlacementModel
+    from src.inference import visualize_results
     from PIL import Image
     import numpy as np
-    
+    import torch
+
+    # Load model (cached)
+    def get_model():
+        if not hasattr(get_model, "_model"):
+            checkpoint = torch.load("checkpoints/checkpoint_best.pt", map_location="cpu")
+            model_config = checkpoint.get("config", {}).get("model", {})
+
+            get_model._model = SAMQPlacementModel(
+                qwen_model_name=model_config.get("qwen", {}).get(
+                    "model_name", "./models/qwen3_vl"
+                ),
+                sam3_input_dim=model_config.get("sam3", {}).get("input_dim", 256),
+                qwen_hidden_dim=model_config.get("qwen", {}).get("hidden_dim", 4096),
+                adapter_hidden_dim=model_config.get("adapter", {}).get("hidden_dim", 512),
+                num_seg_tokens=model_config.get("num_seg_tokens", 1),
+                device="cuda" if torch.cuda.is_available() else "cpu",
+                action_head_config=model_config.get("action_head", {"heatmap_size": 64}),
+            )
+            get_model._model.load_state_dict(checkpoint["model_state_dict"])
+            get_model._model.eval()
+        return get_model._model
+
     # Create simple demo interface
     def predict_placement(plane_img, object_img, prompt, threshold):
         """Gradio interface function."""
         # Convert numpy to PIL
         plane_pil = Image.fromarray(plane_img)
         object_pil = Image.fromarray(object_img)
-        
-        # Load predictor (cached)
-        if not hasattr(predict_placement, "predictor"):
-            predict_placement.predictor = PlacementPredictor(
-                checkpoint_path="checkpoints/checkpoint_best.pt"
-            )
-        
-        results = predict_placement.predictor.predict(
+
+        model = get_model()
+
+        output = model.predict(
             plane_image=plane_pil,
-            object_image=object_pil,
             text_prompt=prompt,
+            images=[plane_pil, object_pil],
             threshold=threshold,
         )
-        
+
         # Create visualization
-        from src.inference import visualize_results
-        fig = visualize_results(plane_pil, results, show=False)
-        
-        return fig, results["scores"].shape[0]
+        fig = visualize_results(
+            plane_pil,
+            {"heatmap": output["heatmap"], "binary_heatmap": output["binary_heatmap"]},
+            show=False,
+        )
+
+        return fig, output["rotation_6d"].tolist()
     
     # Build Gradio interface
     with gr.Blocks(title="SAM-Q Demo") as demo:
