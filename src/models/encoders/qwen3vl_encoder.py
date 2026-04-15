@@ -197,6 +197,12 @@ class Qwen3VLEncoder(nn.Module):
         if hasattr(self.model, "base_model") and hasattr(self.model.base_model, "gradient_checkpointing_enable"):
             self.model.base_model.gradient_checkpointing_enable()
 
+        # Disable KV cache for training with gradient checkpointing
+        if hasattr(self.model, "config"):
+            self.model.config.use_cache = False
+        if hasattr(self.model, "base_model") and hasattr(self.model.base_model, "config"):
+            self.model.base_model.config.use_cache = False
+
         # Print trainable parameters
         trainable_params, all_param = self.model.get_nb_trainable_parameters()
         trainable_pct = 100 * trainable_params / all_param
