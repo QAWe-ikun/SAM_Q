@@ -60,7 +60,7 @@ class Qwen3VLEncoder(nn.Module):
         self.training_mode: bool = False
         self.lora_config: Optional[Dict] = None
         
-    def load_model(self):
+    def load_model(self, use_cache: bool = True):
         """Lazy load the Qwen3-VL model and processor."""
         if self.model is not None:
             return
@@ -68,7 +68,7 @@ class Qwen3VLEncoder(nn.Module):
         try:
             from transformers import Qwen3VLForConditionalGeneration, AutoProcessor
 
-            self.processor = AutoProcessor.from_pretrained(self.model_name)
+            self.processor = AutoProcessor.from_pretrained(self.model_name, use_cache=use_cache)
 
             # Try flash_attention_2, fall back to sdpa/eager
             attn_impl = "eager"
@@ -84,9 +84,10 @@ class Qwen3VLEncoder(nn.Module):
                 torch_dtype=self.dtype,
                 device_map=self.device,
                 attn_implementation=attn_impl,
+                use_cache=use_cache
             )
-            # Disable KV cache by default (required for gradient checkpointing in training)
-            self.model.config.use_cache = False
+            # Sync KV cache setting with model config
+            self.model.config.use_cache = use_cache
 
             # Set output dimension based on Qwen3-VL hidden size
             cfg = self.model.config
@@ -160,7 +161,7 @@ class Qwen3VLEncoder(nn.Module):
                 "Please install peft: pip install peft"
             ) from e
 
-        self.load_model()
+        self.load_model(use_cache=False)  # Ensure model is loaded before applying LoRA
 
         # Optional: QLoRA 4-bit quantization
         if use_qlora:
