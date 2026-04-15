@@ -83,6 +83,8 @@ class Trainer:
             self.criterion = PlacementLoss(
                 dice_weight=loss_config.get("dice_weight", 1.0),
                 bce_weight=loss_config.get("bce_weight", 1.0),
+                rotation_weight=loss_config.get("rotation_weight", 0.5),
+                scale_weight=loss_config.get("scale_weight", 0.3),
             ).to(self.device)
             self._setup_stage2()
         
@@ -155,13 +157,13 @@ class Trainer:
         self.model.freeze_sam3_image_encoder()
         if hasattr(self.model, "freeze_sam3_decoder"):
             self.model.freeze_sam3_decoder()
-        if hasattr(self.model, "adapter"):
+        if hasattr(self.model, "adapter") and self.model.adapter is not None:
             for p in self.model.adapter.parameters():
                 p.requires_grad = False
-        if hasattr(self.model, "seg_projector"):
+        if hasattr(self.model, "seg_projector") and self.model.seg_projector is not None:
             for p in self.model.seg_projector.parameters():
                 p.requires_grad = False
-        if hasattr(self.model, "seg_action_head"):
+        if hasattr(self.model, "seg_action_head") and self.model.seg_action_head is not None:
             for p in self.model.seg_action_head.parameters():
                 p.requires_grad = False
 
@@ -205,10 +207,10 @@ class Trainer:
 
         # 解冻 Adapter
         if not model_config.get("adapter", {}).get("freeze", False):
-            if hasattr(self.model, "adapter"):
+            if hasattr(self.model, "adapter") and self.model.adapter is not None:
                 for p in self.model.adapter.parameters():
                     p.requires_grad = True
-            if hasattr(self.model, "seg_projector"):
+            if hasattr(self.model, "seg_projector") and self.model.seg_projector is not None:
                 for p in self.model.seg_projector.parameters():
                     p.requires_grad = True
             print("[Trainer] Stage 2: Adapter unfrozen")
@@ -364,15 +366,19 @@ class Trainer:
                 )
 
                 # Compute loss
+                gt_rot = batch.get("rotation_6d")
+                gt_scl = batch.get("scale")
                 loss_dict = self.criterion(
                     output["heatmap"],
                     masks[i:i+1],
                     output.get("rotation_6d"),
                     output.get("scale_relative"),
                     output.get("class_logits"),
+                    gt_rotation_6d=gt_rot[i:i+1] if gt_rot is not None else None,
+                    gt_scale=gt_scl[i:i+1] if gt_scl is not None else None,
                 )
                 batch_loss += loss_dict["total"]
-            
+
             # Average loss
             avg_loss = batch_loss / len(batch["plane_images"])
             
@@ -442,12 +448,16 @@ class Trainer:
                     images=[plane_image, object_image],
                 )
 
+                gt_rot = batch.get("rotation_6d")
+                gt_scl = batch.get("scale")
                 loss_dict = self.criterion(
                     output["heatmap"],
                     masks[i:i+1],
                     output.get("rotation_6d"),
                     output.get("scale_relative"),
                     output.get("class_logits"),
+                    gt_rotation_6d=gt_rot[i:i+1] if gt_rot is not None else None,
+                    gt_scale=gt_scl[i:i+1] if gt_scl is not None else None,
                 )
                 batch_loss += loss_dict["total"]
 

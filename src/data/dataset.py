@@ -121,6 +121,10 @@ class ObjectPlacementDataset(Dataset):
         # stage1 conversation response (含 [SEG] 的 GPT 回复)
         response = ann.get("response", None)
 
+        # Stage 2 GT: 6D rotation [6] + scale [1]（可选）
+        rotation_6d = torch.tensor(ann["rotation_6d"], dtype=torch.float32) if "rotation_6d" in ann else None
+        scale = torch.tensor([ann["scale"]], dtype=torch.float32) if "scale" in ann else None
+
         # Convert PIL images to tensors [3, H, W]
         plane_tensor = torch.from_numpy(np.array(plane_image, dtype=np.float32) / 255.0).permute(2, 0, 1)
         object_tensor = torch.from_numpy(np.array(object_image, dtype=np.float32) / 255.0).permute(2, 0, 1)
@@ -129,8 +133,10 @@ class ObjectPlacementDataset(Dataset):
             "plane_image": plane_tensor,
             "object_image": object_tensor,
             "text_prompt": text_prompt,
-            "response": response,       # None 时 stage1 使用默认回复
+            "response": response,
             "mask": mask,
+            "rotation_6d": rotation_6d,   # None 或 [6]
+            "scale": scale,               # None 或 [1]
             "metadata": {
                 "scene_id": ann.get("scene_id", idx),
                 "object_id": ann.get("object_id", None),
@@ -159,9 +165,15 @@ class ObjectPlacementDataset(Dataset):
         plane_images = torch.stack([item["plane_image"] for item in batch])
         object_images = torch.stack([item["object_image"] for item in batch])
         text_prompts = [item["text_prompt"] for item in batch]
-        responses = [item.get("response") for item in batch]  # None 表示无标注
+        responses = [item.get("response") for item in batch]
         masks = torch.stack([item["mask"] for item in batch])
         metadata = [item["metadata"] for item in batch]
+
+        # rotation_6d / scale: 有 GT 时 stack，否则为 None
+        rot_list = [item.get("rotation_6d") for item in batch]
+        scale_list = [item.get("scale") for item in batch]
+        rotation_6d = torch.stack(rot_list) if all(r is not None for r in rot_list) else None
+        scale = torch.stack(scale_list) if all(s is not None for s in scale_list) else None
 
         return {
             "plane_images": plane_images,
@@ -169,6 +181,8 @@ class ObjectPlacementDataset(Dataset):
             "text_prompts": text_prompts,
             "responses": responses,
             "masks": masks,
+            "rotation_6d": rotation_6d,   # [B, 6] 或 None
+            "scale": scale,               # [B, 1] 或 None
             "metadata": metadata,
         }
 
@@ -275,11 +289,18 @@ class ObjectPlacementDataModule:
         masks = torch.stack([item["mask"] for item in batch])
         metadata = [item["metadata"] for item in batch]
 
+        rot_list = [item.get("rotation_6d") for item in batch]
+        scale_list = [item.get("scale") for item in batch]
+        rotation_6d = torch.stack(rot_list) if all(r is not None for r in rot_list) else None
+        scale = torch.stack(scale_list) if all(s is not None for s in scale_list) else None
+
         return {
             "plane_images": plane_images,
             "object_images": object_images,
             "text_prompts": text_prompts,
             "responses": responses,
             "masks": masks,
+            "rotation_6d": rotation_6d,
+            "scale": scale,
             "metadata": metadata,
         }

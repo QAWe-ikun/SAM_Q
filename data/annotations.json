@@ -5,7 +5,10 @@
     "plane_image_path": "plane_images/scene_001.png",
     "object_image_path": "object_images/chair_001.png",
     "mask_path": "masks/scene_001_mask.png",
-    "text_prompt": "把椅子放在桌子旁边",
+    "text_prompt": "<image>\n<image>\n把椅子放在桌子旁边",
+    "response": "好的，我会将椅子放在桌子旁边合适的位置。[SEG]",
+    "rotation_6d": [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+    "scale": 1.0,
     "split": "train"
   },
   {
@@ -14,7 +17,10 @@
     "plane_image_path": "plane_images/scene_002.png",
     "object_image_path": "object_images/chair_001.png",
     "mask_path": "masks/scene_002_mask.png",
-    "text_prompt": "把椅子放在桌子旁边",
+    "text_prompt": "<image>\n<image>\n把椅子放在桌子旁边",
+    "response": "椅子放在桌子旁边最为合适。[SEG]",
+    "rotation_6d": [0.707, 0.707, 0.0, -0.707, 0.707, 0.0],
+    "scale": 0.8,
     "split": "train"
   },
   {
@@ -23,7 +29,10 @@
     "plane_image_path": "plane_images/scene_003.png",
     "object_image_path": "object_images/chair_002.png",
     "mask_path": "masks/scene_003_mask.png",
-    "text_prompt": "把椅子放在桌子旁边",
+    "text_prompt": "<image>\n<image>\n把椅子放在桌子旁边",
+    "response": "我将把椅子放置在桌子旁边。[SEG]",
+    "rotation_6d": [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+    "scale": 1.2,
     "split": "val"
   }
 ]

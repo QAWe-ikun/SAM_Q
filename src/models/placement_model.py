@@ -431,13 +431,16 @@ class PlacementLoss(nn.Module):
         - Position regularization
     """
     
-    def __init__(self, dice_weight: float = 1.0, bce_weight: float = 1.0):
+    def __init__(self, dice_weight: float = 1.0, bce_weight: float = 1.0,
+                 rotation_weight: float = 0.5, scale_weight: float = 0.3):
         super().__init__()
         self.dice_weight = dice_weight
         self.bce_weight = bce_weight
-        
+        self.rotation_weight = rotation_weight
+        self.scale_weight = scale_weight
+
         self.bce_loss = nn.BCEWithLogitsLoss()
-        
+
     def forward(
         self,
         predicted_masks: torch.Tensor,
@@ -445,6 +448,8 @@ class PlacementLoss(nn.Module):
         pred_rotation_6d: Optional[torch.Tensor] = None,
         pred_scale: Optional[torch.Tensor] = None,
         class_logits: Optional[torch.Tensor] = None,
+        gt_rotation_6d: Optional[torch.Tensor] = None,
+        gt_scale: Optional[torch.Tensor] = None,
     ) -> Dict[str, torch.Tensor]:
         """
         Compute placement prediction loss.
@@ -455,6 +460,8 @@ class PlacementLoss(nn.Module):
             pred_rotation_6d: Predicted 6D rotation [B, 6] (optional)
             pred_scale: Predicted scale [B] (optional)
             class_logits: [num_layers, B, num_candidates, 1] (optional)
+            gt_rotation_6d: GT 6D rotation [B, 6] (optional, 有监督)
+            gt_scale: GT scale [B, 1] (optional, 有监督)
 
         Returns:
             losses: Dictionary with total and component losses
@@ -488,17 +495,28 @@ class PlacementLoss(nn.Module):
         losses["dice"] = dice_loss
         losses["total"] = losses["total"] + self.dice_weight * dice_loss
 
-        # Rotation loss (regularization if no target)
+        # Rotation loss
         if pred_rotation_6d is not None:
-            rotation_loss = pred_rotation_6d.pow(2).mean()  # L2 regularization
+            if gt_rotation_6d is not None:
+                # 有监督: L1 loss between predicted and GT 6D rotation
+                rotation_loss = F.l1_loss(pred_rotation_6d, gt_rotation_6d.to(pred_rotation_6d.device))
+            else:
+                # 无监督: L2 regularization (趋近单位旋转)
+                rotation_loss = pred_rotation_6d.pow(2).mean()
             losses["rotation"] = rotation_loss
-            losses["total"] = losses["total"] + rotation_loss
+            losses["total"] = losses["total"] + self.rotation_weight * rotation_loss
 
-        # Scale loss (regularization around 1.0)
+        # Scale loss
         if pred_scale is not None:
-            scale_loss = (pred_scale - 1.0).pow(2).mean()
+            if gt_scale is not None:
+                # 有监督: L1 loss between predicted and GT scale
+                gt_s = gt_scale.to(pred_scale.device).squeeze(-1)  # [B]
+                scale_loss = F.l1_loss(pred_scale, gt_s)
+            else:
+                # 无监督: 正则化 (趋近 1.0)
+                scale_loss = (pred_scale - 1.0).pow(2).mean()
             losses["scale"] = scale_loss
-            losses["total"] = losses["total"] + scale_loss
+            losses["total"] = losses["total"] + self.scale_weight * scale_loss
 
         return losses
     

@@ -475,6 +475,8 @@ Inference results are saved as:
 SAM-Q/
 +-- configs/                     # Configuration files
 |   +-- config.yaml               # Configuration
+|   +-- stage1_qwen_lora.yaml               # Configuration for train stage 1
+|   +-- stage2_decoder.yaml               # Configuration for train stage 2
 |
 +-- src/
 |   +-- models/                  # Model architectures
