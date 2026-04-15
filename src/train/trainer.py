@@ -5,19 +5,17 @@ Trainer for SAM-Q
 Provides comprehensive training loop with validation, checkpointing, and logging.
 """
 
-import torch
-import torch.nn as nn
-from torch.utils.data import DataLoader
-from pathlib import Path
-from typing import Dict, Any, Optional, List
-from tqdm import tqdm
 import yaml
+import torch
+from tqdm import tqdm
+from pathlib import Path
 from datetime import datetime
+from torch.utils.data import DataLoader
+from typing import Dict, Any, Optional, List
 
+from .metrics import compute_metrics
 from ..models import SAMQPlacementModel, PlacementLoss
 from .optimizer import create_optimizer, create_scheduler
-from .metrics import compute_metrics
-from ..utils.config import Config
 
 
 class Trainer:
@@ -68,9 +66,8 @@ class Trainer:
         # 根据 loss.type 确定训练阶段
         # stage1 (lm)        → Qwen3-VL LoRA 微调，语言模型损失
         # stage2 (placement) → Adapter + SAM3 Decoder，placement 损失
-        # eval / 其他        → 只做评估，不训练
         loss_config = config.get("loss", {})
-        self.stage = loss_config.get("type", "placement")  # "lm" | "placement" | "vla"
+        self.stage = loss_config.get("type", "placement")  # "lm" | "placement"
         print(f"[Trainer] Training stage: {self.stage}")
 
         # Initialize loss
@@ -79,7 +76,7 @@ class Trainer:
             self.criterion = None  # LM loss 在 train_epoch_stage1 里计算
             self._setup_stage1()
         else:
-            # Stage 2 / eval: placement loss
+            # Stage 2: placement loss
             self.criterion = PlacementLoss(
                 dice_weight=loss_config.get("dice_weight", 1.0),
                 bce_weight=loss_config.get("bce_weight", 1.0),
@@ -148,7 +145,7 @@ class Trainer:
     # ------------------------------------------------------------------ #
 
     def _setup_stage1(self):
-        """Stage 1: 只训练 Qwen3-VL LoRA，冻结其余所有模块。"""
+        """Stage 1: 只训练 Qwen3-VL LoRA, 冻结其余所有模块。"""
         model_config = self.config.get("model", {})
         qwen_cfg = model_config.get("qwen", {})
         lora_cfg = qwen_cfg.get("lora", {})
@@ -180,7 +177,7 @@ class Trainer:
             print("[Trainer] Stage 1: Qwen3-VL LoRA enabled")
 
     def _setup_stage2(self):
-        """Stage 2: 冻结 Qwen3-VL，训练 Adapter + SAM3 Decoder。"""
+        """Stage 2: 冻结 Qwen3-VL, 训练 Adapter + SAM3 Decoder。"""
         model_config = self.config.get("model", {})
         qwen_cfg = model_config.get("qwen", {})
 
@@ -261,17 +258,18 @@ class Trainer:
         for batch_idx, batch in enumerate(progress_bar):
             self.optimizer.zero_grad()
 
-            batch_loss = torch.tensor(0.0, device=self.device)
             plane_images_batch = batch["plane_images"]
             object_images_batch = batch["object_images"]
+            batch_size = len(plane_images_batch)
+            accumulated_loss = 0.0
 
-            for i in range(len(plane_images_batch)):
+            for i in range(batch_size):
                 plane_img = plane_images_batch[i]
                 obj_img = object_images_batch[i]
                 text_prompt = batch["text_prompts"][i]
-                response = batch.get("responses", [None] * len(plane_images_batch))[i]
+                response = batch.get("responses", [None] * batch_size)[i]
                 if response is None:
-                    response = f"好的，我将为您放置物体。[SEG]"
+                    response = "好的，我将为您放置物体。[SEG]"
 
                 # 构造 messages（input + target）
                 messages, image_list = self.model.qwen_encoder._build_message(
@@ -296,7 +294,6 @@ class Trainer:
                 labels = input_ids.clone()
 
                 # 找到 assistant 回复起始位置，之前的 token 不计入 loss
-                # 用 assistant 标记 token 定位（简化：从最后 N 个 token 开始）
                 response_tokens = tokenizer(response, add_special_tokens=False)["input_ids"]
                 resp_len = len(response_tokens)
                 labels[:, :-resp_len] = -100  # 只对回复部分计算 loss
@@ -307,20 +304,22 @@ class Trainer:
                 )
                 loss = outputs.loss
                 if loss is not None:
-                    batch_loss = batch_loss + loss
+                    # 立即 backward 并累积梯度（避免 computation graph 累积）
+                    (loss / batch_size).backward()
+                    accumulated_loss += loss.item()
 
-            avg_loss = batch_loss / len(plane_images_batch)
-            avg_loss.backward()
+            # 梯度裁剪
             torch.nn.utils.clip_grad_norm_(
                 filter(lambda p: p.requires_grad, self.model.parameters()), 1.0
             )
             self.optimizer.step()
 
-            total_loss += avg_loss.item()
+            avg_loss = accumulated_loss / batch_size
+            total_loss += avg_loss
             num_batches += 1
 
             if batch_idx % log_interval == 0:
-                progress_bar.set_postfix({"loss": f"{avg_loss.item():.4f}"})
+                progress_bar.set_postfix({"loss": f"{avg_loss:.4f}"})
 
         return {"train_loss": total_loss / max(num_batches, 1)}
 
