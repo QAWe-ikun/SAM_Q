@@ -19,12 +19,19 @@ SAM-Q 使用 Qwen3-VL 作为视觉语言编码器，通过 `[SEG]` token 桥接�
 ## 架构
 
 ```
+annotations.json 格式:
+  plane_image_path: "plane_images/scene_001.png"          # SAM3 输入
+  images_path: ["plane_images/scene_001.png",              # Qwen3-VL 输入（按顺序匹配 <image>）
+                "object_images/chair_001.png"]
+  text_prompt: "<image>\n<image>\n把椅子放在桌子旁边"
+
+
 阶段 1: Qwen3-VL 微调
 ─────────────────────────────────
 输入:
-  - plane_image (房间俯视图)
-  - object_image (物体俯视图)
-  - text_prompt ("把椅子放在桌子旁边")
+  - images_path 中的所有图片（按 <image> 顺序）
+  - text_prompt（含 <image> 占位符）
+  - response（含 [SEG] 的 GPT 回复）
 
 Qwen3-VL (LoRA)
   ↓
@@ -34,17 +41,21 @@ Qwen3-VL (LoRA)
   ↓
 Loss: 语言模型 next-token prediction
 
+自动后处理: 提取 [SEG] hidden state → data/seg_features/{scene_id}.pt
+
 ─────────────────────────────────
 
 阶段 2: Adapter + SAM3 Decoder 训练
 ─────────────────────────────────
-输入: (同上)
+输入:
+  - plane_image_path → SAM3（房间俯视图）
+  - seg_features（预提取的 [SEG] hidden state，不加载 Qwen3-VL）
 
-Qwen3-VL (冻结)
+SAM3 Vision Encoder (冻结)
   ↓
-  输出 hidden states → 提取 [SEG] token 的 hidden state
+  plane_image → 256-dim features
   ↓
-SEG Token Projector (可训练)
+SEG Token Projector (可训练) ← seg_hidden [4096-dim]
   ↓
   投影到 SAM3 空间 (256-dim)
   ↓
