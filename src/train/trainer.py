@@ -244,7 +244,7 @@ class Trainer:
         Dataset 需要提供 `response` 字段（含 [SEG] 的 GPT 回复）。
         如果 dataset 没有 `response`, 自动使用 "好的, 我将为您放置物体。[SEG]" 作为目标。
         """
-        self.model.qwen_encoder.load_model()
+        # Model already loaded in enable_finetuning()
         self.model.train()
 
         tokenizer = self.model.qwen_encoder.processor.tokenizer
@@ -258,14 +258,12 @@ class Trainer:
         for batch_idx, batch in enumerate(progress_bar):
             self.optimizer.zero_grad()
 
-            plane_images_batch = batch["plane_images"]
-            object_images_batch = batch["object_images"]
-            batch_size = len(plane_images_batch)
+            batch_images = batch["images"]  # List[List[Tensor]]
+            batch_size = len(batch_images)
             accumulated_loss = 0.0
 
             for i in range(batch_size):
-                plane_img = plane_images_batch[i]
-                obj_img = object_images_batch[i]
+                sample_images = batch_images[i]  # List[Tensor]
                 text_prompt = batch["text_prompts"][i]
                 response = batch.get("responses", [None] * batch_size)[i]
                 if response is None:
@@ -274,7 +272,7 @@ class Trainer:
                 # 构造 messages（input + target）
                 messages, image_list = self.model.qwen_encoder._build_message(
                     text_prompt=text_prompt,
-                    images=[plane_img, obj_img],
+                    images=sample_images,
                 )
                 # 拼接 assistant 回复到 messages
                 messages.append({"role": "assistant", "content": [{"type": "text", "text": response}]})
@@ -352,17 +350,17 @@ class Trainer:
         for batch_idx, batch in enumerate(progress_bar):
             # Move data to device
             plane_images_batch = batch["plane_images"].to(self.device)
-            object_images_batch = batch["object_images"].to(self.device)
+            batch_images = batch["images"]  # List[List[Tensor]]
             masks = batch["masks"].to(self.device)
-            seg_hidden_batch = batch.get("seg_hidden")  # [B, hidden_dim] 或 None
+            seg_hidden_batch = batch.get("seg_hidden")  # [B, hidden_dim] or None
             if seg_hidden_batch is not None:
                 seg_hidden_batch = seg_hidden_batch.to(self.device)
 
             # Process each sample
             batch_loss = 0.0
-            for i in range(len(batch["plane_images"])):
+            for i in range(len(plane_images_batch)):
                 plane_image = plane_images_batch[i]
-                object_image = object_images_batch[i]
+                sample_images = [img.to(self.device) for img in batch_images[i]]
                 text_prompt = batch["text_prompts"][i]
                 seg_hidden_i = seg_hidden_batch[i] if seg_hidden_batch is not None else None
 
@@ -370,7 +368,7 @@ class Trainer:
                 output = self.model(
                     plane_image=plane_image,
                     text_prompt=text_prompt,
-                    images=[plane_image, object_image] if seg_hidden_i is None else None,
+                    images=sample_images if seg_hidden_i is None else None,
                     seg_hidden=seg_hidden_i,
                 )
 
@@ -442,23 +440,23 @@ class Trainer:
         
         for batch in tqdm(dataloader, desc="Validation", leave=False):
             plane_images_batch = batch["plane_images"].to(self.device)
-            object_images_batch = batch["object_images"].to(self.device)
+            batch_images = batch["images"]  # List[List[Tensor]]
             masks = batch["masks"].to(self.device)
             seg_hidden_batch = batch.get("seg_hidden")
             if seg_hidden_batch is not None:
                 seg_hidden_batch = seg_hidden_batch.to(self.device)
 
             batch_loss = 0.0
-            for i in range(len(batch["plane_images"])):
+            for i in range(len(plane_images_batch)):
                 plane_image = plane_images_batch[i]
-                object_image = object_images_batch[i]
+                sample_images = [img.to(self.device) for img in batch_images[i]]
                 text_prompt = batch["text_prompts"][i]
                 seg_hidden_i = seg_hidden_batch[i] if seg_hidden_batch is not None else None
 
                 output = self.model(
                     plane_image=plane_image,
                     text_prompt=text_prompt,
-                    images=[plane_image, object_image] if seg_hidden_i is None else None,
+                    images=sample_images if seg_hidden_i is None else None,
                     seg_hidden=seg_hidden_i,
                 )
 

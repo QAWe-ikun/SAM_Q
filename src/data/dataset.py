@@ -90,16 +90,23 @@ class ObjectPlacementDataset(Dataset):
         Returns:
             sample: Dictionary containing:
                 - plane_image: Plane/room top-down view (Tensor) [3, H, W]
-                - object_image: Object top-down view (Tensor) [3, H, W]
+                - images: List of image tensors [3, H, W] (order matches <image> in prompt)
                 - text_prompt: Placement instruction (str)
                 - mask: Ground truth placement mask (Tensor) [1, H, W]
                 - metadata: Additional info
         """
         ann = self.annotations[idx]
 
-        # Load images (dataset should have uniform size, no resize here)
+        # Load plane_image (for SAM3 input)
         plane_image = self._load_image(self.data_dir / ann["plane_image_path"])
-        object_image = self._load_image(self.data_dir / ann["object_image_path"])
+        plane_tensor = torch.from_numpy(np.array(plane_image, dtype=np.float32) / 255.0).permute(2, 0, 1)
+
+        # Load all images (for Qwen3-VL input, order matches <image> placeholders)
+        images = []
+        for img_path in ann["images_path"]:
+            pil_img = self._load_image(self.data_dir / img_path)
+            tensor = torch.from_numpy(np.array(pil_img, dtype=np.float32) / 255.0).permute(2, 0, 1)
+            images.append(tensor)
 
         # Load mask
         mask = self._load_mask(self.data_dir / ann["mask_path"])
@@ -113,10 +120,6 @@ class ObjectPlacementDataset(Dataset):
         rotation_6d = torch.tensor(ann["rotation_6d"], dtype=torch.float32) if "rotation_6d" in ann else None
         scale = torch.tensor([ann["scale"]], dtype=torch.float32) if "scale" in ann else None
 
-        # Convert PIL images to tensors [3, H, W]
-        plane_tensor = torch.from_numpy(np.array(plane_image, dtype=np.float32) / 255.0).permute(2, 0, 1)
-        object_tensor = torch.from_numpy(np.array(object_image, dtype=np.float32) / 255.0).permute(2, 0, 1)
-
         # Pre-extracted [SEG] hidden state (for Stage 2)
         seg_hidden = None
         if self.seg_feature_dir is not None:
@@ -127,14 +130,14 @@ class ObjectPlacementDataset(Dataset):
                 seg_hidden = seg_data["seg_hidden"]  # [hidden_dim]
 
         return {
-            "plane_image": plane_tensor,
-            "object_image": object_tensor,
+            "plane_image": plane_tensor,              # [3, H, W] for SAM3
+            "images": images,                         # List of [3, H, W] for Qwen3-VL
             "text_prompt": text_prompt,
             "response": response,
             "mask": mask,
             "rotation_6d": rotation_6d,
             "scale": scale,
-            "seg_hidden": seg_hidden,     # None or [hidden_dim]
+            "seg_hidden": seg_hidden,                 # None or [hidden_dim]
             "metadata": {
                 "scene_id": ann.get("scene_id", idx),
                 "object_id": ann.get("object_id", None),
@@ -156,9 +159,12 @@ class ObjectPlacementDataset(Dataset):
         return mask_tensor
 
     def _collate_fn(self, batch: List[Dict]) -> Dict[str, Any]:
-        """Collate function for DataLoader — convert singular keys to plural and stack."""
+        """Collate function for DataLoader."""
+        # plane_images: [B, 3, H, W] for SAM3
         plane_images = torch.stack([item["plane_image"] for item in batch])
-        object_images = torch.stack([item["object_image"] for item in batch])
+        # images: List[List[Tensor]] for Qwen3-VL
+        batch_images = [item["images"] for item in batch]
+
         text_prompts = [item["text_prompt"] for item in batch]
         responses = [item.get("response") for item in batch]
         masks = torch.stack([item["mask"] for item in batch])
@@ -175,13 +181,13 @@ class ObjectPlacementDataset(Dataset):
         seg_hidden = torch.stack(seg_list) if all(s is not None for s in seg_list) else None
 
         return {
-            "plane_images": plane_images,
-            "object_images": object_images,
+            "plane_images": plane_images,               # [B, 3, H, W]
+            "images": batch_images,                     # List[List[Tensor]]
             "text_prompts": text_prompts,
             "responses": responses,
             "masks": masks,
             "rotation_6d": rotation_6d,
             "scale": scale,
-            "seg_hidden": seg_hidden,     # [B, hidden_dim] or None
+            "seg_hidden": seg_hidden,                   # [B, hidden_dim] or None
             "metadata": metadata,
         }

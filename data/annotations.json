@@ -1,9 +1,8 @@
 [
   {
     "scene_id": "scene_001",
-    "object_id": "chair_001",
     "plane_image_path": "plane_images/scene_001.png",
-    "object_image_path": "object_images/chair_001.png",
+    "images_path": ["plane_images/scene_001.png", "object_images/chair_001.png"],
     "mask_path": "masks/scene_001_mask.png",
     "text_prompt": "<image>\n<image>\n把椅子放在桌子旁边",
     "response": "好的，我会将椅子放在桌子旁边合适的位置。[SEG]",
@@ -13,9 +12,8 @@
   },
   {
     "scene_id": "scene_002",
-    "object_id": "chair_001",
     "plane_image_path": "plane_images/scene_002.png",
-    "object_image_path": "object_images/chair_001.png",
+    "images_path": ["plane_images/scene_002.png", "object_images/chair_001.png"],
     "mask_path": "masks/scene_002_mask.png",
     "text_prompt": "<image>\n<image>\n把椅子放在桌子旁边",
     "response": "椅子放在桌子旁边最为合适。[SEG]",
@@ -25,9 +23,8 @@
   },
   {
     "scene_id": "scene_003",
-    "object_id": "chair_002",
     "plane_image_path": "plane_images/scene_003.png",
-    "object_image_path": "object_images/chair_002.png",
+    "images_path": ["plane_images/scene_003.png", "object_images/chair_002.png"],
     "mask_path": "masks/scene_003_mask.png",
     "text_prompt": "<image>\n<image>\n把椅子放在桌子旁边",
     "response": "我将把椅子放置在桌子旁边。[SEG]",
