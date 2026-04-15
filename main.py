@@ -190,8 +190,6 @@ def run_train(args):
 
     train_dataset = ObjectPlacementDataset(
         data_dir=data_dir,
-        plane_image_size=tuple(data_config.get("plane_image_size", [1024, 1024])),
-        object_image_size=tuple(data_config.get("object_image_size", [1024, 1024])),
         split="train",
         ann_file=ann_file,
         seg_feature_dir=seg_feature_dir,
@@ -199,8 +197,6 @@ def run_train(args):
 
     val_dataset = ObjectPlacementDataset(
         data_dir=data_dir,
-        plane_image_size=tuple(data_config.get("plane_image_size", [1024, 1024])),
-        object_image_size=tuple(data_config.get("object_image_size", [1024, 1024])),
         split="val",
         ann_file=ann_file,
         seg_feature_dir=seg_feature_dir,

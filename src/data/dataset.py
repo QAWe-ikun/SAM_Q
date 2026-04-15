@@ -38,8 +38,6 @@ class ObjectPlacementDataset(Dataset):
     def __init__(
         self,
         data_dir: str,
-        plane_image_size: Tuple[int, int] = (1024, 1024),
-        object_image_size: Tuple[int, int] = (512, 512),
         transform: Optional[Any] = None,
         split: str = "train",
         ann_file: str = "annotations.json",
@@ -50,16 +48,12 @@ class ObjectPlacementDataset(Dataset):
 
         Args:
             data_dir: Root directory containing the dataset
-            plane_image_size: Target size for plane images
-            object_image_size: Target size for object images
             transform: Optional transforms to apply
             split: Dataset split ('train', 'val', 'test')
             ann_file: Annotation filename
             seg_feature_dir: Directory containing pre-extracted [SEG] hidden states (for Stage 2)
         """
         self.data_dir = Path(data_dir)
-        self.plane_image_size = plane_image_size
-        self.object_image_size = object_image_size
         self.transform = transform
         self.split = split
         self.ann_file = ann_file
@@ -103,16 +97,9 @@ class ObjectPlacementDataset(Dataset):
         """
         ann = self.annotations[idx]
 
-        # Load images
-        plane_image = self._load_image(
-            self.data_dir / ann["plane_image_path"],
-            self.plane_image_size,
-        )
-
-        object_image = self._load_image(
-            self.data_dir / ann["object_image_path"],
-            self.object_image_size,
-        )
+        # Load images (dataset should have uniform size, no resize here)
+        plane_image = self._load_image(self.data_dir / ann["plane_image_path"])
+        object_image = self._load_image(self.data_dir / ann["object_image_path"])
 
         # Load mask
         mask = self._load_mask(self.data_dir / ann["mask_path"])
@@ -154,16 +141,13 @@ class ObjectPlacementDataset(Dataset):
             },
         }
     
-    def _load_image(self, path: Path, size: Tuple[int, int]) -> Image.Image:
-        """Load and resize an image."""
-        image = Image.open(path).convert("RGB")
-        image = image.resize(size, Image.Resampling.LANCZOS)
-        return image
-    
+    def _load_image(self, path: Path) -> Image.Image:
+        """Load an image. Assumes uniform size."""
+        return Image.open(path).convert("RGB")
+
     def _load_mask(self, path: Path) -> torch.Tensor:
-        """Load mask and convert to tensor."""
+        """Load mask and convert to tensor. Assumes uniform size."""
         mask = Image.open(path).convert("L")
-        mask = mask.resize(self.plane_image_size, Image.Resampling.NEAREST)
 
         # Convert to tensor (H, W) -> (1, H, W)
         mask_array = np.array(mask, dtype=np.float32) / 255.0

@@ -24,11 +24,7 @@ data:
   val_split: "val"
   test_split: "test"
 
-  # Image preprocessing
-  plane_image_size: [1024, 1024]
-  object_image_size: [1024, 1024]
-
-  # DataLoader settings
+  # Image preprocessing (sizes enforced at dataset generation time)
   batch_size: 4
   num_workers: 4
   pin_memory: true
