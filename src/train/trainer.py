@@ -321,7 +321,7 @@ class Trainer:
 
         return {"train_loss": total_loss / max(num_batches, 1)}
 
-    def train_epoch(
+    def train_epoch_stage2(
         self,
         dataloader: DataLoader,
         log_interval: int = 10,
@@ -414,18 +414,12 @@ class Trainer:
         return {"train_loss": avg_epoch_loss}
 
     @torch.no_grad()
-    def validate(
+    def _validate_stage2(
         self,
         dataloader: DataLoader,
     ) -> Dict[str, float]:
         """
-        Validate for one epoch.
-
-        Args:
-            dataloader: Validation DataLoader
-
-        Returns:
-            Metrics dictionary
+        Stage 2 验证：计算 IoU, Precision, Recall, F1 等指标。
         """
         self.model.eval()
 
@@ -437,10 +431,6 @@ class Trainer:
             "recall": 0.0,
             "f1": 0.0,
         }
-
-        # Stage 1: Validation with generation
-        if self.stage == "lm":
-            return self._validate_stage1(dataloader)
 
         for batch in tqdm(dataloader, desc="Validation", leave=False):
             plane_images_batch = batch["plane_images"].to(self.device)
@@ -536,18 +526,19 @@ class Trainer:
         for epoch in range(num_epochs):
             self.current_epoch = epoch
 
-            # 根据阶段选择对应的 train_epoch
+            # Train
             if self.stage == "lm":
                 train_metrics = self.train_epoch_stage1(train_loader, log_interval)
-                val_metrics = {}  # Stage 1 不做 mask 验证
             else:
-                # Train
-                train_metrics = self.train_epoch(train_loader, log_interval)
+                train_metrics = self.train_epoch_stage2(train_loader, log_interval)
 
-                # Validate
-                val_metrics = {}
-                if val_loader is not None and (epoch + 1) % val_interval == 0:
-                    val_metrics = self.validate(val_loader)
+            # Validate
+            val_metrics = {}
+            if val_loader is not None and (epoch + 1) % val_interval == 0:
+                if self.stage == "lm":
+                    val_metrics = self._validate_stage1(val_loader)
+                else:
+                    val_metrics = self._validate_stage2(val_loader)
             
             # Update scheduler
             if self.scheduler is not None:
