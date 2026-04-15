@@ -764,7 +764,7 @@ class Trainer:
         }
 
         training_config = self.config.get("training", {})
-        save_every_epoch = training_config.get("save_every_epoch", False)
+        save_epoch = training_config.get("save_epoch", False)
         save_interval = training_config.get("save_interval", 10)
 
         # Save epoch checkpoint
@@ -772,12 +772,8 @@ class Trainer:
             path = self.output_dir / "checkpoint_final.pt"
             torch.save(checkpoint, path)
         elif isinstance(epoch, int):
-            # Save every epoch if configured
-            if save_every_epoch:
-                path = self.output_dir / f"checkpoint_epoch_{epoch}.pt"
-                torch.save(checkpoint, path)
-            # Or save at specified intervals
-            elif (epoch + 1) % save_interval == 0:
+            # Save at specified intervals if save_epoch is enabled
+            if save_epoch and (epoch + 1) % save_interval == 0:
                 path = self.output_dir / f"checkpoint_epoch_{epoch}.pt"
                 torch.save(checkpoint, path)
 
