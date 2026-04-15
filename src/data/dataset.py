@@ -9,7 +9,7 @@ Handles loading and preprocessing of:
 """
 
 import torch
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset
 from PIL import Image
 from pathlib import Path
 from typing import Optional, List, Dict, Any, Tuple
@@ -55,7 +55,7 @@ class ObjectPlacementDataset(Dataset):
             transform: Optional transforms to apply
             split: Dataset split ('train', 'val', 'test')
             ann_file: Annotation filename
-            seg_feature_dir: 预提取 [SEG] hidden states 的目录（Stage 2 用）
+            seg_feature_dir: Directory containing pre-extracted [SEG] hidden states (for Stage 2)
         """
         self.data_dir = Path(data_dir)
         self.plane_image_size = plane_image_size
@@ -119,10 +119,10 @@ class ObjectPlacementDataset(Dataset):
 
         # Get text prompt and optional stage1 response
         text_prompt = ann.get("text_prompt", "Place the object here.")
-        # stage1 conversation response (含 [SEG] 的 GPT 回复)
+        # stage1 conversation response (contains [SEG] token)
         response = ann.get("response", None)
 
-        # Stage 2 GT: 6D rotation [6] + scale [1]（可选）
+        # Stage 2 GT: 6D rotation [6] + scale [1] (optional)
         rotation_6d = torch.tensor(ann["rotation_6d"], dtype=torch.float32) if "rotation_6d" in ann else None
         scale = torch.tensor([ann["scale"]], dtype=torch.float32) if "scale" in ann else None
 
@@ -130,7 +130,7 @@ class ObjectPlacementDataset(Dataset):
         plane_tensor = torch.from_numpy(np.array(plane_image, dtype=np.float32) / 255.0).permute(2, 0, 1)
         object_tensor = torch.from_numpy(np.array(object_image, dtype=np.float32) / 255.0).permute(2, 0, 1)
 
-        # 预提取的 [SEG] hidden state（Stage 2 用）
+        # Pre-extracted [SEG] hidden state (for Stage 2)
         seg_hidden = None
         if self.seg_feature_dir is not None:
             sample_id = ann.get("id", ann.get("scene_id", f"{self.split}_{idx:06d}"))
@@ -147,7 +147,7 @@ class ObjectPlacementDataset(Dataset):
             "mask": mask,
             "rotation_6d": rotation_6d,
             "scale": scale,
-            "seg_hidden": seg_hidden,     # None 或 [hidden_dim]
+            "seg_hidden": seg_hidden,     # None or [hidden_dim]
             "metadata": {
                 "scene_id": ann.get("scene_id", idx),
                 "object_id": ann.get("object_id", None),
@@ -172,7 +172,7 @@ class ObjectPlacementDataset(Dataset):
         return mask_tensor
 
     def _collate_fn(self, batch: List[Dict]) -> Dict[str, Any]:
-        """Collate function for DataLoader — 将单数 key 转为复数并 stack。"""
+        """Collate function for DataLoader — convert singular keys to plural and stack."""
         plane_images = torch.stack([item["plane_image"] for item in batch])
         object_images = torch.stack([item["object_image"] for item in batch])
         text_prompts = [item["text_prompt"] for item in batch]
@@ -180,13 +180,13 @@ class ObjectPlacementDataset(Dataset):
         masks = torch.stack([item["mask"] for item in batch])
         metadata = [item["metadata"] for item in batch]
 
-        # rotation_6d / scale: 有 GT 时 stack，否则为 None
+        # rotation_6d / scale: stack if GT exists, else None
         rot_list = [item.get("rotation_6d") for item in batch]
         scale_list = [item.get("scale") for item in batch]
         rotation_6d = torch.stack(rot_list) if all(r is not None for r in rot_list) else None
         scale = torch.stack(scale_list) if all(s is not None for s in scale_list) else None
 
-        # seg_hidden: 预提取时 stack，否则为 None
+        # seg_hidden: stack if pre-extracted, else None
         seg_list = [item.get("seg_hidden") for item in batch]
         seg_hidden = torch.stack(seg_list) if all(s is not None for s in seg_list) else None
 
@@ -198,6 +198,6 @@ class ObjectPlacementDataset(Dataset):
             "masks": masks,
             "rotation_6d": rotation_6d,
             "scale": scale,
-            "seg_hidden": seg_hidden,     # [B, hidden_dim] 或 None
+            "seg_hidden": seg_hidden,     # [B, hidden_dim] or None
             "metadata": metadata,
         }
