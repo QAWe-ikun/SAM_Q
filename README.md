@@ -419,13 +419,21 @@ encoder.enable_finetuning(
 ### Training Workflow
 
 ```python
-# 1. Prepare training batch
-batch = encoder.prepare_training_batch(
-    object_image=obj_img,
-    text_prompt="在餐桌旁放椅子",
-    num_seg=8,
+# 1. Prepare training data
+train_dataset = ObjectPlacementDataset(
+    data_dir=data_dir,
+    split="train",
+    ann_file=ann_file,
+    seg_feature_dir=seg_feature_dir,
 )
-# batch = {'input_ids': ..., 'attention_mask': ..., 'labels': ...}
+
+train_loader = DataLoader(
+    train_dataset,
+    batch_size=batch_size,
+    shuffle=True,
+    num_workers=num_workers,
+    collate_fn=train_dataset._collate_fn if hasattr(train_dataset, '_collate_fn') else None,
+)
 
 # 2. Forward pass (training mode returns logits + loss)
 output = encoder(

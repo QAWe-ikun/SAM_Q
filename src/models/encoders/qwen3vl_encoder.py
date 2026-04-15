@@ -83,12 +83,12 @@ class Qwen3VLEncoder(nn.Module):
                 self.model_name,
                 torch_dtype=self.dtype,
                 device_map=self.device,
-                attn_implementation=attn_impl,
-                use_cache=use_cache
+                attn_implementation=attn_impl
             )
-            # Sync KV cache setting with model config
+            
+            # Set use_cache for generation (important for SEG token generation)
             self.model.config.use_cache = use_cache
-
+            
             # Set output dimension based on Qwen3-VL hidden size
             cfg = self.model.config
             self._output_dim = getattr(cfg, "hidden_size", None) or cfg.text_config.hidden_size
@@ -622,141 +622,6 @@ class Qwen3VLEncoder(nn.Module):
 
         return seg_hidden, was_natural
 
-    def prepare_training_batch(
-        self,
-        text_prompt: str,
-        images: Optional[List[Image.Image]] = None,
-        seg_response: Optional[str] = None,
-        num_seg: int = 8,
-    ) -> Dict[str, torch.Tensor]:
-        """
-        Prepare a training batch with [SEG] tokens in the response.
-
-        This creates the proper input format for fine-tuning, where the
-        assistant response contains [SEG] tokens.
-
-        Args:
-            text_prompt: User instruction. Use <image> placeholders for images.
-            images: List of PIL images in order
-            seg_response: Custom assistant response (if None, auto-generated with SEG tokens)
-            num_seg: Number of SEG tokens to include in response
-
-        Returns:
-            dict with 'input_ids', 'attention_mask', 'labels', 'pixel_values'
-        """
-        self.load_model()
-
-        # Build user message
-        user_messages, user_images = self._build_message(
-            text_prompt=text_prompt,
-            images=images,
-        )
-
-        # Build assistant response with SEG tokens
-        if seg_response is None:
-            seg_tokens_str = " ".join([f"[SEG{i}]" for i in range(num_seg)])
-            seg_response = f"放置位置：{seg_tokens_str}"
-
-        # Full conversation
-        messages = user_messages + [
-            {"role": "assistant", "content": seg_response}
-        ]
-
-        # Apply chat template
-        text = self.processor.apply_chat_template(
-            messages,
-            tokenize=False,
-            add_generation_prompt=False,
-        )
-
-        # Process
-        inputs = self.processor(
-            text=[text],
-            images=user_images if user_images else None,
-            return_tensors="pt",
-            padding=True,
-        )
-
-        # Create labels (copy of input_ids)
-        labels = inputs["input_ids"].clone()
-
-        # Mask out user portion in labels (only compute loss on assistant response)
-        # Simplified: mask all tokens up to a reasonable point
-        # For production, implement precise masking based on chat template
-        user_text = self.processor.apply_chat_template(
-            user_messages,
-            tokenize=False,
-            add_generation_prompt=True,
-        )
-        user_inputs = self.processor(text=[user_text], return_tensors="pt")
-        user_len = user_inputs["input_ids"].size(1)
-        labels[:, :user_len] = -100  # -100 is ignored in cross_entropy
-
-        return {
-            "input_ids": inputs["input_ids"],
-            "attention_mask": inputs["attention_mask"],
-            "labels": labels,
-            "pixel_values": inputs.get("pixel_values"),
-        }
-
-    def save_finetuned_model(self, save_path: str):
-        """
-        Save fine-tuned model (LoRA adapter + processor).
-
-        Args:
-            save_path: Directory to save the model
-        """
-        if not self.training_mode:
-            raise RuntimeError("Model is not in fine-tuning mode. Call enable_finetuning() first.")
-
-        self.model.save_pretrained(save_path)
-        self.processor.save_pretrained(save_path)
-        print(f"[Qwen3VLEncoder] Fine-tuned model saved to: {save_path}")
-
-    def merge_and_unload(self):
-        """
-        Merge LoRA weights into base model and return merged model.
-        Use this after fine-tuning to create a standalone model.
-        """
-        if not self.training_mode:
-            raise RuntimeError("Model is not in fine-tuning mode.")
-
-        self.model = self.model.merge_and_unload()
-        self.training_mode = False
-        self.model.eval()
-        print("[Qwen3VLEncoder] LoRA weights merged into base model.")
-
-    def extract_exec_hidden(
-        self,
-        text_prompt: str,
-        images: Optional[List[Image.Image]] = None,
-    ) -> torch.Tensor:
-        """
-        Extract [SEG] token hidden state for VLA action decoding.
-
-        The [SEG] token serves dual purpose:
-          - Segmentation: triggers mask generation via SAM3
-          - Action output: position (heatmap) + rotation + scale
-
-        Args:
-            text_prompt: Text instruction with <image> placeholders
-            images: List of PIL images
-
-        Returns:
-            seg_hidden: [B, hidden_dim] hidden state at [SEG] position
-        """
-        self.load_model()
-
-        # Use generate_with_seg to get [SEG] hidden state
-        # force_only=True: directly append [SEG] without generation
-        seg_hidden, _ = self.generate_with_seg(
-            text_prompt=text_prompt,
-            images=images,
-            force_only=True,
-            num_seg=1,
-        )
-        return seg_hidden
-
 
 class Qwen3VLEncoderWithProjection(nn.Module):
     """
@@ -848,11 +713,3 @@ class Qwen3VLEncoderWithProjection(nn.Module):
         )
         projected = self.projection(seg_hidden)
         return projected, was_natural
-
-    def save_finetuned_model(self, save_path: str):
-        """Save fine-tuned model."""
-        self.encoder.save_finetuned_model(save_path)
-
-    def merge_and_unload(self):
-        """Merge LoRA weights."""
-        self.encoder.merge_and_unload()

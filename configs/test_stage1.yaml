@@ -78,7 +78,8 @@ training:
   num_epochs: 3
   device: "cuda"
   save_dir: "/mnt/f/output/test_stage1"
+  save_epoch: false  # Set true to save every epoch
   save_interval: 1
-  save_best: true
+  save_best: false
   log_interval: 1
   early_stopping: false

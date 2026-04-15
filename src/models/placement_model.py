@@ -16,6 +16,7 @@ from PIL import Image
 from .encoders.qwen3vl_encoder import Qwen3VLEncoder
 from .adapters import CrossModalAdapter, SegTokenProjector
 from .vla import SEGActionHead, VLAIterativeRefinement
+from .loaders import SAM3Loader
 
 # SAM3 image normalization constants
 _SAM3_MEAN = (0.5, 0.5, 0.5)
@@ -104,14 +105,15 @@ class SAMQPlacementModel(nn.Module):
             heatmap_size=heatmap_size,
         )
 
-        # SAM3 components (will be loaded lazily)
-        self.sam3_vision_backbone = None
-        self.sam3_transformer = None
-        self.sam3_seg_head = None
-        self.sam3_dot_scoring = None
-        self.sam3_model = sam3_model
+        # SAM3 Loader (lazy loading, version selection via checkpoint path)
+        self.sam3_loader = SAM3Loader(
+            checkpoint_path=sam3_checkpoint_path,
+            device=self.device,
+            dtype=torch.bfloat16,  # SAM3 uses bfloat16
+        )
 
-        self._sam3_loaded = False
+        # If pre-loaded model is provided, we'll sync it in _load_sam3()
+        self.sam3_model = sam3_model
 
         # [SEG] token config
         self._seg_force_only = seg_token_config.get("force_only_in_training", True) if seg_token_config else True
@@ -134,47 +136,22 @@ class SAMQPlacementModel(nn.Module):
             self.seg_projector.to(self.device)
         
     def _load_sam3(self):
-        """Lazy load SAM3 model and extract components."""
-        if self._sam3_loaded:
+        """Lazy load SAM3 model via SAM3Loader."""
+        if self.sam3_loader.loaded:
             return
 
-        try:
-            from sam3.model_builder import build_sam3_image_model
-        except ImportError as e:
-            raise ImportError(
-                "Please install SAM3: pip install git+https://github.com/facebookresearch/sam3.git"
-            ) from e
+        # If a pre-loaded model was provided, sync it to the loader
+        if self.sam3_model is not None and not self.sam3_loader.loaded:
+            self.sam3_loader.model = self.sam3_model
+            self.sam3_loader.sam3_vision_backbone = self.sam3_model.backbone.vision_backbone
+            self.sam3_loader.sam3_transformer = self.sam3_model.transformer
+            self.sam3_loader.sam3_seg_head = self.sam3_model.segmentation_head
+            self.sam3_loader.sam3_dot_scoring = self.sam3_model.dot_prod_scoring
+            self.sam3_loader._loaded = True
+        else:
+            # Load via SAM3Loader (lazy, supports local src/sam3 or pip-installed)
+            self.sam3_loader.load_model()
 
-        if self.sam3_model is None:
-            import os
-            # Look for local checkpoint relative to project root (cwd)
-            local_ckpt = os.path.join(os.getcwd(), "models", "sam3", "sam3.pt")
-            if not os.path.exists(local_ckpt):
-                raise FileNotFoundError(
-                    f"SAM3 checkpoint not found at {local_ckpt}. "
-                    "Run: python scripts/download_models.py --only-sam3"
-                )
-            self.sam3_model = build_sam3_image_model(
-                checkpoint_path=local_ckpt,
-                device=self.device,
-                eval_mode=True,
-                load_from_HF=False,
-            )
-
-        # Extract the components we need
-        self.sam3_vision_backbone = self.sam3_model.backbone.vision_backbone
-        self.sam3_transformer     = self.sam3_model.transformer
-        self.sam3_seg_head        = self.sam3_model.segmentation_head
-        self.sam3_dot_scoring     = self.sam3_model.dot_prod_scoring
-
-        # Keep SAM3 in bfloat16 (checkpoint dtype); convert any stray float32 params too
-        self.sam3_vision_backbone.to(device=self.device, dtype=torch.bfloat16)
-        self.sam3_transformer.to(device=self.device, dtype=torch.bfloat16)
-        self.sam3_seg_head.to(device=self.device, dtype=torch.bfloat16)
-        self.sam3_dot_scoring.to(device=self.device, dtype=torch.bfloat16)
-
-        self._sam3_loaded = True
-    
     def freeze_qwen(self):
         """Freeze Qwen3-VL parameters."""
         for param in self.qwen_encoder.parameters():
@@ -184,10 +161,8 @@ class SAMQPlacementModel(nn.Module):
     def freeze_sam3_image_encoder(self):
         """Freeze SAM3 vision backbone parameters."""
         self._load_sam3()
-        for param in self.sam3_vision_backbone.parameters():
-            param.requires_grad = False
-        self.sam3_vision_backbone.eval()
-        
+        self.sam3_loader.freeze_vision_backbone()
+
     def freeze_all_except_adapter_and_detector(self):
         """Freeze all components except adapter, action head, and detector."""
         self.freeze_qwen()
@@ -201,12 +176,10 @@ class SAMQPlacementModel(nn.Module):
         if self.seg_projector is not None:
             for param in self.seg_projector.parameters():
                 param.requires_grad = True
-        for param in self.sam3_transformer.parameters():
-            param.requires_grad = True
-        for param in self.sam3_seg_head.parameters():
-            param.requires_grad = True
-        for param in self.sam3_dot_scoring.parameters():
-            param.requires_grad = True
+
+        # Unfreeze SAM3 transformer, seg_head, dot_scoring
+        self._load_sam3()
+        self.sam3_loader.freeze_all_except(trainable_components=["transformer", "seg_head", "dot_scoring"])
     
     def forward(
         self,
@@ -282,7 +255,7 @@ class SAMQPlacementModel(nn.Module):
             feat_sizes    = [backbone_out["vis_feat_sizes"][-1]]
 
             prompt_pos = torch.zeros_like(prompt)
-            memory = self.sam3_transformer.encoder(
+            memory = self.sam3_loader.sam3_transformer.encoder(
                 src=img_feats_seq,
                 src_pos=img_pos_seq,
                 prompt=prompt,
@@ -293,10 +266,10 @@ class SAMQPlacementModel(nn.Module):
 
             # SAM3 transformer decoder
             B = text_embeddings.size(0)
-            query_embed = self.sam3_transformer.decoder.query_embed.weight
+            query_embed = self.sam3_loader.sam3_transformer.decoder.query_embed.weight
             tgt = query_embed.unsqueeze(1).repeat(1, B, 1)
 
-            hs, _, _, _ = self.sam3_transformer.decoder(
+            hs, _, _, _ = self.sam3_loader.sam3_transformer.decoder(
                 tgt=tgt,
                 memory=memory["memory"],
                 memory_key_padding_mask=memory["padding_mask"],
@@ -311,8 +284,8 @@ class SAMQPlacementModel(nn.Module):
 
             # Segmentation head → heatmap
             hs_4d = hs.permute(0, 2, 1, 3)  # [num_layers, B, num_queries, d]
-            class_logits = self.sam3_dot_scoring(hs_4d, prompt, prompt_mask)
-            masks = self.sam3_seg_head(
+            class_logits = self.sam3_loader.sam3_dot_scoring(hs_4d, prompt, prompt_mask)
+            masks = self.sam3_loader.sam3_seg_head(
                 backbone_feats=backbone_out["img_feats"],
                 obj_queries=hs_4d,
                 image_ids=torch.arange(B, device=self.device),
@@ -370,11 +343,11 @@ class SAMQPlacementModel(nn.Module):
             tensor = tensor.unsqueeze(0)  # [1, 3, H, W]
 
         # Cast input to match backbone checkpoint dtype (bfloat16)
-        backbone_dtype = next(self.sam3_vision_backbone.parameters()).dtype
+        backbone_dtype = next(self.sam3_loader.sam3_vision_backbone.parameters()).dtype
         tensor = tensor.to(dtype=backbone_dtype)
 
         with torch.no_grad():
-            img_feats, img_pos_embeds, _, _ = self.sam3_vision_backbone(tensor)
+            img_feats, img_pos_embeds, _, _ = self.sam3_loader.sam3_vision_backbone(tensor)
 
         # Construct feat_sizes from spatial dims (neck doesn't return them)
         vis_feat_sizes = [(f.shape[2], f.shape[3]) for f in img_feats]
