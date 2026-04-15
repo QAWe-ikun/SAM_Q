@@ -214,7 +214,7 @@ python -c "import transformers; print(f'Transformers: {transformers.__version__}
 ### Basic Inference
 
 ```bash
-# Single placement prediction
+# Single placement prediction (uses defaults)
 python main.py predict \
   --checkpoint checkpoints/checkpoint_best.pt \
   --plane_image examples/room.png \
@@ -222,6 +222,14 @@ python main.py predict \
   --prompt "Place the chair near the dining table" \
   --output results/ \
   --threshold 0.5
+
+# With config file
+python main.py predict \
+  --checkpoint checkpoints/checkpoint_best.pt \
+  --config configs/config.yaml \
+  --plane_image examples/room.png \
+  --object_image examples/chair.png \
+  --prompt "Place the chair near the dining table"
 ```
 
 **Note:** `--object_image` is used internally as part of the `images` list alongside the plane image. The model receives `[plane_image, object_image]` for multi-image reasoning.
