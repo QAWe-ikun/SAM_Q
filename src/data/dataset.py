@@ -271,9 +271,9 @@ class ObjectPlacementDataModule:
             shuffle=True,
             num_workers=self.num_workers,
             pin_memory=True,
-            collate_fn=self.train_dataset._collate_fn,
+            collate_fn=self._collate_fn,
         )
-
+    
     def val_dataloader(self) -> DataLoader:
         """Get validation DataLoader."""
         return DataLoader(
@@ -282,9 +282,9 @@ class ObjectPlacementDataModule:
             shuffle=False,
             num_workers=self.num_workers,
             pin_memory=True,
-            collate_fn=self.val_dataset._collate_fn,
+            collate_fn=self._collate_fn,
         )
-
+    
     def test_dataloader(self) -> DataLoader:
         """Get test DataLoader."""
         return DataLoader(
@@ -293,5 +293,30 @@ class ObjectPlacementDataModule:
             shuffle=False,
             num_workers=self.num_workers,
             pin_memory=True,
-            collate_fn=self.test_dataset._collate_fn,
+            collate_fn=self._collate_fn,
         )
+    
+    def _collate_fn(self, batch: List[Dict]) -> Dict[str, Any]:
+        """Collate function for DataLoader."""
+        plane_images = torch.stack([item["plane_image"] for item in batch])
+        object_images = torch.stack([item["object_image"] for item in batch])
+        text_prompts = [item["text_prompt"] for item in batch]
+        responses = [item.get("response") for item in batch]
+        masks = torch.stack([item["mask"] for item in batch])
+        metadata = [item["metadata"] for item in batch]
+
+        rot_list = [item.get("rotation_6d") for item in batch]
+        scale_list = [item.get("scale") for item in batch]
+        rotation_6d = torch.stack(rot_list) if all(r is not None for r in rot_list) else None
+        scale = torch.stack(scale_list) if all(s is not None for s in scale_list) else None
+
+        return {
+            "plane_images": plane_images,
+            "object_images": object_images,
+            "text_prompts": text_prompts,
+            "responses": responses,
+            "masks": masks,
+            "rotation_6d": rotation_6d,
+            "scale": scale,
+            "metadata": metadata,
+        }
