@@ -437,12 +437,12 @@ candidates = placer.extract(
 ```
 annotations.json
       |
-ObjectPlacementDataModule
+ObjectPlacementDataset + DataLoader
       |
 +----------------------------+
 | DataLoader (batch=4)       |
-|  - plane_images: List[PIL] |
-|  - object_images: List[PIL]|
+|  - plane_images: Tensor[B, 3, H, W] |
+|  - object_images: Tensor[B, 3, H, W]|
 |  - text_prompts: List[str] |
 |  - masks: Tensor[B, 1, H, W]|
 +------------|---------------+
