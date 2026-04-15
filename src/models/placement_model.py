@@ -37,6 +37,7 @@ class SAMQPlacementModel(nn.Module):
     def __init__(
         self,
         sam3_model: Optional[nn.Module] = None,
+        sam3_checkpoint_path: Optional[str] = None,
         qwen_model_name: str = "Qwen/Qwen3-VL-8B-Instruct",
         sam3_input_dim: int = 256,
         qwen_hidden_dim: int = 4096,
