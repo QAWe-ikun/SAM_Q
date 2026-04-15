@@ -420,15 +420,15 @@ class Trainer:
     ) -> Dict[str, float]:
         """
         Validate for one epoch.
-        
+
         Args:
             dataloader: Validation DataLoader
-            
+
         Returns:
             Metrics dictionary
         """
         self.model.eval()
-        
+
         total_loss = 0.0
         num_batches = 0
         all_metrics = {
@@ -437,7 +437,11 @@ class Trainer:
             "recall": 0.0,
             "f1": 0.0,
         }
-        
+
+        # Stage 1: Validation with generation
+        if self.stage == "lm":
+            return self._validate_stage1(dataloader)
+
         for batch in tqdm(dataloader, desc="Validation", leave=False):
             plane_images_batch = batch["plane_images"].to(self.device)
             batch_images = batch["images"]  # List[List[Tensor]]
@@ -667,3 +671,117 @@ class Trainer:
         if is_best and self.config.get("training", {}).get("save_best", True):
             best_path = self.output_dir / "checkpoint_best.pt"
             torch.save(checkpoint, best_path)
+
+    def _validate_stage1(
+        self,
+        dataloader: DataLoader,
+    ) -> Dict[str, float]:
+        """
+        Stage 1 验证：计算 LM Loss 并生成回复文本。
+        """
+        self.model.qwen_encoder.load_model()
+        self.model.eval()
+
+        tokenizer = self.model.qwen_encoder.processor.tokenizer
+        qwen_model = self.model.qwen_encoder.model
+
+        total_loss = 0.0
+        num_batches = 0
+
+        with torch.no_grad():
+            for batch_idx, batch in enumerate(tqdm(dataloader, desc="[Val] Stage1", leave=False)):
+                batch_loss = 0.0
+                batch_images = batch["images"]
+                batch_size = len(batch_images)
+
+                for i in range(batch_size):
+                    sample_images = [img.to(self.device) for img in batch_images[i]]
+                    text_prompt = batch["text_prompts"][i]
+                    response = batch.get("responses", [None] * batch_size)[i]
+                    if response is None:
+                        response = "好的，我将为您放置物体。[SEG]"
+
+                    # 构造输入
+                    messages, image_list = self.model.qwen_encoder._build_message(
+                        text_prompt=text_prompt,
+                        images=sample_images,
+                    )
+                    messages.append({"role": "assistant", "content": [{"type": "text", "text": response}]})
+
+                    text = self.model.qwen_encoder.processor.apply_chat_template(
+                        messages, tokenize=False, add_generation_prompt=False,
+                    )
+                    inputs = self.model.qwen_encoder.processor(
+                        text=[text],
+                        images=image_list if image_list else None,
+                        return_tensors="pt",
+                        padding=True,
+                    ).to(self.device)
+
+                    # 计算 Loss
+                    input_ids = inputs["input_ids"]
+                    labels = input_ids.clone()
+                    response_tokens = tokenizer(response, add_special_tokens=False)["input_ids"]
+                    resp_len = len(response_tokens)
+                    labels[:, :-resp_len] = -100
+
+                    outputs = qwen_model(
+                        **inputs,
+                        labels=labels,
+                    )
+                    loss = outputs.loss
+                    if loss is not None:
+                        batch_loss += loss.item()
+
+                total_loss += batch_loss / batch_size
+                num_batches += 1
+
+                # 在第一个 batch 生成样本并打印
+                if batch_idx == 0:
+                    print(f"\n{'='*60}")
+                    print(f"[Stage1 Validation Samples] (Epoch {self.current_epoch+1})")
+                    print(f"{'='*60}")
+
+                    # 生成样本（前 2 个）
+                    num_gen_samples = min(2, batch_size)
+                    for i in range(num_gen_samples):
+                        sample_images = [img.to(self.device) for img in batch["images"][i]]
+                        text_prompt = batch["text_prompts"][i]
+                        response_gt = batch.get("responses", [None] * batch_size)[i]
+
+                        # 构造仅含 prompt 的输入
+                        messages, image_list = self.model.qwen_encoder._build_message(
+                            text_prompt=text_prompt,
+                            images=sample_images,
+                        )
+                        
+                        text = self.model.qwen_encoder.processor.apply_chat_template(
+                            messages, tokenize=False, add_generation_prompt=True,
+                        )
+                        inputs = self.model.qwen_encoder.processor(
+                            text=[text],
+                            images=image_list if image_list else None,
+                            return_tensors="pt",
+                            padding=True,
+                        ).to(self.device)
+
+                        # 生成回复
+                        generated_ids = qwen_model.generate(
+                            **inputs,
+                            max_new_tokens=64,
+                            do_sample=False,
+                        )
+                        
+                        # 解码并打印
+                        generated_text = tokenizer.decode(generated_ids[0], skip_special_tokens=False)
+                        # 提取 assistant 部分
+                        assistant_marker = "assistant"
+                        if assistant_marker in generated_text:
+                            generated_text = generated_text.split(assistant_marker)[-1]
+
+                        print(f"Prompt:   {text_prompt[:60]}...")
+                        print(f"Generated: {generated_text.strip()}")
+                        print(f"Expected:  {response_gt.strip() if response_gt else 'N/A'}")
+                        print(f"{'-'*60}")
+
+        return {"val_loss": total_loss / max(num_batches, 1)}
