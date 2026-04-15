@@ -1,4 +1,4 @@
-# 微调 Qwen3-VL 输出 [SEG] Token
+# 训练指南：指令微调 Qwen3-VL 输出 [SEG] Token
 
 ## 概述
 
@@ -307,7 +307,7 @@ for batch in dataloader:
 
 ### Q: 阶段 2 训练多长时间？
 
-**A:** 
+**A:**
 - RTX 4090, 1000 samples, 50 epochs: **~4-8 小时**
 - SAM3 Decoder 参数量大，比阶段 1 慢
 
