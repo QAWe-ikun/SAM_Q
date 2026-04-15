@@ -36,7 +36,6 @@ class SAMQPlacementModel(nn.Module):
     
     def __init__(
         self,
-        sam3_model: Optional[nn.Module] = None,
         sam3_checkpoint_path: Optional[str] = None,
         qwen_model_name: str = "Qwen/Qwen3-VL-8B-Instruct",
         qwen_lora_path: Optional[str] = None,
@@ -53,7 +52,6 @@ class SAMQPlacementModel(nn.Module):
         Initialize the placement model.
 
         Args:
-            sam3_model: Pre-loaded SAM3 model (if None, will be loaded via SAM3Loader)
             sam3_checkpoint_path: Path to SAM3 checkpoint file (.pt). If None, uses default search path.
             qwen_model_name: HuggingFace model name or local path for Qwen3-VL
             qwen_lora_path: Path to Qwen3-VL LoRA adapter directory (Stage 1 fine-tuned weights).
@@ -117,9 +115,6 @@ class SAMQPlacementModel(nn.Module):
             dtype=torch.bfloat16,  # SAM3 uses bfloat16
         )
 
-        # If pre-loaded model is provided, we'll sync it in _load_sam3()
-        self.sam3_model = sam3_model
-
         # [SEG] token config
         self._seg_force_only = seg_token_config.get("force_only_in_training", True) if seg_token_config else True
         self._seg_max_tokens = seg_token_config.get("max_generate_tokens", 128) if seg_token_config else 128
@@ -149,17 +144,7 @@ class SAMQPlacementModel(nn.Module):
         if self.sam3_loader.loaded:
             return
 
-        # If a pre-loaded model was provided, sync it to the loader
-        if self.sam3_model is not None and not self.sam3_loader.loaded:
-            self.sam3_loader.model = self.sam3_model
-            self.sam3_loader.sam3_vision_backbone = self.sam3_model.backbone.vision_backbone
-            self.sam3_loader.sam3_transformer = self.sam3_model.transformer
-            self.sam3_loader.sam3_seg_head = self.sam3_model.segmentation_head
-            self.sam3_loader.sam3_dot_scoring = self.sam3_model.dot_prod_scoring
-            self.sam3_loader._loaded = True
-        else:
-            # Load via SAM3Loader (lazy, supports local src/sam3 or pip-installed)
-            self.sam3_loader.load_model()
+        self.sam3_loader.load_model()
 
     def freeze_qwen(self):
         """Freeze Qwen3-VL parameters."""
