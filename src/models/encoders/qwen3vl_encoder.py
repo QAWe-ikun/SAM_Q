@@ -188,6 +188,15 @@ class Qwen3VLEncoder(nn.Module):
             "use_qlora": use_qlora,
         }
 
+        # Enable gradient checkpointing (reduces memory by ~40%)
+        if hasattr(self.model, "enable_input_require_grads"):
+            self.model.enable_input_require_grads()
+        if hasattr(self.model, "gradient_checkpointing_enable"):
+            self.model.gradient_checkpointing_enable()
+        # For transformer-based models
+        if hasattr(self.model, "base_model") and hasattr(self.model.base_model, "gradient_checkpointing_enable"):
+            self.model.base_model.gradient_checkpointing_enable()
+
         # Print trainable parameters
         trainable_params, all_param = self.model.get_nb_trainable_parameters()
         trainable_pct = 100 * trainable_params / all_param

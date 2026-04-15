@@ -14,9 +14,9 @@ experiment:
 data:
   root_dir: "data/"
   ann_file: "annotations.json"
-  batch_size: 2
-  num_workers: 4
-  pin_memory: true
+  batch_size: 1
+  num_workers: 0
+  pin_memory: false
 
 model:
   num_seg_tokens: 1
