@@ -340,6 +340,8 @@ advanced:
 
 SAM-Q supports parameter-efficient fine-tuning of Qwen3-VL using **LoRA** combined with **SA2VA-style [SEG] token bridging**.
 
+📖 **完整指南**: [docs/FINETUNE_QWEN3VL.md](docs/FINETUNE_QWEN3VL.md)
+
 ### How [SEG] Tokens Work
 
 The `[SEG]` token is a special token added to Qwen3-VL's vocabulary. During forward pass:
