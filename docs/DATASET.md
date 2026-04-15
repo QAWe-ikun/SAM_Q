@@ -8,7 +8,7 @@ Stage 1 训练结束后自动提取 `[SEG]` hidden states 到 `data/seg_features
 ```
 data/
 ├── annotations.json              # 统一标注文件
-├── plane_images/                 # 房间/平面俯视图
+├── plane_images/                 # 房间/平面俯视图（SAM3 输入）
 │   ├── scene_001.png
 │   └── ...
 ├── object_images/                # 物体俯视图
@@ -31,12 +31,13 @@ data/
 ```json
 [
   {
-    "id": "sample_001",
-    "split": "train",
     "scene_id": "scene_001",
-    "object_id": "chair_001",
+    "split": "train",
     "plane_image_path": "plane_images/scene_001.png",
-    "object_image_path": "object_images/chair_001.png",
+    "images_path": [
+      "plane_images/scene_001.png",
+      "object_images/chair_001.png"
+    ],
     "mask_path": "masks/scene_001_mask.png",
     "text_prompt": "<image>\n<image>\n把椅子放在桌子旁边",
     "response": "好的，我会在桌子旁边放置椅子。[SEG]",
@@ -50,15 +51,31 @@ data/
 
 | 字段 | 类型 | Stage 1 | Stage 2 | 说明 |
 |------|------|---------|---------|------|
-| `plane_image_path` | str | 必须 | 必须 | 相对于 `data/` 的路径 |
-| `object_image_path` | str | 必须 | 必须 | 相对于 `data/` 的路径 |
+| `plane_image_path` | str | 必须 | 必须 | SAM3 输入（房间/平面俯视图） |
+| `images_path` | list[str] | 必须 | 必须 | Qwen3-VL 输入的图片列表，**顺序必须与 `<image>` 占位符一致**，第一项通常为 `plane_image_path` |
 | `mask_path` | str | 必须 | 必须 | 二值 mask 图，白色 = 放置区域 |
 | `text_prompt` | str | 必须 | 必须 | 放置指令，支持 `<image>` 占位符 |
 | `response` | str | **必须** | 不需要 | Qwen3-VL 的目标回复，末尾包含 `[SEG]` |
 | `rotation_6d` | list[6] | 不需要 | **必须** | 6D 旋转表示（旋转矩阵前两列） |
 | `scale` | float | 不需要 | **必须** | 缩放比例，1.0 = 原始大小 |
 | `split` | str | 可选 | 可选 | `"train"` / `"val"` / `"test"` |
-| `id` / `scene_id` | str | 可选 | 可选 | 样本标识，用于 seg_features 文件名 |
+| `scene_id` | str | 可选 | 可选 | 场景标识，用于 seg_features 文件名 |
+
+### images_path 设计原则
+
+```json
+{
+  "plane_image_path": "plane_images/scene_001.png",       // SAM3 专用
+  "images_path": [                                         // Qwen3-VL 多模态输入
+    "plane_images/scene_001.png",                           // 第1张 → 第1个 <image>
+    "object_images/chair_001.png"                           // 第2张 → 第2个 <image>
+  ]
+}
+```
+
+- `plane_image_path` 单独列出，因为 SAM3 只处理房间/平面俯视图
+- `images_path` 包含所有要传给 Qwen3-VL 的图片，**顺序必须与 `text_prompt` 中 `<image>` 的出现顺序一致**
+- 通常 `images_path[0] == plane_image_path`
 
 ---
 
@@ -104,11 +121,11 @@ Stage 1 训练结束后**自动生成**，无需手动创建。
 ```python
 {
     "seg_hidden": torch.Tensor,  # [4096]  Qwen3-VL 在 [SEG] 位置的 hidden state
-    "sample_id": str,            # 对应 annotations.json 中的 id / scene_id
+    "sample_id": str,            # 对应 annotations.json 中的 scene_id
 }
 ```
 
-文件名格式：`{scene_id}.pt`（与 annotations.json 的 `scene_id` 或 `id` 对应）
+文件名格式：`{scene_id}.pt`（与 annotations.json 的 `scene_id` 对应）
 
 ---
 
@@ -119,6 +136,8 @@ Stage 1 训练结束后**自动生成**，无需手动创建。
 | plane_image | PNG/JPG, RGB | 1024×1024 | 房间或桌面的俯视图 |
 | object_image | PNG/JPG, RGB | 1024×1024 | 物体的俯视图，背景尽量干净 |
 | mask | PNG, 灰度 | 与 plane_image 一致 | 白色(255)=放置区域，黑色(0)=不可放置 |
+
+**注意**：plane_image、object_image、mask 必须在数据生成时保持统一尺寸，Dataset 不做 resize。
 
 ---
 
@@ -132,7 +151,7 @@ Stage 1 训练结束后**自动生成**，无需手动创建。
 "把椅子放在桌子旁边"
 ```
 
-`<image>` 按顺序匹配图片：第一个 = plane_image，第二个 = object_image。
+`<image>` 按顺序匹配 `images_path` 中的图片：第一个 = plane_image，第二个 = object_image。
 
 ---
 
@@ -187,10 +206,12 @@ dataset = ObjectPlacementDataset(
 
 sample = dataset[0]
 print(f"样本数: {len(dataset)}")
-print(f"plane_image: {sample['plane_image'].shape}")    # [3, 1024, 1024]
-print(f"mask: {sample['mask'].shape}")                  # [1, 1024, 1024]
-print(f"response: {sample['response']}")                # 含 [SEG]
-print(f"rotation_6d: {sample['rotation_6d']}")          # [6] 或 None
-print(f"scale: {sample['scale']}")                      # [1] 或 None
+print(f"plane_image: {sample['plane_image'].shape}")     # [3, H, W] for SAM3
+print(f"images: {len(sample['images'])}")                # number of images for Qwen3-VL
+print(f"images[0]: {sample['images'][0].shape}")         # [3, H, W]
+print(f"mask: {sample['mask'].shape}")                   # [1, H, W]
+print(f"response: {sample['response']}")                 # 含 [SEG]
+print(f"rotation_6d: {sample['rotation_6d']}")           # [6] 或 None
+print(f"scale: {sample['scale']}")                       # [1] 或 None
 print(f"seg_hidden: {sample['seg_hidden'].shape if sample['seg_hidden'] is not None else None}")  # [4096] 或 None
 ```
