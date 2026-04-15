@@ -64,13 +64,27 @@ class Trainer:
         
         # Initialize model
         self.model = model or self._init_model()
-        
-        # Initialize loss
+
+        # 根据 loss.type 确定训练阶段
+        # stage1 (lm)        → Qwen3-VL LoRA 微调，语言模型损失
+        # stage2 (placement) → Adapter + SAM3 Decoder，placement 损失
+        # eval / 其他        → 只做评估，不训练
         loss_config = config.get("loss", {})
-        self.criterion = PlacementLoss(
-            dice_weight=loss_config.get("dice_weight", 1.0),
-            bce_weight=loss_config.get("bce_weight", 1.0),
-        ).to(self.device)
+        self.stage = loss_config.get("type", "placement")  # "lm" | "placement" | "vla"
+        print(f"[Trainer] Training stage: {self.stage}")
+
+        # Initialize loss
+        if self.stage == "lm":
+            # Stage 1: 语言模型损失（cross-entropy on [SEG] token prediction）
+            self.criterion = None  # LM loss 在 train_epoch_stage1 里计算
+            self._setup_stage1()
+        else:
+            # Stage 2 / eval: placement loss
+            self.criterion = PlacementLoss(
+                dice_weight=loss_config.get("dice_weight", 1.0),
+                bce_weight=loss_config.get("bce_weight", 1.0),
+            ).to(self.device)
+            self._setup_stage2()
         
         # Initialize optimizer and scheduler
         self.optimizer = create_optimizer(
@@ -127,6 +141,182 @@ class Trainer:
         model.to(self.device)
         return model
 
+    # ------------------------------------------------------------------ #
+    # Stage setup helpers
+    # ------------------------------------------------------------------ #
+
+    def _setup_stage1(self):
+        """Stage 1: 只训练 Qwen3-VL LoRA，冻结其余所有模块。"""
+        model_config = self.config.get("model", {})
+        qwen_cfg = model_config.get("qwen", {})
+        lora_cfg = qwen_cfg.get("lora", {})
+
+        # 确保 SAM3 / Adapter 冻结
+        self.model.freeze_sam3_image_encoder()
+        if hasattr(self.model, "freeze_sam3_decoder"):
+            self.model.freeze_sam3_decoder()
+        if hasattr(self.model, "adapter"):
+            for p in self.model.adapter.parameters():
+                p.requires_grad = False
+        if hasattr(self.model, "seg_projector"):
+            for p in self.model.seg_projector.parameters():
+                p.requires_grad = False
+        if hasattr(self.model, "seg_action_head"):
+            for p in self.model.seg_action_head.parameters():
+                p.requires_grad = False
+
+        # 启用 Qwen LoRA
+        if lora_cfg.get("enabled", True):
+            self.model.qwen_encoder.enable_finetuning(
+                lora_r=lora_cfg.get("r", 64),
+                lora_alpha=lora_cfg.get("alpha", 128),
+                lora_dropout=lora_cfg.get("dropout", 0.05),
+                target_modules=lora_cfg.get("target_modules", None),
+                use_qlora=lora_cfg.get("use_qlora", False),
+                lora_bias=lora_cfg.get("bias", "none"),
+            )
+            print("[Trainer] Stage 1: Qwen3-VL LoRA enabled")
+
+    def _setup_stage2(self):
+        """Stage 2: 冻结 Qwen3-VL，训练 Adapter + SAM3 Decoder。"""
+        model_config = self.config.get("model", {})
+        qwen_cfg = model_config.get("qwen", {})
+
+        # 冻结 Qwen
+        if qwen_cfg.get("freeze", True):
+            self.model.freeze_qwen()
+
+        # 加载 Stage 1 LoRA checkpoint（如果有）
+        lora_ckpt = qwen_cfg.get("lora_checkpoint", None)
+        if lora_ckpt:
+            self._load_lora_checkpoint(lora_ckpt)
+
+        # 解冻 SAM3 decoder（如果配置要求）
+        sam3_cfg = model_config.get("sam3", {})
+        if not sam3_cfg.get("freeze_detector", True):
+            self.model._load_sam3()
+            for p in self.model.sam3_transformer.parameters():
+                p.requires_grad = True
+            for p in self.model.sam3_seg_head.parameters():
+                p.requires_grad = True
+            for p in self.model.sam3_dot_scoring.parameters():
+                p.requires_grad = True
+            print("[Trainer] Stage 2: SAM3 decoder unfrozen")
+
+        # 解冻 Adapter
+        if not model_config.get("adapter", {}).get("freeze", False):
+            if hasattr(self.model, "adapter"):
+                for p in self.model.adapter.parameters():
+                    p.requires_grad = True
+            if hasattr(self.model, "seg_projector"):
+                for p in self.model.seg_projector.parameters():
+                    p.requires_grad = True
+            print("[Trainer] Stage 2: Adapter unfrozen")
+
+    def _load_lora_checkpoint(self, lora_ckpt: str):
+        """加载 Stage 1 的 LoRA checkpoint。"""
+        try:
+            from peft import PeftModel
+            print(f"[Trainer] Loading LoRA checkpoint from {lora_ckpt}")
+            self.model.qwen_encoder.model = PeftModel.from_pretrained(
+                self.model.qwen_encoder.model, lora_ckpt
+            )
+            print("[Trainer] LoRA checkpoint loaded")
+        except Exception as e:
+            print(f"[Trainer] Warning: failed to load LoRA checkpoint: {e}")
+
+    # ------------------------------------------------------------------ #
+    # Stage 1: Language Model training epoch
+    # ------------------------------------------------------------------ #
+
+    def train_epoch_stage1(
+        self,
+        dataloader: DataLoader,
+        log_interval: int = 10,
+    ) -> Dict[str, float]:
+        """
+        Stage 1 训练：next-token prediction loss，教 Qwen3-VL 输出 [SEG]。
+
+        Dataset 需要提供 `response` 字段（含 [SEG] 的 GPT 回复）。
+        如果 dataset 没有 `response`，自动使用 "好的，我将为您放置物体。[SEG]" 作为目标。
+        """
+        self.model.qwen_encoder.load_model()
+        self.model.train()
+
+        tokenizer = self.model.qwen_encoder.processor.tokenizer
+        qwen_model = self.model.qwen_encoder.model
+
+        total_loss = 0.0
+        num_batches = 0
+
+        progress_bar = tqdm(dataloader, desc=f"[Stage1] Epoch {self.current_epoch + 1}", leave=False)
+
+        for batch_idx, batch in enumerate(progress_bar):
+            self.optimizer.zero_grad()
+
+            batch_loss = torch.tensor(0.0, device=self.device)
+            plane_images_batch = batch["plane_images"]
+            object_images_batch = batch["object_images"]
+
+            for i in range(len(plane_images_batch)):
+                plane_img = plane_images_batch[i]
+                obj_img = object_images_batch[i]
+                text_prompt = batch["text_prompts"][i]
+                response = batch.get("responses", [None] * len(plane_images_batch))[i]
+                if response is None:
+                    response = f"好的，我将为您放置物体。[SEG]"
+
+                # 构造 messages（input + target）
+                messages, image_list = self.model.qwen_encoder._build_message(
+                    text_prompt=text_prompt,
+                    images=[plane_img, obj_img],
+                )
+                # 拼接 assistant 回复到 messages
+                messages.append({"role": "assistant", "content": [{"type": "text", "text": response}]})
+
+                text = self.model.qwen_encoder.processor.apply_chat_template(
+                    messages, tokenize=False, add_generation_prompt=False,
+                )
+                inputs = self.model.qwen_encoder.processor(
+                    text=[text],
+                    images=image_list if image_list else None,
+                    return_tensors="pt",
+                    padding=True,
+                ).to(self.device)
+
+                # 计算 LM loss（labels = input_ids，prefix 部分设为 -100）
+                input_ids = inputs["input_ids"]
+                labels = input_ids.clone()
+
+                # 找到 assistant 回复起始位置，之前的 token 不计入 loss
+                # 用 assistant 标记 token 定位（简化：从最后 N 个 token 开始）
+                response_tokens = tokenizer(response, add_special_tokens=False)["input_ids"]
+                resp_len = len(response_tokens)
+                labels[:, :-resp_len] = -100  # 只对回复部分计算 loss
+
+                outputs = qwen_model(
+                    **inputs,
+                    labels=labels,
+                )
+                loss = outputs.loss
+                if loss is not None:
+                    batch_loss = batch_loss + loss
+
+            avg_loss = batch_loss / len(plane_images_batch)
+            avg_loss.backward()
+            torch.nn.utils.clip_grad_norm_(
+                filter(lambda p: p.requires_grad, self.model.parameters()), 1.0
+            )
+            self.optimizer.step()
+
+            total_loss += avg_loss.item()
+            num_batches += 1
+
+            if batch_idx % log_interval == 0:
+                progress_bar.set_postfix({"loss": f"{avg_loss.item():.4f}"})
+
+        return {"train_loss": total_loss / max(num_batches, 1)}
+
     def train_epoch(
         self,
         dataloader: DataLoader,
@@ -179,6 +369,7 @@ class Trainer:
                     masks[i:i+1],
                     output.get("rotation_6d"),
                     output.get("scale_relative"),
+                    output.get("class_logits"),
                 )
                 batch_loss += loss_dict["total"]
             
@@ -256,13 +447,26 @@ class Trainer:
                     masks[i:i+1],
                     output.get("rotation_6d"),
                     output.get("scale_relative"),
+                    output.get("class_logits"),
                 )
                 batch_loss += loss_dict["total"]
-                
+
                 # Compute metrics
                 with torch.no_grad():
-                    pred_mask = torch.sigmoid(output["masks"])
-                    metrics = compute_metrics(pred_mask, masks[i:i+1])
+                    pred_mask = torch.sigmoid(output["heatmap"])
+                    # 选最佳 query（与 PlacementLoss 逻辑一致）
+                    class_logits = output.get("class_logits")
+                    if pred_mask.shape[1] > 1 and class_logits is not None:
+                        scores = class_logits[-1].squeeze(-1)  # [B, num_queries]
+                        best_idx = scores.argmax(dim=-1)       # [B]
+                        pred_mask = pred_mask[torch.arange(pred_mask.shape[0], device=pred_mask.device), best_idx]
+                        pred_mask = pred_mask.unsqueeze(1)     # [B, 1, H, W]
+                    # resize 到 GT 尺寸
+                    gt_mask = masks[i:i+1]
+                    if pred_mask.shape[-2:] != gt_mask.shape[-2:]:
+                        import torch.nn.functional as F
+                        pred_mask = F.interpolate(pred_mask, size=gt_mask.shape[-2:], mode="bilinear", align_corners=False)
+                    metrics = compute_metrics(pred_mask, gt_mask)
                     for key in all_metrics:
                         all_metrics[key] += metrics[key]
             
@@ -305,14 +509,19 @@ class Trainer:
         
         for epoch in range(num_epochs):
             self.current_epoch = epoch
-            
-            # Train
-            train_metrics = self.train_epoch(train_loader, log_interval)
-            
-            # Validate
-            val_metrics = {}
-            if val_loader is not None and (epoch + 1) % val_interval == 0:
-                val_metrics = self.validate(val_loader)
+
+            # 根据阶段选择对应的 train_epoch
+            if self.stage == "lm":
+                train_metrics = self.train_epoch_stage1(train_loader, log_interval)
+                val_metrics = {}  # Stage 1 不做 mask 验证
+            else:
+                # Train
+                train_metrics = self.train_epoch(train_loader, log_interval)
+
+                # Validate
+                val_metrics = {}
+                if val_loader is not None and (epoch + 1) % val_interval == 0:
+                    val_metrics = self.validate(val_loader)
             
             # Update scheduler
             if self.scheduler is not None:

@@ -13,8 +13,13 @@ Usage:
 
 import argparse
 import sys
+import warnings
 from pathlib import Path
 from typing import Optional
+
+# 屏蔽无关警告
+warnings.filterwarnings("ignore", category=FutureWarning, module="timm")
+warnings.filterwarnings("ignore", message="Casting complex values to real discards the imaginary part")
 
 # Add src to path
 src_path = Path(__file__).parent / "src"
@@ -180,12 +185,14 @@ def run_train(args):
     # Initialize datasets
     data_config = config.get("data", {})
     data_dir = data_config.get("root_dir", "data/")
+    ann_file = data_config.get("ann_file", "annotations.json")
 
     train_dataset = ObjectPlacementDataset(
         data_dir=data_dir,
         plane_image_size=tuple(data_config.get("plane_image_size", [1024, 1024])),
         object_image_size=tuple(data_config.get("object_image_size", [1024, 1024])),
         split="train",
+        ann_file=ann_file,
     )
 
     val_dataset = ObjectPlacementDataset(
@@ -193,6 +200,7 @@ def run_train(args):
         plane_image_size=tuple(data_config.get("plane_image_size", [1024, 1024])),
         object_image_size=tuple(data_config.get("object_image_size", [1024, 1024])),
         split="val",
+        ann_file=ann_file,
     )
 
     # Create DataLoaders

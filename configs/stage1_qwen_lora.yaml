@@ -12,7 +12,8 @@ experiment:
   description: "Stage 1: Fine-tune Qwen3-VL with LoRA to output [SEG] token"
 
 data:
-  root_dir: "data/"
+  root_dir: "data/stage1/"
+  ann_file: "stage1_annotations.json"
   batch_size: 2
   num_workers: 4
   pin_memory: true

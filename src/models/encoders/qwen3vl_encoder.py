@@ -318,7 +318,21 @@ class Qwen3VLEncoder(nn.Module):
             >>> # → ["房间", image(room), "，放椅子", image(chair), "在角落"]
         """
         if images:
-            image_list = list(images)
+            # 确保所有 image 都是 PIL.Image（训练时可能传入 tensor）
+            pil_images = []
+            for img in images:
+                if isinstance(img, torch.Tensor):
+                    t = img.detach().cpu()
+                    if t.dim() == 4:
+                        t = t[0]  # [B,C,H,W] → [C,H,W]
+                    if t.dtype != torch.uint8:
+                        t = (t.clamp(0, 1) * 255).to(torch.uint8)
+                    # [C,H,W] → [H,W,C]
+                    t = t.permute(1, 2, 0).numpy()
+                    pil_images.append(Image.fromarray(t))
+                else:
+                    pil_images.append(img)
+            image_list = pil_images
         else:
             image_list = []
 

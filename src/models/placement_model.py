@@ -328,16 +328,33 @@ class SAMQPlacementModel(nn.Module):
             "class_logits": class_logits,  # [num_layers, B, num_queries, 1]
         }
 
-    def _encode_plane_image(self, image: Image.Image) -> Dict:
-        """Encode plane image using SAM3 vision backbone."""
+    def _encode_plane_image(self, image) -> Dict:
+        """Encode plane image using SAM3 vision backbone.
+
+        Args:
+            image: PIL.Image 或 torch.Tensor [C, H, W] / [B, C, H, W]
+        """
         import torchvision.transforms.functional as TF
 
-        img = image.convert("RGB").resize((_SAM3_SIZE, _SAM3_SIZE), Image.Resampling.BILINEAR)
-        tensor = TF.to_tensor(img).to(self.device, dtype=torch.float32)
-        mean = torch.tensor(_SAM3_MEAN, device=self.device).view(3, 1, 1)
-        std  = torch.tensor(_SAM3_STD,  device=self.device).view(3, 1, 1)
-        tensor = (tensor - mean) / std
-        tensor = tensor.unsqueeze(0)  # [1, 3, H, W]
+        if isinstance(image, torch.Tensor):
+            # 已经是 tensor，确保形状正确
+            tensor = image.to(self.device, dtype=torch.float32)
+            if tensor.dim() == 3:
+                tensor = tensor.unsqueeze(0)  # [C,H,W] → [1,C,H,W]
+            # resize 到 SAM3 尺寸
+            tensor = F.interpolate(tensor, size=(_SAM3_SIZE, _SAM3_SIZE), mode="bilinear", align_corners=False)
+            # 归一化
+            mean = torch.tensor(_SAM3_MEAN, device=self.device).view(1, 3, 1, 1)
+            std  = torch.tensor(_SAM3_STD,  device=self.device).view(1, 3, 1, 1)
+            tensor = (tensor - mean) / std
+        else:
+            # PIL.Image 路径
+            img = image.convert("RGB").resize((_SAM3_SIZE, _SAM3_SIZE), Image.Resampling.BILINEAR)
+            tensor = TF.to_tensor(img).to(self.device, dtype=torch.float32)
+            mean = torch.tensor(_SAM3_MEAN, device=self.device).view(3, 1, 1)
+            std  = torch.tensor(_SAM3_STD,  device=self.device).view(3, 1, 1)
+            tensor = (tensor - mean) / std
+            tensor = tensor.unsqueeze(0)  # [1, 3, H, W]
 
         # Cast input to match backbone checkpoint dtype (bfloat16)
         backbone_dtype = next(self.sam3_vision_backbone.parameters()).dtype
@@ -427,6 +444,7 @@ class PlacementLoss(nn.Module):
         target_masks: torch.Tensor,
         pred_rotation_6d: Optional[torch.Tensor] = None,
         pred_scale: Optional[torch.Tensor] = None,
+        class_logits: Optional[torch.Tensor] = None,
     ) -> Dict[str, torch.Tensor]:
         """
         Compute placement prediction loss.
@@ -436,14 +454,32 @@ class PlacementLoss(nn.Module):
             target_masks: Ground truth masks [B, 1, H, W]
             pred_rotation_6d: Predicted 6D rotation [B, 6] (optional)
             pred_scale: Predicted scale [B] (optional)
+            class_logits: [num_layers, B, num_candidates, 1] (optional)
 
         Returns:
             losses: Dictionary with total and component losses
         """
-        losses = {"total": torch.tensor(0.0, device=predicted_masks.device)}
+        losses = {"total": torch.tensor(0.0, device=predicted_masks.device, dtype=predicted_masks.dtype)}
+
+        # 如果有多个候选 mask，用 class_logits 选最佳
+        if predicted_masks.shape[1] > 1 and class_logits is not None:
+            # class_logits: [num_layers, B, num_candidates, 1] → 取最后一层
+            scores = class_logits[-1].squeeze(-1)  # [B, num_candidates]
+            best_idx = scores.argmax(dim=-1)        # [B]
+            # 取每个 batch 的最佳 mask
+            B = predicted_masks.shape[0]
+            predicted_masks = predicted_masks[torch.arange(B, device=predicted_masks.device), best_idx]  # [B, H, W]
+            predicted_masks = predicted_masks.unsqueeze(1)  # [B, 1, H, W]
+
+        # resize 到 target 尺寸
+        if predicted_masks.shape[-2:] != target_masks.shape[-2:]:
+            predicted_masks = F.interpolate(
+                predicted_masks.float(), size=target_masks.shape[-2:],
+                mode="bilinear", align_corners=False,
+            ).to(predicted_masks.dtype)
 
         # BCE loss
-        bce_loss = self.bce_loss(predicted_masks, target_masks)
+        bce_loss = self.bce_loss(predicted_masks.float(), target_masks.float())
         losses["bce"] = bce_loss
         losses["total"] = losses["total"] + self.bce_weight * bce_loss
 

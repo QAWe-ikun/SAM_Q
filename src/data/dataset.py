@@ -42,44 +42,49 @@ class ObjectPlacementDataset(Dataset):
         object_image_size: Tuple[int, int] = (512, 512),
         transform: Optional[Any] = None,
         split: str = "train",
+        ann_file: str = "annotations.json",
     ):
         """
         Initialize the dataset.
-        
+
         Args:
             data_dir: Root directory containing the dataset
             plane_image_size: Target size for plane images
             object_image_size: Target size for object images
             transform: Optional transforms to apply
             split: Dataset split ('train', 'val', 'test')
+            ann_file: Annotation filename (default: annotations.json)
+                      Stage 1 使用 stage1_annotations.json
+                      Stage 2 使用 stage2_annotations.json
         """
         self.data_dir = Path(data_dir)
         self.plane_image_size = plane_image_size
         self.object_image_size = object_image_size
         self.transform = transform
         self.split = split
-        
+        self.ann_file = ann_file
+
         # Load annotations
         self.annotations = self._load_annotations()
         
     def _load_annotations(self) -> List[Dict]:
         """Load annotations from JSON file."""
-        annotations_path = self.data_dir / "annotations.json"
-        
+        annotations_path = self.data_dir / self.ann_file
+
         if not annotations_path.exists():
             raise FileNotFoundError(
                 f"Annotations file not found at {annotations_path}"
             )
-        
-        with open(annotations_path, "r") as f:
+
+        with open(annotations_path, "r", encoding="utf-8") as f:
             data = json.load(f)
-        
+
         # Filter by split if applicable
-        if "split" in data[0]:
+        if data and "split" in data[0]:
             data = [item for item in data if item.get("split") == self.split]
-        
+
         return data
-    
+
     def __len__(self) -> int:
         return len(self.annotations)
     
@@ -111,8 +116,10 @@ class ObjectPlacementDataset(Dataset):
         # Load mask
         mask = self._load_mask(self.data_dir / ann["mask_path"])
 
-        # Get text prompt
+        # Get text prompt and optional stage1 response
         text_prompt = ann.get("text_prompt", "Place the object here.")
+        # stage1 conversation response (含 [SEG] 的 GPT 回复)
+        response = ann.get("response", None)
 
         # Convert PIL images to tensors [3, H, W]
         plane_tensor = torch.from_numpy(np.array(plane_image, dtype=np.float32) / 255.0).permute(2, 0, 1)
@@ -122,6 +129,7 @@ class ObjectPlacementDataset(Dataset):
             "plane_image": plane_tensor,
             "object_image": object_tensor,
             "text_prompt": text_prompt,
+            "response": response,       # None 时 stage1 使用默认回复
             "mask": mask,
             "metadata": {
                 "scene_id": ann.get("scene_id", idx),
@@ -145,6 +153,24 @@ class ObjectPlacementDataset(Dataset):
         mask_tensor = torch.from_numpy(mask_array).unsqueeze(0)
 
         return mask_tensor
+
+    def _collate_fn(self, batch: List[Dict]) -> Dict[str, Any]:
+        """Collate function for DataLoader — 将单数 key 转为复数并 stack。"""
+        plane_images = torch.stack([item["plane_image"] for item in batch])
+        object_images = torch.stack([item["object_image"] for item in batch])
+        text_prompts = [item["text_prompt"] for item in batch]
+        responses = [item.get("response") for item in batch]  # None 表示无标注
+        masks = torch.stack([item["mask"] for item in batch])
+        metadata = [item["metadata"] for item in batch]
+
+        return {
+            "plane_images": plane_images,
+            "object_images": object_images,
+            "text_prompts": text_prompts,
+            "responses": responses,
+            "masks": masks,
+            "metadata": metadata,
+        }
 
 
 class ObjectPlacementDataModule:
@@ -242,10 +268,10 @@ class ObjectPlacementDataModule:
     
     def _collate_fn(self, batch: List[Dict]) -> Dict[str, Any]:
         """Collate function for DataLoader."""
-        # Images and masks are now tensors, stack them
         plane_images = torch.stack([item["plane_image"] for item in batch])
         object_images = torch.stack([item["object_image"] for item in batch])
         text_prompts = [item["text_prompt"] for item in batch]
+        responses = [item.get("response") for item in batch]
         masks = torch.stack([item["mask"] for item in batch])
         metadata = [item["metadata"] for item in batch]
 
@@ -253,6 +279,7 @@ class ObjectPlacementDataModule:
             "plane_images": plane_images,
             "object_images": object_images,
             "text_prompts": text_prompts,
+            "responses": responses,
             "masks": masks,
             "metadata": metadata,
         }

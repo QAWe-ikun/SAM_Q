@@ -1,8 +1,9 @@
-# 训练指南：指令微调 Qwen3-VL 输出 [SEG] Token
+# 训练指南
 
 ## 概述
 
 SAM-Q 使用 Qwen3-VL 作为视觉语言编码器，通过 `[SEG]` token 桥接到 SAM3 解码器。
+
 **训练分为两个阶段**：
 
 1. **阶段 1**: 微调 Qwen3-VL 输出 `[SEG]` token（理解文本指令 + 图像 → 生成分割 token）
