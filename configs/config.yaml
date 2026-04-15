@@ -1,34 +1,11 @@
 # ============================================================================
-# SAM-Q Configuration
+# SAM-Q Inference Configuration
 # ============================================================================
-# Unified config for SAM-Q object placement system.
+# Config for Basic Inference (predict command).
 # [SEG] token → parallel outputs:
 #   ├→ SAM3 Decoder    → placement heatmap (position)
 #   └→ SEGActionHead   → rotation_6d + rotation_matrix + scale_relative
 # ============================================================================
-
-# ----------------------------------------------------------------------------
-# Experiment Metadata
-# ----------------------------------------------------------------------------
-experiment:
-  name: "samq"
-  seed: 42
-  description: "SAM-Q object placement with parallel heatmap + rotation + scale"
-
-# ----------------------------------------------------------------------------
-# Data Configuration
-# ----------------------------------------------------------------------------
-data:
-  root_dir: "data/"
-  train_split: "train"
-  val_split: "val"
-  test_split: "test"
-
-  # Image preprocessing (sizes enforced at dataset generation time)
-  batch_size: 4
-  num_workers: 4
-  pin_memory: true
-  shuffle: true
 
 # ----------------------------------------------------------------------------
 # Model Architecture
@@ -41,15 +18,12 @@ model:
   qwen:
     model_name: "./models/qwen3_vl"
     hidden_dim: 4096
-    freeze: true
     attn_implementation: "flash_attention_2"
 
   # SAM3 Components
   sam3:
     model_name: "./models/sam3"
     input_dim: 256
-    freeze_image_encoder: true
-    freeze_detector: false
 
   # Adapter
   adapter:
@@ -62,62 +36,10 @@ model:
   seg_token:
     max_generate_tokens: 128
     dropout: 0.1
-    force_only_in_training: true
 
   # SEGActionHead (rotation + scale)
   action_head:
     heatmap_size: 64
-
-# ----------------------------------------------------------------------------
-# Loss Configuration
-# ----------------------------------------------------------------------------
-loss:
-  type: "vla"
-  heatmap_weight: 1.0
-  rotation_6d_weight: 0.5
-  scale_weight: 0.3
-
-# ----------------------------------------------------------------------------
-# Optimizer Configuration
-# ----------------------------------------------------------------------------
-optimizer:
-  type: "AdamW"
-  lr: 1.0e-4
-  weight_decay: 1.0e-4
-  betas: [0.9, 0.999]
-  eps: 1.0e-8
-
-# ----------------------------------------------------------------------------
-# Learning Rate Scheduler
-# ----------------------------------------------------------------------------
-scheduler:
-  type: "CosineAnnealingLR"
-  T_max: 100
-  eta_min: 1.0e-6
-  warmup_epochs: 5
-  warmup_lr: 1.0e-5
-
-# ----------------------------------------------------------------------------
-# Training Configuration
-# ----------------------------------------------------------------------------
-training:
-  num_epochs: 100
-  device: "cuda"
-
-  # Checkpointing
-  save_dir: "outputs/"
-  save_interval: 10
-  save_best: true
-
-  # Logging
-  log_interval: 10
-  use_wandb: false
-  wandb_project: "sam-q"
-
-  # Validation
-  val_interval: 1
-  early_stopping: false
-  patience: 20
 
 # ----------------------------------------------------------------------------
 # Inference Configuration
@@ -130,21 +52,4 @@ inference:
   save_visualizations: true
   save_json: true
   output_dir: "results/"
-
-# ----------------------------------------------------------------------------
-# Advanced Modules (Optional)
-# ----------------------------------------------------------------------------
-advanced:
-  # H-MVP Collision Detector (for exact 3D position from heatmap)
-  hmvp:
-    enabled: false
-    max_level: 4
-    base_resolution: 8
-    early_out_threshold: 0.1
-
-  # Incremental H-MVP Memory (multi-step placement)
-  incremental_hmvp:
-    enabled: false
-    update_threshold: 0.3
-    max_objects: 50
 

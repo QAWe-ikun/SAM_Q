@@ -80,6 +80,12 @@ Examples:
         help="Path to model checkpoint",
     )
     predict_parser.add_argument(
+        "--config",
+        type=str,
+        default=None,
+        help="Path to inference config (optional)",
+    )
+    predict_parser.add_argument(
         "--plane_image",
         type=str,
         required=True,
@@ -100,14 +106,14 @@ Examples:
     predict_parser.add_argument(
         "--threshold",
         type=float,
-        default=0.5,
-        help="Confidence threshold",
+        default=None,
+        help="Confidence threshold (overrides config)",
     )
     predict_parser.add_argument(
         "--output",
         type=str,
-        default="results/",
-        help="Output directory",
+        default=None,
+        help="Output directory (overrides config)",
     )
     
     # Visualize command
@@ -246,26 +252,44 @@ def run_predict(args):
 
     from src.models import SAMQPlacementModel
     from src.inference import visualize_results
+    from src.utils.config import Config
     from PIL import Image
     import json
     import torch
     from pathlib import Path
 
-    # Load checkpoint to get config
+    # Load inference config (or use defaults)
+    if args.config:
+        config = Config(args.config).to_dict()
+    else:
+        config = {"inference": {}, "model": {}}
+
+    inference_config = config.get("inference", {})
+    model_config = config.get("model", {})
+
+    threshold = args.threshold if args.threshold is not None else inference_config.get("threshold", 0.5)
+    device = inference_config.get("device", "cuda" if torch.cuda.is_available() else "cpu")
+    output_dir = Path(args.output if args.output else inference_config.get("output_dir", "results/"))
+
+    # Load checkpoint to get model architecture
     checkpoint = torch.load(args.checkpoint, map_location="cpu")
-    model_config = checkpoint.get("config", {}).get("model", {})
+    ckpt_model_config = checkpoint.get("config", {}).get("model", {})
+
+    # Merge configs: checkpoint > inference config > defaults
+    qwen_config = ckpt_model_config.get("qwen", model_config.get("qwen", {}))
+    sam3_config = ckpt_model_config.get("sam3", model_config.get("sam3", {}))
+    adapter_config = ckpt_model_config.get("adapter", model_config.get("adapter", {}))
+    action_head_config = ckpt_model_config.get("action_head", model_config.get("action_head", {}))
 
     # Initialize model
     model = SAMQPlacementModel(
-        qwen_model_name=model_config.get("qwen", {}).get(
-            "model_name", "./models/qwen3_vl"
-        ),
-        sam3_input_dim=model_config.get("sam3", {}).get("input_dim", 256),
-        qwen_hidden_dim=model_config.get("qwen", {}).get("hidden_dim", 4096),
-        adapter_hidden_dim=model_config.get("adapter", {}).get("hidden_dim", 512),
-        num_seg_tokens=model_config.get("num_seg_tokens", 1),
-        device="cuda" if torch.cuda.is_available() else "cpu",
-        action_head_config=model_config.get("action_head", {"heatmap_size": 64}),
+        qwen_model_name=qwen_config.get("model_name", "./models/qwen3_vl"),
+        sam3_input_dim=sam3_config.get("input_dim", 256),
+        qwen_hidden_dim=qwen_config.get("hidden_dim", 4096),
+        adapter_hidden_dim=adapter_config.get("hidden_dim", 512),
+        num_seg_tokens=ckpt_model_config.get("num_seg_tokens", 1),
+        device=device,
+        action_head_config=action_head_config,
     )
 
     # Load weights
@@ -276,17 +300,18 @@ def run_predict(args):
     plane_image = Image.open(args.plane_image).convert("RGB")
     object_image = Image.open(args.object_image).convert("RGB")
 
-    # Run prediction (matching README API)
+    # Run prediction
     print(f"\nLoading images...")
     print(f"  Plane image: {args.plane_image}")
     print(f"  Object image: {args.object_image}")
     print(f"  Prompt: {args.prompt}")
+    print(f"  Threshold: {threshold}")
 
     output = model.predict(
         plane_image=plane_image,
         text_prompt=args.prompt,
         images=[plane_image, object_image],
-        threshold=args.threshold,
+        threshold=threshold,
     )
 
     # Print results
@@ -298,32 +323,33 @@ def run_predict(args):
     print(f"  Scale: {output['scale_relative'].tolist()}")
 
     # Save results
-    output_dir = Path(args.output)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # Save visualization
-    viz_path = output_dir / "prediction.png"
-    visualize_results(
-        plane_image=plane_image,
-        results={"heatmap": output["heatmap"], "binary_heatmap": output["binary_heatmap"]},
-        output_path=viz_path,
-    )
+    if inference_config.get("save_visualizations", True):
+        viz_path = output_dir / "prediction.png"
+        visualize_results(
+            plane_image=plane_image,
+            results={"heatmap": output["heatmap"], "binary_heatmap": output["binary_heatmap"]},
+            output_path=viz_path,
+        )
 
     # Save metadata
-    results_json = {
-        "rotation_6d": output["rotation_6d"].tolist(),
-        "rotation_matrix": output["rotation_matrix"].tolist(),
-        "scale_relative": output["scale_relative"].tolist(),
-        "heatmap_shape": list(output["heatmap"].shape),
-    }
+    if inference_config.get("save_json", True):
+        results_json = {
+            "rotation_6d": output["rotation_6d"].tolist(),
+            "rotation_matrix": output["rotation_matrix"].tolist(),
+            "scale_relative": output["scale_relative"].tolist(),
+            "heatmap_shape": list(output["heatmap"].shape),
+        }
 
-    json_path = output_dir / "results.json"
-    with open(json_path, 'w', encoding='utf-8') as f:
-        json.dump(results_json, f, indent=2)
+        json_path = output_dir / "results.json"
+        with open(json_path, 'w', encoding='utf-8') as f:
+            json.dump(results_json, f, indent=2)
 
-    print(f"\n✓ Results saved to:")
-    print(f"  Visualization: {viz_path}")
-    print(f"  Metadata: {json_path}")
+        print(f"\n✓ Results saved to:")
+        print(f"  Visualization: {viz_path}")
+        print(f"  Metadata: {json_path}")
 
 
 def run_visualize(args):
