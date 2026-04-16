@@ -309,8 +309,11 @@ def run_predict(args):
     print(f"Prediction Results:")
     print(f"{'='*60}")
     print(f"  Heatmap shape: {output['heatmap'].shape}")
-    print(f"  Rotation 6D: {output['rotation_6d'].tolist()}")
-    print(f"  Scale: {output['scale_relative'].tolist()}")
+    print(f"  Best candidate: #{output.get('best_candidate_idx', 0)}")
+    print(f"  Rotation 6D: {output['rotation_6d'][0].tolist()}")
+    print(f"  Scale: {output['scale_relative'][0].item():.3f}")
+    if output.get("qwen_response"):
+        print(f"  Qwen Response: {output['qwen_response'][:100]}")
 
     # Save results
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -320,7 +323,13 @@ def run_predict(args):
         viz_path = output_dir / "prediction.png"
         visualize_results(
             plane_image=plane_image,
-            results={"heatmap": output["heatmap"], "binary_heatmap": output["binary_heatmap"]},
+            results={
+                "heatmap": output["heatmap"],
+                "mask": output["binary_heatmap"],
+                "rotation_deg": output.get("rotation_deg", 0),
+                "scale_relative": output.get("scale_relative", 1.0),
+                "qwen_response": output.get("qwen_response", ""),
+            },
             output_path=viz_path,
         )
 

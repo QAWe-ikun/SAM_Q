@@ -385,7 +385,7 @@ class SAMQPlacementModel(nn.Module):
     ) -> Dict[str, Any]:
         """
         Inference: placement heatmap + rotation + scale.
-        
+
         Note: Exact position is determined by H-MVP from the heatmap.
 
         Args:
@@ -402,27 +402,59 @@ class SAMQPlacementModel(nn.Module):
         with torch.no_grad():
             output = self.forward(plane_image, text_prompt, images=images)
 
-        heatmap = output["heatmap"]
+        heatmap = output["heatmap"]  # [B, num_candidates, H, W]
+        class_logits = output.get("class_logits")  # [num_layers, B, num_candidates, 1]
+
+        # Apply sigmoid if logits
+        if heatmap.min() < 0 or heatmap.max() > 1:
+            heatmap = torch.sigmoid(heatmap)
+
+        # Select best candidate using class_logits (SAM3 objectness score)
+        best_idx = 0
+        if class_logits is not None:
+            scores = class_logits[-1, 0].squeeze(-1)  # [num_candidates]
+            best_idx = scores.argmax().item()
+        else:
+            # Fallback: use mean probability
+            candidate_scores = heatmap[0].flatten(1).mean(dim=1)
+            best_idx = candidate_scores.argmax().item()
+
+        # Extract best candidate's heatmap
+        best_heatmap = heatmap[0, best_idx]  # [H, W]
 
         # Upsample heatmap to original plane_image size
         orig_size = plane_image.size[::-1]  # (H, W)
-        if heatmap.shape[-2:] != orig_size:
-            heatmap = F.interpolate(
-                heatmap,
+        if best_heatmap.shape[-2:] != orig_size:
+            best_heatmap = F.interpolate(
+                best_heatmap.unsqueeze(0).unsqueeze(0),
                 size=orig_size,
                 mode="bilinear",
                 align_corners=False,
-            )
+            ).squeeze(0).squeeze(0)
 
         # Apply threshold
-        binary_heatmap = (heatmap > threshold).float()
+        binary_heatmap = (best_heatmap > threshold).float()
+
+        # Generate Qwen response
+        qwen_response = None
+        if self.qwen_encoder is not None and self.qwen_encoder.model is not None:
+            try:
+                qwen_response = self.qwen_encoder.generate_response(
+                    text_prompt=text_prompt,
+                    images=images,
+                    max_new_tokens=128,
+                )
+            except Exception:
+                pass
 
         return {
-            "heatmap": heatmap,
+            "heatmap": best_heatmap,
             "binary_heatmap": binary_heatmap,
             "rotation_6d": output["rotation_6d"],
             "rotation_matrix": output["rotation_matrix"],
             "scale_relative": output["scale_relative"],
+            "best_candidate_idx": best_idx,
+            "qwen_response": qwen_response,
         }
 
 
