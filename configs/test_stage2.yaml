@@ -1,24 +1,24 @@
 # ============================================================================
-# Test Stage 2: Adapter + SAM3 Decoder 训练
+# Stage 2: Adapter + SAM3 Decoder Training
 # ============================================================================
-# 前置条件:
-#   1. 已完成 Stage 1: python main.py train --config configs/test_stage1.yaml
-#   2. 已预提取: python scripts/extract_seg_features.py --config configs/test_stage1.yaml --output_dir data/seg_features/
-# 本阶段不加载 Qwen3-VL，直接读取预提取的 <SEG> hidden states
+# Goal: Train <SEG> hidden state → physical space mapping
+# Loss: Dice + BCE (heatmap) + rotation L2 + scale L2
+# Trainable: Adapter + SAM3 Decoder (Projector + SEGActionHead)
+# Requires: Stage 1 LoRA checkpoint
 # ============================================================================
 
 experiment:
-  name: "test_stage2"
+  name: "stage2_decoder"
   seed: 42
-  description: "Test Stage 2: Adapter + SAM3 Decoder (preextracted seg features)"
+  description: "Stage 2: Train Adapter + SAM3 Decoder for heatmap + rotation + scale"
 
 data:
   root_dir: "data/"
   ann_file: "annotations.json"
-  seg_feature_dir: "data/seg_features/"
-  batch_size: 1
-  num_workers: 0
-  pin_memory: false
+  seg_feature_dir: "data/seg_features/"  # 预提取的 <SEG> hidden states
+  batch_size: 4
+  num_workers: 4
+  pin_memory: true
 
 model:
   num_seg_tokens: 1
@@ -26,23 +26,24 @@ model:
   qwen:
     model_name: "./models/qwen3_vl"
     hidden_dim: 4096
-    freeze: true
+    freeze: true  # ← Frozen, use Stage 1 LoRA
+    lora_path: "outputs/stage1_lora/"  # ← Load Stage 1 LoRA adapter
     attn_implementation: "flash_attention_2"
 
   sam3:
-    model_name: "./models/sam3"
+    checkpoint_path: "./models/sam3/sam3.pt"
     input_dim: 256
-    freeze_image_encoder: true
-    freeze_detector: false
+    freeze_image_encoder: true  # SAM3 image encoder frozen
+    freeze_detector: false      # ← SAM3 decoder trainable
 
   adapter:
-    freeze: false
+    freeze: false  # ← Trainable
     hidden_dim: 512
     num_queries: 64
     dropout: 0.1
 
   seg_token:
-    max_generate_tokens: 128
+    projector_hidden_dim: 1024  # 4096 → 1024 → 256
     dropout: 0.1
 
   action_head:
@@ -57,22 +58,24 @@ loss:
 
 optimizer:
   type: "AdamW"
-  lr: 1.0e-3
+  lr: 1.0e-3  # Full parameter learning rate (larger than LoRA)
   weight_decay: 1.0e-4
   betas: [0.9, 0.999]
 
 scheduler:
   type: "CosineAnnealingLR"
-  T_max: 3
+  T_max: 50
   eta_min: 1.0e-6
-  warmup_epochs: 0
+  warmup_epochs: 5
 
 training:
-  num_epochs: 3
+  num_epochs: 50
   device: "cuda"
-  save_dir: "/mnt/f/output/test_stage2"
-  save_interval: 1
+  save_dir: "outputs/stage2_full/"
   save_best: true
-  log_interval: 1
+  save_epoch: false  # Set true to save at save_interval epochs
+  save_interval: 10  # Save every N epochs (when save_epoch=true)
+  log_interval: 10
   val_interval: 1
-  early_stopping: false
+  early_stopping: true
+  patience: 20

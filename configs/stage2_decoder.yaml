@@ -31,7 +31,7 @@ model:
     attn_implementation: "flash_attention_2"
 
   sam3:
-    model_name: "./models/sam3"
+    checkpoint_path: "./models/sam3/sam3.pt"
     input_dim: 256
     freeze_image_encoder: true  # SAM3 image encoder frozen
     freeze_detector: false      # ← SAM3 decoder trainable
