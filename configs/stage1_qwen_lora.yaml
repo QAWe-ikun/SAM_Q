@@ -85,7 +85,11 @@ training:
   save_dir: "outputs/stage1_lora/"
   save_best: true
   save_epoch: false  # Set true to save at save_interval epochs
-  save_interval: 1  # Save every N epochs (when save_epoch=true)
+  save_interval: 500  # Save every N steps (when save_epoch=false)
+  save_total_limit: 3
   log_interval: 10
   early_stopping: false
   gradient_accumulation_steps: 8  # 等效增大 batch size (batch_size * 8)
+  fp16: true  # 启用混合精度训练
+  bf16: false  # 如果显卡支持，可改为 true
+  batch_size: 2  # per_device_train_batch_size

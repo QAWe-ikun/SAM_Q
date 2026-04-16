@@ -29,6 +29,7 @@ flash-attn>=2.5.0
 # Training
 accelerate>=0.25.0
 peft>=0.7.0
+trl>=0.8.0  # SFTTrainer for LLM fine-tuning
 
 # Optional: for visualization
 matplotlib>=3.7.0

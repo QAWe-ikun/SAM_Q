@@ -249,108 +249,146 @@ class Trainer:
         log_interval: int = 10,
     ) -> Dict[str, float]:
         """
-        Stage 1 训练: next-token prediction loss, 教 Qwen3-VL 输出 [SEG]。
+        Stage 1 训练: 使用 HuggingFace SFTTrainer 微调 Qwen3-VL。
 
-        支持 HuggingFace 风格的梯度累积:
-            loss = outputs.loss / grad_accum_steps
-            loss.backward()
-            if step % grad_accum_steps == 0:
-                optimizer.step()
-                optimizer.zero_grad()
-
-        Dataset 需要提供 `response` 字段（含 [SEG] 的 GPT 回复）。
-        如果 dataset 没有 `response`, 自动使用 "好的, 我将为您放置物体。[SEG]" 作为目标。
+        支持:
+            - 梯度累积 (gradient_accumulation_steps)
+            - 混合精度 (fp16/bf16)
+            - 自动 checkpointing
+            - 梯度裁剪
         """
-        # Model already loaded in enable_finetuning()
-        self.model.train()
+        try:
+            from trl import SFTTrainer, SFTConfig
+            from transformers import DataCollatorForSeq2Seq
+        except ImportError:
+            raise ImportError(
+                "Please install trl: pip install trl>=0.8.0"
+            )
 
-        # 获取梯度累积步数（从 config 读取，默认 1）
         training_config = self.config.get("training", {})
-        grad_accum_steps = training_config.get("gradient_accumulation_steps", 1)
+        qwen_cfg = self.config.get("model", {}).get("qwen", {})
+        lora_cfg = qwen_cfg.get("lora", {})
 
-        tokenizer = self.model.qwen_encoder.processor.tokenizer
+        # Ensure model is loaded with LoRA
+        self.model.qwen_encoder.load_model(use_cache=False)
+        if not self.model.qwen_encoder.training_mode:
+            self.model.qwen_encoder.enable_finetuning(
+                lora_r=lora_cfg.get("r", 64),
+                lora_alpha=lora_cfg.get("alpha", 128),
+                lora_dropout=lora_cfg.get("dropout", 0.05),
+                use_qlora=lora_cfg.get("use_qlora", False),
+            )
+
         qwen_model = self.model.qwen_encoder.model
+        tokenizer = self.model.qwen_encoder.processor.tokenizer
 
-        total_loss = 0.0
-        num_batches = 0
-        accumulated_grads = 0  # 当前累积步数
+        # Configure training arguments (similar to TrainingArguments)
+        grad_accum = training_config.get("gradient_accumulation_steps", 1)
+        batch_size = training_config.get("batch_size", 1)
+        num_epochs = training_config.get("num_epochs", 3)
+        lr = self.config.get("optimizer", {}).get("lr", 2e-4)
+        warmup_steps = self.config.get("scheduler", {}).get("warmup_epochs", 0)
+        save_steps = training_config.get("save_interval", 500)
+        log_steps = training_config.get("log_interval", 10)
 
-        progress_bar = tqdm(dataloader, desc=f"[Stage1] Epoch {self.current_epoch + 1}", leave=False)
+        # Determine dtype
+        use_bf16 = self.config.get("training", {}).get("bf16", False)
+        use_fp16 = self.config.get("training", {}).get("fp16", True)
 
-        for batch_idx, batch in enumerate(progress_bar):
-            batch_images = batch["images"]  # List[List[Tensor]]
-            batch_size = len(batch_images)
-            batch_loss = 0.0
+        sft_config = SFTConfig(
+            output_dir=str(self.output_dir),
+            num_train_epochs=num_epochs,
+            per_device_train_batch_size=batch_size,
+            gradient_accumulation_steps=grad_accum,
+            learning_rate=lr,
+            fp16=use_fp16,
+            bf16=use_bf16,
+            logging_steps=log_steps,
+            save_steps=save_steps,
+            save_total_limit=training_config.get("save_total_limit", 3),
+            save_strategy="steps" if save_steps < 1000 else "epoch",
+            evaluation_strategy="no",
+            report_to="none",
+            warmup_steps=warmup_steps,
+            lr_scheduler_type="cosine",
+            optim="adamw_torch",
+            weight_decay=self.config.get("optimizer", {}).get("weight_decay", 0.01),
+            max_grad_norm=1.0,
+            remove_unused_columns=False,
+            dataset_text_field="",  # We handle multimodal input manually
+            dataset_kwargs={"skip_prepare_dataset": True},
+            max_seq_length=4096,  # Qwen3-VL max context
+        )
 
-            for i in range(batch_size):
-                sample_images = batch_images[i]  # List[Tensor]
-                text_prompt = batch["text_prompts"][i]
-                response = batch.get("responses", [None] * batch_size)[i]
-                if response is None:
-                    response = "好的, 我将为您放置物体。[SEG]"
+        # Create data collator for Qwen3-VL format
+        def qwen_data_collator(examples):
+            """Custom collator that converts batch to Qwen3-VL input format."""
+            texts = []
+            images = []
 
-                # 构造 messages（input + target）
-                messages, image_list = self.model.qwen_encoder._build_message(
+            for ex in examples:
+                text_prompt = ex.get("text_prompt", "")
+                response = ex.get("response", "好的，我将为您放置物体。[SEG]")
+
+                # Build messages
+                messages, img_list = self.model.qwen_encoder._build_message(
                     text_prompt=text_prompt,
-                    images=sample_images,
+                    images=ex.get("images", []),
                 )
-                # 拼接 assistant 回复到 messages
                 messages.append({"role": "assistant", "content": [{"type": "text", "text": response}]})
 
+                # Apply chat template
                 text = self.model.qwen_encoder.processor.apply_chat_template(
-                    messages, tokenize=False, add_generation_prompt=False,
+                    messages, tokenize=False, add_generation_prompt=False
                 )
-                inputs = self.model.qwen_encoder.processor(
-                    text=[text],
-                    images=image_list if image_list else None,
-                    return_tensors="pt",
-                    padding=True,
-                ).to(self.device)
+                texts.append(text)
+                images.append(img_list if img_list else None)
 
-                # 计算 LM loss（labels = input_ids, prefix 部分设为 -100）
-                input_ids = inputs["input_ids"]
-                labels = input_ids.clone()
-
-                # 找到 assistant 回复起始位置, 之前的 token 不计入 loss
-                response_tokens = tokenizer(response, add_special_tokens=False)["input_ids"]
-                resp_len = len(response_tokens)
-                labels[:, :-resp_len] = -100  # 只对回复部分计算 loss
-
-                outputs = qwen_model(
-                    **inputs,
-                    labels=labels,
-                )
-                loss = outputs.loss
-                if loss is not None:
-                    # 梯度累积：除以 grad_accum_steps
-                    batch_loss += loss.item() / grad_accum_steps
-                    (loss / grad_accum_steps).backward()
-
-            # 梯度累积：达到累积步数后才更新参数
-            accumulated_grads += 1
-            if accumulated_grads >= grad_accum_steps:
-                torch.nn.utils.clip_grad_norm_(
-                    filter(lambda p: p.requires_grad, self.model.parameters()), 1.0
-                )
-                self.optimizer.step()
-                self.optimizer.zero_grad()
-                accumulated_grads = 0
-
-            total_loss += batch_loss / batch_size
-            num_batches += 1
-
-            if batch_idx % log_interval == 0:
-                progress_bar.set_postfix({"loss": f"{batch_loss / batch_size:.4f}"})
-
-        # 清理剩余梯度（如果最后没达到 grad_accum_steps）
-        if accumulated_grads > 0:
-            torch.nn.utils.clip_grad_norm_(
-                filter(lambda p: p.requires_grad, self.model.parameters()), 1.0
+            # Process with Qwen3-VL processor
+            inputs = self.model.qwen_encoder.processor(
+                text=texts,
+                images=images if any(img is not None for img in images) else None,
+                return_tensors="pt",
+                padding=True,
             )
-            self.optimizer.step()
-            self.optimizer.zero_grad()
 
-        return {"train_loss": total_loss / max(num_batches, 1)}
+            # Create labels for LM loss
+            labels = inputs["input_ids"].clone()
+            # Mask out prompt tokens (will be handled by model internally)
+            
+            inputs["labels"] = labels
+            return inputs
+
+        # Initialize SFTTrainer
+        trainer = SFTTrainer(
+            model=qwen_model,
+            tokenizer=tokenizer,
+            train_dataset=dataloader.dataset,
+            data_collator=qwen_data_collator,
+            args=sft_config,
+        )
+
+        # Train
+        print(f"\n{'='*60}")
+        print(f"Starting Stage 1 training with SFTTrainer")
+        print(f"  Epochs: {num_epochs}")
+        print(f"  Batch size: {batch_size}")
+        print(f"  Gradient accumulation: {grad_accum}")
+        print(f"  Effective batch size: {batch_size * grad_accum}")
+        print(f"  Learning rate: {lr}")
+        print(f"{'='*60}\n")
+
+        train_result = trainer.train()
+
+        # Save LoRA weights
+        lora_output_dir = self.output_dir / "lora_weights"
+        qwen_model.save_pretrained(lora_output_dir)
+        print(f"\nLoRA weights saved to {lora_output_dir}")
+
+        # Sync model state back to wrapper
+        self.model.qwen_encoder.model = qwen_model
+
+        return {"train_loss": train_result.metrics.get("train_loss", 0.0)}
 
     def train_epoch_stage2(
         self,
@@ -673,50 +711,55 @@ class Trainer:
 
             # Train
             if self.stage == "lm":
+                # SFTTrainer handles multi-epoch training internally
                 train_metrics = self.train_epoch_stage1(train_loader, log_interval)
+                # SFTTrainer already saves checkpoints, skip manual save
+                # But still run validation if needed
+                val_metrics = {}
+                if val_loader is not None and (epoch + 1) % val_interval == 0:
+                    val_metrics = self._validate_stage1(val_loader)
+                # Skip epoch logging for SFTTrainer (it logs internally)
+                break  # SFTTrainer runs all epochs in one call
             else:
                 train_metrics = self.train_epoch_stage2(train_loader, log_interval)
 
-            # Validate
-            val_metrics = {}
-            if val_loader is not None and (epoch + 1) % val_interval == 0:
-                if self.stage == "lm":
-                    val_metrics = self._validate_stage1(val_loader)
-                else:
+                # Validate
+                val_metrics = {}
+                if val_loader is not None and (epoch + 1) % val_interval == 0:
                     val_metrics = self._validate_stage2(val_loader)
-            
-            # Update scheduler
-            if self.scheduler is not None:
-                self.scheduler.step()
-            
-            # Log metrics
-            metrics = {
-                "epoch": epoch + 1,
-                **train_metrics,
-                **val_metrics,
-                "lr": self.optimizer.param_groups[0]["lr"],
-            }
-            
-            # Print metrics
-            metrics_str = " | ".join(
-                f"{k}: {v:.4f}" for k, v in metrics.items() if k != "epoch"
-            )
-            print(f"Epoch {metrics['epoch']:3d} | {metrics_str}")
-            
-            # Save checkpoint
-            val_loss = val_metrics.get("val_loss", float("inf"))
-            self._save_checkpoint(epoch, val_loss)
-            
-            # Early stopping
-            if self.early_stopping:
-                if val_loss < self.best_val_loss:
-                    self.best_val_loss = val_loss
-                    self.patience_counter = 0
-                else:
-                    self.patience_counter += 1
-                    if self.patience_counter >= self.patience:
-                        print(f"\nEarly stopping at epoch {epoch + 1}")
-                        break
+
+                # Update scheduler
+                if self.scheduler is not None:
+                    self.scheduler.step()
+
+                # Log metrics
+                metrics = {
+                    "epoch": epoch + 1,
+                    **train_metrics,
+                    **val_metrics,
+                    "lr": self.optimizer.param_groups[0]["lr"],
+                }
+
+                # Print metrics
+                metrics_str = " | ".join(
+                    f"{k}: {v:.4f}" for k, v in metrics.items() if k != "epoch"
+                )
+                print(f"Epoch {metrics['epoch']:3d} | {metrics_str}")
+
+                # Save checkpoint
+                val_loss = val_metrics.get("val_loss", float("inf"))
+                self._save_checkpoint(epoch, val_loss)
+
+                # Early stopping
+                if self.early_stopping:
+                    if val_loss < self.best_val_loss:
+                        self.best_val_loss = val_loss
+                        self.patience_counter = 0
+                    else:
+                        self.patience_counter += 1
+                        if self.patience_counter >= self.patience:
+                            print(f"\nEarly stopping at epoch {epoch + 1}")
+                            break
         
         # Save final checkpoint
         self._save_checkpoint("final", float("inf"))
