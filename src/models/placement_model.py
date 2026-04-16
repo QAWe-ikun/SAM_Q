@@ -243,6 +243,78 @@ class SAMQPlacementModel(nn.Module):
         # Set eval mode if requested
         if eval_mode:
             self.eval()
+
+    def load_split_checkpoint(
+        self,
+        adapter_checkpoint_path: Optional[str] = None,
+        sam3_checkpoint_path: Optional[str] = None,
+    ):
+        """
+        Load separately saved checkpoints for Adapter and SAM3 components.
+        
+        This is used when you have saved 'adapter_checkpoint_best.pt' and 'sam3_checkpoint_best.pt'
+        separately instead of a single 'checkpoint_best.pt'.
+
+        Args:
+            adapter_checkpoint_path: Path to adapter weights file.
+            sam3_checkpoint_path: Path to SAM3 weights file.
+        """
+        print(f"\n{'='*60}")
+        print(f"Loading split checkpoints...")
+        print(f"{'='*60}")
+
+        if adapter_checkpoint_path and Path(adapter_checkpoint_path).exists():
+            ckpt = torch.load(adapter_checkpoint_path, map_location=self.device)
+            state_dict = ckpt.get("model_state_dict", ckpt)
+            
+            # 1. Adapter
+            if self.adapter is not None:
+                adapter_state = {k.replace("adapter.", ""): v for k, v in state_dict.items() if k.startswith("adapter.")}
+                if adapter_state:
+                    self.adapter.load_state_dict(adapter_state, strict=False)
+                    print(f"[PlacementModel] Loaded Adapter from {adapter_checkpoint_path}")
+            
+            # 2. SegTokenProjector
+            if self.seg_projector is not None:
+                projector_state = {k.replace("seg_projector.", ""): v for k, v in state_dict.items() if k.startswith("seg_projector.")}
+                if projector_state:
+                    self.seg_projector.load_state_dict(projector_state, strict=False)
+                    print(f"[PlacementModel] Loaded SegTokenProjector from {adapter_checkpoint_path}")
+            
+            # 3. SEGActionHead
+            if self.seg_action_head is not None:
+                action_head_state = {k.replace("seg_action_head.", ""): v for k, v in state_dict.items() if k.startswith("seg_action_head.")}
+                if action_head_state:
+                    self.seg_action_head.load_state_dict(action_head_state, strict=False)
+                    print(f"[PlacementModel] Loaded SEGActionHead from {adapter_checkpoint_path}")
+        elif adapter_checkpoint_path:
+            print(f"[PlacementModel] Warning: Adapter checkpoint not found at {adapter_checkpoint_path}")
+
+        if sam3_checkpoint_path and Path(sam3_checkpoint_path).exists():
+            ckpt = torch.load(sam3_checkpoint_path, map_location=self.device)
+            state_dict = ckpt.get("model_state_dict", ckpt)
+            
+            if self.sam3_loader is not None:
+                self.sam3_loader.load_model(eval_mode=True)  # Ensure base model is built
+                sam3_state = {k: v for k, v in state_dict.items() if k.startswith("sam3_loader.model.")}
+                
+                # Load into specific SAM3 components
+                for comp_name, comp_obj in [
+                    ("transformer", self.sam3_loader.sam3_transformer),
+                    ("segmentation_head", self.sam3_loader.sam3_seg_head),
+                    ("dot_prod_scoring", self.sam3_loader.sam3_dot_scoring)
+                ]:
+                    prefix = f"sam3_loader.model.{comp_name}."
+                    comp_state = {k[len(prefix):]: v for k, v in sam3_state.items() if k.startswith(prefix)}
+                    if comp_state:
+                        comp_obj.load_state_dict(comp_state, strict=False)
+                        comp_obj.to(self.device, dtype=self.dtype)
+                        print(f"[PlacementModel] Loaded SAM3 {comp_name} from {sam3_checkpoint_path}")
+        elif sam3_checkpoint_path:
+            print(f"[PlacementModel] Warning: SAM3 checkpoint not found at {sam3_checkpoint_path}")
+        
+        self.eval()
+        print(f"{'='*60}\n")
     
     def forward(
         self,
@@ -483,9 +555,9 @@ class PlacementLoss(nn.Module):
         target_masks: torch.Tensor,
         pred_rotation_6d: Optional[torch.Tensor] = None,
         pred_scale: Optional[torch.Tensor] = None,
-        class_logits: Optional[torch.Tensor] = None,
         gt_rotation_6d: Optional[torch.Tensor] = None,
         gt_scale: Optional[torch.Tensor] = None,
+        class_logits: Optional[torch.Tensor] = None,
     ) -> Dict[str, torch.Tensor]:
         """
         Compute placement prediction loss.
@@ -495,9 +567,9 @@ class PlacementLoss(nn.Module):
             target_masks: Ground truth masks [B, 1, H, W]
             pred_rotation_6d: Predicted 6D rotation [B, 6] (optional)
             pred_scale: Predicted scale [B] (optional)
+            gt_rotation_6d: GT 6D rotation [B, 6]
+            gt_scale: GT scale [B, 1]
             class_logits: [num_layers, B, num_candidates, 1] (optional)
-            gt_rotation_6d: GT 6D rotation [B, 6] (optional, 有监督)
-            gt_scale: GT scale [B, 1] (optional, 有监督)
 
         Returns:
             losses: Dictionary with total and component losses
@@ -532,27 +604,15 @@ class PlacementLoss(nn.Module):
         losses["total"] = losses["total"] + self.dice_weight * dice_loss
 
         # Rotation loss
-        if pred_rotation_6d is not None:
-            if gt_rotation_6d is not None:
-                # 有监督: L1 loss between predicted and GT 6D rotation
-                rotation_loss = F.l1_loss(pred_rotation_6d, gt_rotation_6d.to(pred_rotation_6d.device))
-            else:
-                # 无监督: L2 regularization (趋近单位旋转)
-                rotation_loss = pred_rotation_6d.pow(2).mean()
-            losses["rotation"] = rotation_loss
-            losses["total"] = losses["total"] + self.rotation_weight * rotation_loss
+        rotation_loss = F.l1_loss(pred_rotation_6d, gt_rotation_6d.to(pred_rotation_6d.device))
+        losses["rotation"] = rotation_loss
+        losses["total"] = losses["total"] + self.rotation_weight * rotation_loss
 
         # Scale loss
-        if pred_scale is not None:
-            if gt_scale is not None:
-                # 有监督: L1 loss between predicted and GT scale
-                gt_s = gt_scale.to(pred_scale.device).squeeze(-1)  # [B]
-                scale_loss = F.l1_loss(pred_scale, gt_s)
-            else:
-                # 无监督: 正则化 (趋近 1.0)
-                scale_loss = (pred_scale - 1.0).pow(2).mean()
-            losses["scale"] = scale_loss
-            losses["total"] = losses["total"] + self.scale_weight * scale_loss
+        gt_s = gt_scale.to(pred_scale.device).squeeze(-1)  # [B]
+        scale_loss = F.l1_loss(pred_scale, gt_s)
+        losses["scale"] = scale_loss
+        losses["total"] = losses["total"] + self.scale_weight * scale_loss
 
         return losses
     

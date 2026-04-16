@@ -7,19 +7,21 @@ Cross-attention based adapter for multimodal embedding fusion.
 
 import torch
 import torch.nn as nn
+from typing import Union
+from pathlib import Path
 
 
 class CrossModalAdapter(nn.Module):
     """
     Cross-modal adapter that uses cross-attention to project embeddings.
-    
+
     Architecture:
         Input → Linear → LayerNorm
         ↓
         Learnable Queries cross-attend to Input
         ↓
         Output Projection → SAM3 space
-    
+
     Produces fixed-length output (num_queries) regardless of input sequence length.
     """
 
@@ -94,3 +96,44 @@ class CrossModalAdapter(nn.Module):
         output = self.output_proj(attended)
 
         return output
+
+    def load_from_checkpoint(
+        self, 
+        path: Union[str, Path], 
+        device: str = "cpu",
+        prefix: str = ""
+    ):
+        """
+        Load trained weights from a checkpoint file.
+
+        Args:
+            path: Path to checkpoint (.pt)
+            device: Device to load weights to
+            prefix: Key prefix in checkpoint (e.g., "adapter.") if loading from full model state_dict
+        """
+        path = Path(path)
+        if not path.exists():
+            raise FileNotFoundError(f"Adapter checkpoint not found: {path}")
+
+        ckpt = torch.load(path, map_location=device)
+        state_dict = ckpt.get("model_state_dict", ckpt)
+
+        # Filter keys if loading from a full model checkpoint
+        if prefix:
+            filtered_state_dict = {
+                k[len(prefix):]: v 
+                for k, v in state_dict.items() 
+                if k.startswith(prefix)
+            }
+        else:
+            filtered_state_dict = state_dict
+
+        missing, unexpected = self.load_state_dict(filtered_state_dict, strict=False)
+        
+        if unexpected:
+            print(f"[CrossModalAdapter] Unexpected keys: {unexpected}")
+        
+        self.to(device)
+        self.eval()
+        print(f"[CrossModalAdapter] Loaded weights from {path}")
+

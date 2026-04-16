@@ -53,8 +53,8 @@ loss:
   type: "placement"
   dice_weight: 1.0
   bce_weight: 1.0
-  rotation_weight: 0.5
-  scale_weight: 0.3
+  rotation_weight: 1.0
+  scale_weight: 1.0
 
 optimizer:
   type: "AdamW"

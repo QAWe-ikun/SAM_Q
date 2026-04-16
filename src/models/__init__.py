@@ -10,17 +10,15 @@ Structure:
     - collision/: Collision detection modules (H-MVP)
     - vla/: Vision-Language-Action modules
     - sampling/: Sampling and placement strategies
-    
+
 Main Models:
     - SAMQPlacementModel: Main placement prediction model
     - PlacementLoss: Loss functions for training
-    - VLALoss: VLA-specific loss functions
 """
 
-from .placement_model import SAMQPlacementModel, PlacementLoss, VLALoss
+from .placement_model import SAMQPlacementModel, PlacementLoss
 
 __all__ = [
     "SAMQPlacementModel",
     "PlacementLoss",
-    "VLALoss",
 ]

@@ -129,6 +129,69 @@ class SAM3Loader(nn.Module):
         self._loaded = True
         print(f"[SAM3Loader] Loaded SAM3 from {ckpt_path}")
 
+    def load_trained_weights(self, path: Union[str, Path], device: Optional[str] = None):
+        """
+        Load fine-tuned SAM3 weights from a split checkpoint (e.g., sam3_checkpoint_best.pt).
+        
+        Unlike load_model(), this method loads the *trained* decoder/transformer weights 
+        into the already built model, rather than building the model from scratch from a pretrained file.
+        """
+        path = Path(path)
+        if not path.exists():
+            raise FileNotFoundError(f"SAM3 trained weights not found: {path}")
+
+        # Ensure model structure is built first (using pretrained)
+        self.load_model()
+
+        target_device = device or self.device
+        ckpt = torch.load(path, map_location=target_device)
+        state_dict = ckpt.get("model_state_dict", ckpt)
+
+        # Filter keys for SAM3 components
+        filtered_state_dict = {}
+        for k, v in state_dict.items():
+            # Keys in checkpoint are like "sam3_loader.model.transformer..."
+            # We want to match "transformer..." to self.sam3_transformer
+            if k.startswith("sam3_loader.model."):
+                inner_key = k[len("sam3_loader.model."):]
+            else:
+                inner_key = k
+            
+            # Map to specific components
+            component = None
+            if inner_key.startswith("transformer."):
+                component = self.sam3_transformer
+                clean_key = inner_key
+            elif inner_key.startswith("segmentation_head."):
+                component = self.sam3_seg_head
+                clean_key = inner_key
+            elif inner_key.startswith("dot_prod_scoring."):
+                component = self.sam3_dot_scoring
+                clean_key = inner_key
+            else:
+                continue
+                
+            filtered_state_dict[clean_key] = v
+
+        if filtered_state_dict:
+            # Load into each component
+            for comp_name, comp_obj in [
+                ("transformer", self.sam3_transformer),
+                ("seg_head", self.sam3_seg_head),
+                ("dot_scoring", self.sam3_dot_scoring)
+            ]:
+                # Extract keys for this component
+                comp_state = {
+                    k.replace(f"{comp_obj.__class__.__name__}.", ""): v 
+                    for k, v in filtered_state_dict.items()
+                    # Note: In this split checkpoint format, keys usually are like "transformer.encoder..."
+                    if k.startswith(comp_name + ".")
+                }
+                if comp_state:
+                    missing, unexpected = comp_obj.load_state_dict(comp_state, strict=False)
+                    comp_obj.to(device=target_device, dtype=self.dtype)
+                    print(f"[SAM3Loader] Loaded trained {comp_name} from {path.name}")
+
     def forward(
         self,
         plane_image: torch.Tensor,

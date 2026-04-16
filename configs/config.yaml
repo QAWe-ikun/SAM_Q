@@ -23,7 +23,7 @@ model:
 
   # SAM3 Components
   sam3:
-    checkpoint_path: "./models/sam3/sam3.pt"  # SAM3 weights (pretrained or trained checkpoint)
+    checkpoint_path: "/mnt/f/outputs/stage2_full/stage2_decoder_20260416_142505/checkpoint_best.pt"  # SAM3 weights (pretrained or trained checkpoint)
     input_dim: 256
 
   # Adapter: <SEG> hidden state → SAM3 prompt embeddings
