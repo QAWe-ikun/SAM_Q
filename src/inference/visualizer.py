@@ -81,14 +81,14 @@ def visualize_results(
         mask = mask.squeeze()
     axes[2].imshow(mask, alpha=0.5, cmap="Reds")
 
-    # Draw bounding boxes
-    boxes = results["boxes"]
-    scores = results["scores"]
+    # Draw bounding boxes (if available)
+    boxes = results.get("boxes", [])
+    scores = results.get("scores", [])
     if hasattr(boxes, "cpu"):
         boxes = boxes.cpu().numpy()
     if hasattr(scores, "cpu"):
         scores = scores.cpu().numpy()
-        
+
     for i, (box, score) in enumerate(zip(boxes, scores)):
         rect = Rectangle(
             (box[0], box[1]),
@@ -102,13 +102,14 @@ def visualize_results(
         axes[2].add_patch(rect)
 
     axes[2].set_title(
-        f"Predicted Placement Masks ({len(results.get('boxes', []))} regions)\n"
+        f"Predicted Placement Mask\n"
         f"Rot: {results.get('rotation_deg', 0):.1f}° | Scale: {results.get('scale_relative', 1):.2f}x",
         fontsize=12,
         fontweight="bold"
     )
     axes[2].axis("off")
-    axes[2].legend(loc="upper right", fontsize=10)
+    if boxes and len(boxes) > 0:
+        axes[2].legend(loc="upper right", fontsize=10)
 
     plt.tight_layout()
     
