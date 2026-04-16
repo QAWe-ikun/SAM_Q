@@ -288,33 +288,51 @@ def run_predict(args):
     model.load_all(eval_mode=True)  # Initialize Qwen + SAM3 structures
 
     # Determine checkpoint loading strategy
+    # Default to split checkpoints (since we no longer save combined checkpoints)
+    output_dir = Path(inference_config.get("output_dir", "outputs/"))
     adapter_ckpt = inference_config.get("adapter_checkpoint_path")
     sam3_ckpt = inference_config.get("sam3_checkpoint_path")
 
+    # If not specified in config, try default split checkpoint paths
+    if not adapter_ckpt or not sam3_ckpt:
+        default_adapter = output_dir / "adapter_checkpoint_best.pt"
+        default_sam3 = output_dir / "sam3_checkpoint_best.pt"
+        if default_adapter.exists() and default_sam3.exists():
+            adapter_ckpt = str(default_adapter)
+            sam3_ckpt = str(default_sam3)
+
     if adapter_ckpt and sam3_ckpt:
-        # Option: Load split checkpoints
+        # Load split checkpoints (Adapter + SAM3)
         model.load_split_checkpoint(
             adapter_checkpoint_path=adapter_ckpt,
             sam3_checkpoint_path=sam3_ckpt,
         )
     else:
-        # Default: Load combined checkpoint
-        checkpoint = torch.load(args.checkpoint, map_location=device)
-        state_dict = checkpoint.get("model_state_dict", checkpoint)
-        
-        fixed_state_dict = {}
-        sam3_prefixes = ["backbone.", "geometry_encoder.", "transformer.", "segmentation_head.", "dot_prod_scoring."]
-        
-        for k, v in state_dict.items():
-            if any(k.startswith(p) for p in sam3_prefixes):
-                fixed_state_dict[f"sam3_loader.model.{k}"] = v
-            else:
-                fixed_state_dict[k] = v
-                
-        result = model.load_state_dict(fixed_state_dict, strict=False)
-        print(f"Loaded checkpoint: {args.checkpoint}")
-        if result.missing_keys or result.unexpected_keys:
-            print(f"  Note: Some keys did not match (Expected for older checkpoints).")
+        # Fallback: Load combined checkpoint (backward compatibility)
+        fallback_ckpt = args.checkpoint if args.checkpoint else inference_config.get("checkpoint_path")
+        if fallback_ckpt and Path(fallback_ckpt).exists():
+            checkpoint = torch.load(fallback_ckpt, map_location=device)
+            state_dict = checkpoint.get("model_state_dict", checkpoint)
+
+            fixed_state_dict = {}
+            sam3_prefixes = ["backbone.", "geometry_encoder.", "transformer.", "segmentation_head.", "dot_prod_scoring."]
+
+            for k, v in state_dict.items():
+                if any(k.startswith(p) for p in sam3_prefixes):
+                    fixed_state_dict[f"sam3_loader.model.{k}"] = v
+                else:
+                    fixed_state_dict[k] = v
+
+            result = model.load_state_dict(fixed_state_dict, strict=False)
+            print(f"Loaded combined checkpoint: {fallback_ckpt}")
+            if result.missing_keys or result.unexpected_keys:
+                print(f"  Note: Some keys did not match (Expected for older checkpoints).")
+        else:
+            raise FileNotFoundError(
+                "No checkpoint found!\n"
+                "  - Set adapter_checkpoint_path and sam3_checkpoint_path in config.yaml\n"
+                "  - Or ensure adapter_checkpoint_best.pt and sam3_checkpoint_best.pt exist in output_dir"
+            )
 
     # Load images
     plane_image = Image.open(args.plane_image).convert("RGB")

@@ -46,16 +46,22 @@ model:
 # Inference Configuration
 # ----------------------------------------------------------------------------
 inference:
-  # Option 1: Load combined checkpoint (default)
-  checkpoint_path: "outputs/stage2_full/checkpoint_best.pt"
+  # Default: Auto-detect split checkpoints from output_dir
+  # If adapter_checkpoint_path and sam3_checkpoint_path are not set,
+  # the system will look for adapter_checkpoint_best.pt and sam3_checkpoint_best.pt
+  # in the output_dir automatically.
   
-  # Option 2: Load split checkpoints (overrides checkpoint_path if set)
+  # Option 1: Explicit split checkpoint paths (recommended)
   adapter_checkpoint_path: null  # e.g., "outputs/stage2_full/adapter_checkpoint_best.pt"
   sam3_checkpoint_path: null     # e.g., "outputs/stage2_full/sam3_checkpoint_best.pt"
+  
+  # Option 2: Combined checkpoint (backward compatibility, used if split not found)
+  checkpoint_path: null  # e.g., "outputs/stage2_full/checkpoint_best.pt"
+  
+  output_dir: "outputs/"  # Where to look for default split checkpoints
   
   threshold: 0.5              # Confidence threshold for heatmap binarization
   device: "cuda"              # "cuda", "cpu", or "auto"
 
   save_visualizations: true   # Save overlay image (prediction.png)
   save_json: true             # Save structured results (prediction.json)
-  output_dir: "outputs/"      # Output directory for results

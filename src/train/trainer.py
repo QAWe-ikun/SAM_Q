@@ -436,6 +436,47 @@ class Trainer:
         self.model.qwen_encoder.model = qwen_model
 
         return {"train_loss": train_result.metrics.get("train_loss", 0.0)}
+    
+    @torch.no_grad()
+    def _extract_seg_features(self, dataloader: DataLoader, output_dir: Path) -> None:
+        """Stage 1 训练完后, 自动提取 <SEG> hidden states 保存到 data/seg_features/。"""
+        output_dir.mkdir(parents=True, exist_ok=True)
+        self.model.eval()
+        self.model.qwen_encoder.load_model()
+
+        print(f"\n{'=' * 60}")
+        print(f"提取 <SEG> features → {output_dir}")
+        print(f"{'=' * 60}")
+
+        count = 0
+        dataset = dataloader.dataset
+
+        for idx in tqdm(range(len(dataset)), desc="提取 <SEG>", leave=False):
+            sample = dataset[idx]
+            ann = dataset.annotations[idx]
+            sample_id = ann.get("id", ann.get("scene_id", f"{dataset.split}_{idx:06d}"))
+
+            out_path = output_dir / f"{sample_id}.pt"
+            if out_path.exists():
+                count += 1
+                continue
+
+            plane_img = sample["plane_image"]
+            obj_img = sample["object_image"]
+            text_prompt = sample["text_prompt"]
+
+            seg_hidden, _ = self.model.qwen_encoder.generate_with_seg(
+                text_prompt=text_prompt,
+                images=[plane_img, obj_img],
+                force_only=True,
+                num_seg=self.config.get("model", {}).get("num_seg_tokens", 1),
+            )
+
+            seg_hidden = seg_hidden.squeeze(0).cpu().float()
+            torch.save({"seg_hidden": seg_hidden, "sample_id": sample_id}, out_path)
+            count += 1
+
+        print(f"完成: {count} 个特征已保存到 {output_dir}")
 
     def train_epoch_stage2(
         self,
@@ -906,98 +947,41 @@ class Trainer:
 
         print(f"\nTraining completed! Results saved to: {self.output_dir}")
 
-    @torch.no_grad()
-    def _extract_seg_features(self, dataloader: DataLoader, output_dir: Path) -> None:
-        """Stage 1 训练完后, 自动提取 <SEG> hidden states 保存到 data/seg_features/。"""
-        output_dir.mkdir(parents=True, exist_ok=True)
-        self.model.eval()
-        self.model.qwen_encoder.load_model()
-
-        print(f"\n{'=' * 60}")
-        print(f"提取 <SEG> features → {output_dir}")
-        print(f"{'=' * 60}")
-
-        count = 0
-        dataset = dataloader.dataset
-
-        for idx in tqdm(range(len(dataset)), desc="提取 <SEG>", leave=False):
-            sample = dataset[idx]
-            ann = dataset.annotations[idx]
-            sample_id = ann.get("id", ann.get("scene_id", f"{dataset.split}_{idx:06d}"))
-
-            out_path = output_dir / f"{sample_id}.pt"
-            if out_path.exists():
-                count += 1
-                continue
-
-            plane_img = sample["plane_image"]
-            obj_img = sample["object_image"]
-            text_prompt = sample["text_prompt"]
-
-            seg_hidden, _ = self.model.qwen_encoder.generate_with_seg(
-                text_prompt=text_prompt,
-                images=[plane_img, obj_img],
-                force_only=True,
-                num_seg=self.config.get("model", {}).get("num_seg_tokens", 1),
-            )
-
-            seg_hidden = seg_hidden.squeeze(0).cpu().float()
-            torch.save({"seg_hidden": seg_hidden, "sample_id": sample_id}, out_path)
-            count += 1
-
-        print(f"完成: {count} 个特征已保存到 {output_dir}")
-
     def _save_checkpoint(self, epoch: Any, val_loss: float, is_best: bool = False) -> None:
         """
         Save model checkpoint (Stage 2 only).
 
-        Also saves split weights (Adapter + SAM3) when saving best/final checkpoint.
+        From now on, we ONLY save split weights (Adapter + SAM3) separately.
+        No combined checkpoint is saved.
         """
         if is_best:
             self.best_val_loss = val_loss
 
         state_dict = self.model.state_dict()
 
-        # Full checkpoint
-        checkpoint = {
-            "epoch": epoch,
-            "model_state_dict": state_dict,
-            "optimizer_state_dict": self.optimizer.state_dict(),
-            "scheduler_state_dict": self.scheduler.state_dict() if self.scheduler else None,
-            "best_val_loss": self.best_val_loss,
-            "train_losses": self.train_losses,
-            "val_losses": self.val_losses,
-            "config": self.config,
-        }
-
         training_config = self.config.get("training", {})
         save_epoch = training_config.get("save_epoch", False)
         save_interval = training_config.get("save_interval", 10)
 
         # Determine suffix for split weights
-        suffix = ""
-        
+        suffix = None
+
         # Save epoch checkpoint
         if epoch == "final":
-            path = self.output_dir / "checkpoint_final.pt"
-            torch.save(checkpoint, path)
             suffix = "_final"
         elif isinstance(epoch, int):
             # Save at specified intervals if save_epoch is enabled
             if save_epoch and (epoch + 1) % save_interval == 0:
-                path = self.output_dir / f"checkpoint_epoch_{epoch}.pt"
-                torch.save(checkpoint, path)
                 suffix = f"_epoch_{epoch}"
 
-        # Save best checkpoint + split weights
+        # Save best checkpoint
         if is_best and training_config.get("save_best", True):
-            best_path = self.output_dir / "checkpoint_best.pt"
-            torch.save(checkpoint, best_path)
             suffix = "_best"
 
-        # Save split weights (Adapter + SAM3) for best/final checkpoints
-        if suffix and self.stage == "placement" and self.model.sam3_loader is not None:
+        # Save split weights (Adapter + SAM3)
+        if suffix:
             self._save_split_weights(state_dict, suffix)
+            
 
     def _save_split_weights(self, state_dict: Dict, suffix: str) -> None:
         """
