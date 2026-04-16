@@ -39,7 +39,7 @@ model:
       bias: "none"
 
   sam3:
-    model_name: "./models/sam3"
+    sam_checkpoint_path: "./models/sam3/sam3.pt"
     input_dim: 256
     freeze_image_encoder: true
     freeze_detector: true

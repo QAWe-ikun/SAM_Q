@@ -256,7 +256,7 @@ def run_predict(args):
     if args.config:
         config = Config(args.config).to_dict()
     else:
-        config = {"inference": {}, "model": {}}
+        raise ValueError("Inference config is required. Please provide with --config.")
 
     inference_config = config.get("inference", {})
     model_config = config.get("model", {})
@@ -266,20 +266,20 @@ def run_predict(args):
     output_dir = Path(args.output if args.output else inference_config.get("output_dir", "results/"))
 
     # Merge configs: checkpoint > inference config > defaults
-    qwen_config = config.get("qwen", model_config.get("qwen", {}))
-    sam3_config = config.get("sam3", model_config.get("sam3", {}))
-    adapter_config = config.get("adapter", model_config.get("adapter", {}))
-    action_head_config = config.get("action_head", model_config.get("action_head", {}))
+    qwen_config = model_config.get("qwen", {})
+    sam3_config = model_config.get("sam3", {})
+    adapter_config = model_config.get("adapter", {})
+    action_head_config = model_config.get("action_head", {})
 
     # Initialize model
     # Note: We pass the paths so the model knows where to look if we use load_all,
     # but here we will explicitly load using the specific method for clarity and SAM3 support.
     adapter_ckpt_path = adapter_config.get("adapter_checkpoint_path")
-    sam3_ckpt_path = sam3_config.get("sam3_checkpoint_path") # This is likely the pretrained one or the trained one
+    sam3_ckpt_path = sam3_config.get("sam_checkpoint_path")
 
     model = SAMQPlacementModel(
-        sam3_checkpoint_path=sam3_config.get("sam_checkpoint_path"), # Pretrained base
-        adapter_checkpoint_path=None, # We will load explicitly below
+        sam_checkpoint_path=sam3_ckpt_path,
+        adapter_checkpoint_path=adapter_ckpt_path,
         qwen_model_name=qwen_config.get("model_name"),
         qwen_lora_path=qwen_config.get("lora_path"),
         sam3_input_dim=sam3_config.get("input_dim", 256),
@@ -291,70 +291,11 @@ def run_predict(args):
     )
 
     # Load trained weights
-    model.load_all(eval_mode=True)  # Loads Qwen + SAM3 Base + LoRA
+    model.load_all(eval_mode=True)
 
     # Now load the trained Adapter and SAM3 Decoder weights if specified
     # Priority: model config > auto-detect in output_dir
     output_dir = Path(inference_config.get("output_dir", "outputs/"))
-    
-    # 1. Resolve Adapter Checkpoint
-    adapter_ckpt = adapter_ckpt_path
-    if not adapter_ckpt:
-        default_adapter = output_dir / "adapter_checkpoint_best.pt"
-        if default_adapter.exists():
-            adapter_ckpt = str(default_adapter)
-
-    # 2. Resolve SAM3 Checkpoint (Trained decoder weights)
-    # Note: sam3_config['sam_checkpoint_path'] might be the pretrained one used for init.
-    # We look for a specific 'sam3_checkpoint_best.pt' in output_dir for the *trained* weights.
-    sam3_ckpt = None # Default to using the pretrained one loaded in load_all
-    default_sam3_trained = output_dir / "sam3_checkpoint_best.pt"
-    if default_sam3_trained.exists():
-        sam3_ckpt = str(default_sam3_trained)
-
-    if adapter_ckpt or sam3_ckpt:
-        # Use the split loader
-        # If sam3_ckpt is None, it uses the pretrained one already loaded
-        # If adapter_ckpt is None, it skips adapter loading
-        if adapter_ckpt and sam3_ckpt:
-             model.load_split_checkpoint(
-                adapter_checkpoint_path=adapter_ckpt,
-                sam3_checkpoint_path=sam3_ckpt,
-            )
-        elif adapter_ckpt:
-             # Only adapter
-             model.load_split_checkpoint(
-                adapter_checkpoint_path=adapter_ckpt,
-                sam3_checkpoint_path=None,
-            )
-        elif sam3_ckpt:
-             # Only SAM3
-             model.load_split_checkpoint(
-                adapter_checkpoint_path=None,
-                sam3_checkpoint_path=sam3_ckpt,
-            )
-    else:
-        # Fallback: Load combined checkpoint (backward compatibility)
-        fallback_ckpt = args.checkpoint if args.checkpoint else inference_config.get("checkpoint_path")
-        if fallback_ckpt and Path(fallback_ckpt).exists():
-            checkpoint = torch.load(fallback_ckpt, map_location=device)
-            state_dict = checkpoint.get("model_state_dict", checkpoint)
-
-            fixed_state_dict = {}
-            sam3_prefixes = ["backbone.", "geometry_encoder.", "transformer.", "segmentation_head.", "dot_prod_scoring."]
-
-            for k, v in state_dict.items():
-                if any(k.startswith(p) for p in sam3_prefixes):
-                    fixed_state_dict[f"sam3_loader.model.{k}"] = v
-                else:
-                    fixed_state_dict[k] = v
-
-            result = model.load_state_dict(fixed_state_dict, strict=False)
-            print(f"Loaded combined checkpoint: {fallback_ckpt}")
-            if result.missing_keys or result.unexpected_keys:
-                print(f"  Note: Some keys did not match (Expected for older checkpoints).")
-        else:
-             print("No trained checkpoints found. Using pretrained weights.")
 
     # Load images
     plane_image = Image.open(args.plane_image).convert("RGB")

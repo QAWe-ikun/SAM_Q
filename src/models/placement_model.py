@@ -7,6 +7,8 @@ Architecture:
         └→ SEGActionHead → 旋转角度 + 缩放比例
 """
 
+from pathlib import Path
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -36,7 +38,7 @@ class SAMQPlacementModel(nn.Module):
     
     def __init__(
         self,
-        sam3_checkpoint_path: Optional[str] = None,
+        sam_checkpoint_path: Optional[str] = None,
         adapter_checkpoint_path: Optional[str] = None,
         qwen_model_name: Optional[str] = None,
         qwen_lora_path: Optional[str] = None,
@@ -53,7 +55,7 @@ class SAMQPlacementModel(nn.Module):
         Initialize the placement model.
 
         Args:
-            sam3_checkpoint_path: Path to SAM3 checkpoint file (.pt).
+            sam_checkpoint_path: Path to SAM3 checkpoint file (.pt).
                            Can be pretrained weights OR a trained model checkpoint.
             adapter_checkpoint_path: Path to Adapter checkpoint file (.pt).
                            If provided, loads trained adapter weights directly.
@@ -96,54 +98,41 @@ class SAMQPlacementModel(nn.Module):
         self.adapter = None
         self.seg_projector = None
         self.seg_action_head = None
+        self._seg_force_only = seg_token_config.get("force_only_in_training", True) if seg_token_config else True
+        self._seg_max_tokens = seg_token_config.get("max_generate_tokens", 128) if seg_token_config else 128
 
-        if sam3_checkpoint_path is not None:
-            # SAM3 Loader (lazy loading, version selection via checkpoint path)
-            self.sam3_loader = SAM3Loader(
-                checkpoint_path=sam3_checkpoint_path,
-                device=self.device,
-                dtype=torch.bfloat16,  # SAM3 uses bfloat16
-            )
-            
-            # Adapter: <SEG> hidden state → SAM3 prompt embeddings
-            self.adapter = CrossModalAdapter(
+        # SAM3 Loader (lazy loading, version selection via checkpoint path)
+        self.sam3_loader = SAM3Loader(
+            checkpoint_path=sam_checkpoint_path,
+            device=self.device,
+            dtype=torch.bfloat16,  # SAM3 uses bfloat16
+        )
+        
+        # Adapter: <SEG> hidden state → SAM3 prompt embeddings
+        self.adapter = CrossModalAdapter(
+            qwen_dim=qwen_hidden_dim,
+            sam3_dim=sam3_input_dim,
+            hidden_dim=adapter_hidden_dim,
+        ).to(self.device)
+                
+        # SegTokenProjector: optional, used when num_seg_tokens > 1
+        if num_seg_tokens > 1:
+            seg_cfg = seg_token_config or {}
+            self.seg_projector = SegTokenProjector(
                 qwen_dim=qwen_hidden_dim,
                 sam3_dim=sam3_input_dim,
-                hidden_dim=adapter_hidden_dim,
-            )
+                num_output_tokens=seg_cfg.get("num_output_tokens", 64),
+                hidden_dim=seg_cfg.get("hidden_dim", adapter_hidden_dim),
+                dropout=seg_cfg.get("dropout", 0.1),
+            ).to(self.device)
             
-            # SegTokenProjector: optional, used when num_seg_tokens > 1
-            if num_seg_tokens > 1:
-                seg_cfg = seg_token_config or {}
-                self.seg_projector = SegTokenProjector(
-                    qwen_dim=qwen_hidden_dim,
-                    sam3_dim=sam3_input_dim,
-                    num_output_tokens=seg_cfg.get("num_output_tokens", 64),
-                    hidden_dim=seg_cfg.get("hidden_dim", adapter_hidden_dim),
-                    dropout=seg_cfg.get("dropout", 0.1),
-                )
-
-            # SEGActionHead: <SEG> hidden → rotation + scale (parallel to SAM3)
-            ah_cfg = action_head_config or {}
-            heatmap_size = ah_cfg.get("heatmap_size", 64)
-            self.seg_action_head = SEGActionHead(
-                hidden_dim=qwen_hidden_dim,
-                heatmap_size=heatmap_size,
-            )
-
-            # <SEG> token config
-            self._seg_force_only = seg_token_config.get("force_only_in_training", True) if seg_token_config else True
-            self._seg_max_tokens = seg_token_config.get("max_generate_tokens", 128) if seg_token_config else 128
-
-            # Move trainable components to device
-            self.adapter.to(self.device)
-            self.seg_action_head.to(self.device)
-            if self.seg_projector is not None:
-                self.seg_projector.to(self.device)
-        else:
-            # Stage 1 (LM) mode: no SAM3/Adapter components needed
-            self._seg_force_only = seg_token_config.get("force_only_in_training", True) if seg_token_config else True
-            self._seg_max_tokens = seg_token_config.get("max_generate_tokens", 128) if seg_token_config else 128
+        # SEGActionHead: <SEG> hidden → rotation + scale (parallel to SAM3)
+        ah_cfg = action_head_config or {}
+        heatmap_size = ah_cfg.get("heatmap_size", 64)
+        self.seg_action_head = SEGActionHead(
+            hidden_dim=qwen_hidden_dim,
+            heatmap_size=heatmap_size,
+        ).to(self.device)
         
     def freeze_qwen(self):
         """Freeze Qwen3-VL parameters."""
@@ -240,113 +229,26 @@ class SAMQPlacementModel(nn.Module):
                 self.qwen_encoder.load_lora_adapter(self.qwen_lora_path)
 
         # 3. Load SAM3
-        if self.sam3_loader is not None:
-            if not self.sam3_loader.loaded:
+        if self.sam3_loader is not None and self.sam3_loader.checkpoint_path is not None:
+            if not self.sam3_loader._loaded:
                 self.sam3_loader.load_model(eval_mode=eval_mode)
 
         # 4. Load Adapter checkpoint (if provided, typically Stage 2 trained weights)
         if self.adapter_checkpoint_path is not None and Path(self.adapter_checkpoint_path).exists():
-            print(f"[PlacementModel] Loading Adapter weights from {self.adapter_checkpoint_path}")
-            ckpt = torch.load(self.adapter_checkpoint_path, map_location=self.device)
-            state_dict = ckpt.get("model_state_dict", ckpt)
+
+            self.adapter.load_from_checkpoint(self.adapter_checkpoint_path, device=self.device, prefix="adapter.")
+            print(f"  Loaded adapter")
+                
+            self.seg_action_head.load_from_checkpoint(self.adapter_checkpoint_path, device=self.device, prefix="seg_action_head.")
+            print(f"  Loaded seg_action_head")
             
-            # Adapter
-            if self.adapter is not None:
-                adapter_state = {k.replace("adapter.", ""): v for k, v in state_dict.items() if k.startswith("adapter.")}
-                if adapter_state:
-                    self.adapter.load_state_dict(adapter_state)
-                    print(f"  Loaded adapter")
-            
-            # SegTokenProjector
             if self.seg_projector is not None:
-                projector_state = {k.replace("seg_projector.", ""): v for k, v in state_dict.items() if k.startswith("seg_projector.")}
-                if projector_state:
-                    self.seg_projector.load_state_dict(projector_state)
-                    print(f"  Loaded seg_projector")
-            
-            # SEGActionHead
-            if self.seg_action_head is not None:
-                action_head_state = {k.replace("seg_action_head.", ""): v for k, v in state_dict.items() if k.startswith("seg_action_head.")}
-                if action_head_state:
-                    self.seg_action_head.load_state_dict(action_head_state)
-                    print(f"  Loaded seg_action_head")
-        elif self.adapter_checkpoint_path is not None:
-            print(f"[PlacementModel] Warning: Adapter checkpoint not found at {self.adapter_checkpoint_path}")
+                self.seg_projector.load_from_checkpoint(self.adapter_checkpoint_path, device=self.device, prefix="seg_projector.")
+                print(f"  Loaded seg_projector")
 
         # Set eval mode if requested
         if eval_mode:
             self.eval()
-
-    def load_split_checkpoint(
-        self,
-        adapter_checkpoint_path: Optional[str] = None,
-        sam3_checkpoint_path: Optional[str] = None,
-    ):
-        """
-        Load separately saved checkpoints for Adapter and SAM3 components.
-
-        Args:
-            adapter_checkpoint_path: Path to adapter weights file (e.g., adapter_checkpoint_best.pt).
-            sam3_checkpoint_path: Path to SAM3 weights file (e.g., sam3_checkpoint_best.pt).
-        """
-        print(f"\n{'='*60}")
-        print(f"Loading split checkpoints...")
-        print(f"{'='*60}")
-
-        # 1. Load Adapter weights
-        if adapter_checkpoint_path and Path(adapter_checkpoint_path).exists():
-            ckpt = torch.load(adapter_checkpoint_path, map_location=self.device)
-            state_dict = ckpt.get("model_state_dict", ckpt)
-            
-            # Adapter
-            if self.adapter is not None:
-                adapter_state = {k.replace("adapter.", ""): v for k, v in state_dict.items() if k.startswith("adapter.")}
-                if adapter_state:
-                    self.adapter.load_state_dict(adapter_state, strict=False)
-                    print(f"[PlacementModel] Loaded Adapter from {Path(adapter_checkpoint_path).name}")
-            
-            # SegTokenProjector
-            if self.seg_projector is not None:
-                projector_state = {k.replace("seg_projector.", ""): v for k, v in state_dict.items() if k.startswith("seg_projector.")}
-                if projector_state:
-                    self.seg_projector.load_state_dict(projector_state, strict=False)
-                    print(f"[PlacementModel] Loaded SegTokenProjector from {Path(adapter_checkpoint_path).name}")
-            
-            # SEGActionHead
-            if self.seg_action_head is not None:
-                action_head_state = {k.replace("seg_action_head.", ""): v for k, v in state_dict.items() if k.startswith("seg_action_head.")}
-                if action_head_state:
-                    self.seg_action_head.load_state_dict(action_head_state, strict=False)
-                    print(f"[PlacementModel] Loaded SEGActionHead from {Path(adapter_checkpoint_path).name}")
-        elif adapter_checkpoint_path:
-            print(f"[PlacementModel] Warning: Adapter checkpoint not found at {adapter_checkpoint_path}")
-
-        # 2. Load SAM3 weights
-        if sam3_checkpoint_path and Path(sam3_checkpoint_path).exists():
-            ckpt = torch.load(sam3_checkpoint_path, map_location=self.device)
-            state_dict = ckpt.get("model_state_dict", ckpt)
-            
-            if self.sam3_loader is not None:
-                self.sam3_loader.load_model(eval_mode=True)  # Ensure base model is built
-                sam3_state = {k: v for k, v in state_dict.items() if k.startswith("sam3_loader.model.")}
-                
-                # Load into specific SAM3 components
-                for comp_name, comp_obj in [
-                    ("transformer", self.sam3_loader.sam3_transformer),
-                    ("segmentation_head", self.sam3_loader.sam3_seg_head),
-                    ("dot_prod_scoring", self.sam3_loader.sam3_dot_scoring)
-                ]:
-                    prefix = f"sam3_loader.model.{comp_name}."
-                    comp_state = {k[len(prefix):]: v for k, v in sam3_state.items() if k.startswith(prefix)}
-                    if comp_state:
-                        comp_obj.load_state_dict(comp_state, strict=False)
-                        comp_obj.to(self.device, dtype=self.dtype)
-                        print(f"[PlacementModel] Loaded SAM3 {comp_name} from {Path(sam3_checkpoint_path).name}")
-        elif sam3_checkpoint_path:
-            print(f"[PlacementModel] Warning: SAM3 checkpoint not found at {sam3_checkpoint_path}")
-        
-        self.eval()
-        print(f"{'='*60}\n")
 
     def forward(
         self,

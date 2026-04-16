@@ -77,7 +77,7 @@ class PlacementPredictor:
         sam3_ckpt = model_config.get("sam3", {}).get("checkpoint_path")
 
         model = SAMQPlacementModel(
-            sam3_checkpoint_path=sam3_ckpt,
+            sam_checkpoint_path=sam3_ckpt,
             qwen_model_name=model_config.get("qwen", {}).get(
                 "model_name", "Qwen/Qwen3-VL-8B-Instruct"
             ),

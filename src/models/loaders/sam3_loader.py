@@ -83,26 +83,16 @@ class SAM3Loader(nn.Module):
                 sys.path.insert(0, src_path)
 
             from model_builder import build_sam3_image_model
+            
         except ImportError:
-            try:
-                # Fall back to pip-installed SAM3
-                from sam3.model_builder import build_sam3_image_model
-            except ImportError as e:
-                raise ImportError(
-                    "SAM3 not found. Ensure src/sam3/ exists or install with: "
-                    "pip install git+https://github.com/facebookresearch/sam3.git"
-                ) from e
+            raise ImportError(
+                "SAM3 not found. Ensure src/sam3/ exists"
+            ) from None
 
         # Resolve checkpoint path
         ckpt_path = checkpoint_path or self.checkpoint_path
         if ckpt_path is None:
-            # Default search path: models/sam3/sam3.pt relative to project root
-            ckpt_path = os.path.join(os.getcwd(), "models", "sam3", "sam3.pt")
-            if not os.path.exists(ckpt_path):
-                raise FileNotFoundError(
-                    f"SAM3 checkpoint not found at {ckpt_path}. "
-                    "Run: python scripts/download_models.py --only-sam3"
-                )
+            raise ValueError("No checkpoint path provided for SAM3Loader.")
 
         # Build SAM3 model
         self.model = build_sam3_image_model(
@@ -111,6 +101,28 @@ class SAM3Loader(nn.Module):
             eval_mode=eval_mode,
             load_from_HF=False,
         )
+
+        # Debug: Print checkpoint keys to verify format
+        import torch
+        ckpt_data = torch.load(ckpt_path, map_location="cpu", weights_only=True)
+        if "model" in ckpt_data:
+            ckpt_keys = list(ckpt_data["model"].keys())
+        elif "model_state_dict" in ckpt_data:
+            ckpt_keys = list(ckpt_data["model_state_dict"].keys())
+        else:
+            ckpt_keys = list(ckpt_data.keys())
+        
+        print(f"\n[Debug] SAM3 Checkpoint '{ckpt_path}' keys:")
+        print(f"  Total keys: {len(ckpt_keys)}")
+        print(f"  First 10 keys: {ckpt_keys[:10]}")
+        print(f"  Last 5 keys: {ckpt_keys[-5:]}")
+        
+        # Check if backbone keys exist in checkpoint
+        backbone_keys = [k for k in ckpt_keys if "backbone" in k or "vision" in k]
+        print(f"  Backbone-related keys: {len(backbone_keys)}")
+        if backbone_keys:
+            print(f"  Sample backbone keys: {backbone_keys[:5]}")
+        print()
 
         # Extract internal components needed by SAM-Q
         self.sam3_vision_backbone = self.model.backbone.vision_backbone
@@ -129,69 +141,6 @@ class SAM3Loader(nn.Module):
 
         self._loaded = True
         print(f"[SAM3Loader] Loaded SAM3 from {ckpt_path}")
-
-    def load_trained_weights(self, path: Union[str, Path], device: Optional[str] = None):
-        """
-        Load fine-tuned SAM3 weights from a split checkpoint (e.g., sam3_checkpoint_best.pt).
-        
-        Unlike load_model(), this method loads the *trained* decoder/transformer weights 
-        into the already built model, rather than building the model from scratch from a pretrained file.
-        """
-        path = Path(path)
-        if not path.exists():
-            raise FileNotFoundError(f"SAM3 trained weights not found: {path}")
-
-        # Ensure model structure is built first (using pretrained)
-        self.load_model()
-
-        target_device = device or self.device
-        ckpt = torch.load(path, map_location=target_device)
-        state_dict = ckpt.get("model_state_dict", ckpt)
-
-        # Filter keys for SAM3 components
-        filtered_state_dict = {}
-        for k, v in state_dict.items():
-            # Keys in checkpoint are like "sam3_loader.model.transformer..."
-            # We want to match "transformer..." to self.sam3_transformer
-            if k.startswith("sam3_loader.model."):
-                inner_key = k[len("sam3_loader.model."):]
-            else:
-                inner_key = k
-            
-            # Map to specific components
-            component = None
-            if inner_key.startswith("transformer."):
-                component = self.sam3_transformer
-                clean_key = inner_key
-            elif inner_key.startswith("segmentation_head."):
-                component = self.sam3_seg_head
-                clean_key = inner_key
-            elif inner_key.startswith("dot_prod_scoring."):
-                component = self.sam3_dot_scoring
-                clean_key = inner_key
-            else:
-                continue
-                
-            filtered_state_dict[clean_key] = v
-
-        if filtered_state_dict:
-            # Load into each component
-            for comp_name, comp_obj in [
-                ("transformer", self.sam3_transformer),
-                ("seg_head", self.sam3_seg_head),
-                ("dot_scoring", self.sam3_dot_scoring)
-            ]:
-                # Extract keys for this component
-                comp_state = {
-                    k.replace(f"{comp_obj.__class__.__name__}.", ""): v 
-                    for k, v in filtered_state_dict.items()
-                    # Note: In this split checkpoint format, keys usually are like "transformer.encoder..."
-                    if k.startswith(comp_name + ".")
-                }
-                if comp_state:
-                    missing, unexpected = comp_obj.load_state_dict(comp_state, strict=False)
-                    comp_obj.to(device=target_device, dtype=self.dtype)
-                    print(f"[SAM3Loader] Loaded trained {comp_name} from {path.name}")
 
     def forward(
         self,

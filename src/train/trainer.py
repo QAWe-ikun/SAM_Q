@@ -127,6 +127,7 @@ class Trainer:
         # Stage 1 (LM) does not need SAM3; Stage 2 (placement) requires it
         if self.stage == "lm":
             sam3_ckpt = None
+            
         print(f"[Trainer] Initializing SAM3 checkpoint: {sam3_ckpt}")
         print(f"[Trainer] Initializing Adapter checkpoint: {adapter_ckpt}")
 
@@ -142,7 +143,7 @@ class Trainer:
             print(f"[Trainer] Stage 2 without seg_features: loading Qwen3-VL for online inference")
 
         model = SAMQPlacementModel(
-            sam3_checkpoint_path=sam3_ckpt,
+            sam_checkpoint_path=sam3_ckpt,
             adapter_checkpoint_path=adapter_ckpt,
             qwen_model_name=model_config.get("qwen", {}).get("model_name") if use_qwen else None,
             qwen_lora_path=model_config.get("qwen", {}).get("lora_path") if use_qwen else None,
@@ -999,24 +1000,29 @@ class Trainer:
     def _save_split_weights(self, state_dict: Dict, suffix: str) -> None:
         """
         Separately save Adapter and SAM3 weights from full state_dict.
+        SAM3 weights are saved by directly extracting from sam3_loader.model for perfect compatibility.
         """
         adapter_state = {}
-        sam3_state = {}
 
         for k, v in state_dict.items():
             # Adapter parts
             if any(k.startswith(p) for p in ["adapter.", "seg_projector.", "seg_action_head."]):
                 adapter_state[k] = v
-            # SAM3 parts
-            elif k.startswith("sam3_loader."):
-                sam3_state[k] = v
 
         if adapter_state:
             path = self.output_dir / f"adapter_checkpoint{suffix}.pt"
             torch.save({"model_state_dict": adapter_state, "config": self.config}, path)
             print(f"  Split checkpoint saved: {path.name}")
 
-        if sam3_state:
+        # Save SAM3 model directly from sam3_loader.model
+        # Format: {"model": {"detector.xxx": ...}} to match SAM3's _load_checkpoint
+        if self.model.sam3_loader is not None and self.model.sam3_loader._loaded:
+            sam3_model_state = self.model.sam3_loader.model.state_dict()
+            
+            # Add "detector." prefix to match original SAM3 checkpoint format
+            sam3_model_state = {f"detector.{k}": v for k, v in sam3_model_state.items()}
+
+            sam3_ckpt = {"model": sam3_model_state, "config": self.config}
             path = self.output_dir / f"sam3_checkpoint{suffix}.pt"
-            torch.save({"model_state_dict": sam3_state, "config": self.config}, path)
+            torch.save(sam3_ckpt, path)
             print(f"  Split checkpoint saved: {path.name}")

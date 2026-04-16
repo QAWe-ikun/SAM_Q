@@ -391,7 +391,7 @@ python main.py predict \
 inference:
   checkpoint_path: null  # 留空
   adapter_checkpoint_path: "outputs/stage2_full/adapter_checkpoint_best.pt"
-  sam3_checkpoint_path: "outputs/stage2_full/sam3_checkpoint_best.pt"
+  sam_checkpoint_path: "outputs/stage2_full/sam3_checkpoint_best.pt"
 ```
 
 然后运行 predict 命令（此时 `--checkpoint` 参数会被忽略）。
