@@ -74,12 +74,6 @@ Examples:
     # Predict command
     predict_parser = subparsers.add_parser("predict", help="Run prediction")
     predict_parser.add_argument(
-        "--checkpoint",
-        type=str,
-        required=True,
-        help="Path to model checkpoint",
-    )
-    predict_parser.add_argument(
         "--config",
         type=str,
         default=None,
@@ -271,33 +265,25 @@ def run_predict(args):
     device = inference_config.get("device", "cuda" if torch.cuda.is_available() else "cpu")
     output_dir = Path(args.output if args.output else inference_config.get("output_dir", "results/"))
 
-    # Load checkpoint to get model architecture
-    checkpoint = torch.load(args.checkpoint, map_location="cpu")
-    ckpt_model_config = checkpoint.get("config", {}).get("model", {})
-
     # Merge configs: checkpoint > inference config > defaults
-    qwen_config = ckpt_model_config.get("qwen", model_config.get("qwen", {}))
-    sam3_config = ckpt_model_config.get("sam3", model_config.get("sam3", {}))
-    adapter_config = ckpt_model_config.get("adapter", model_config.get("adapter", {}))
-    action_head_config = ckpt_model_config.get("action_head", model_config.get("action_head", {}))
-
-    # Initialize model with SAM3 checkpoint path
-    sam3_ckpt = sam3_config.get("checkpoint_path")
+    qwen_config = config.get("qwen", model_config.get("qwen", {}))
+    sam3_config = config.get("sam3", model_config.get("sam3", {}))
+    adapter_config = config.get("adapter", model_config.get("adapter", {}))
+    action_head_config = config.get("action_head", model_config.get("action_head", {}))
 
     model = SAMQPlacementModel(
-        sam3_checkpoint_path=sam3_ckpt,
-        qwen_model_name=qwen_config.get("model_name", "./models/qwen3_vl"),
+        sam3_checkpoint_path=sam3_config.get("checkpoint_path"),
+        qwen_model_name=qwen_config.get("model_name"),
         qwen_lora_path=qwen_config.get("lora_path"),
         sam3_input_dim=sam3_config.get("input_dim", 256),
         qwen_hidden_dim=qwen_config.get("hidden_dim", 4096),
         adapter_hidden_dim=adapter_config.get("hidden_dim", 512),
-        num_seg_tokens=ckpt_model_config.get("num_seg_tokens", 1),
+        num_seg_tokens=config.get("num_seg_tokens", 1),
         device=device,
         action_head_config=action_head_config,
     )
 
     # Load trained weights
-    model.load_state_dict(checkpoint["model_state_dict"])
     model.load_all(eval_mode=True)  # Load Qwen + SAM3 + LoRA components
 
     # Load images

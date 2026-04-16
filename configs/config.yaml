@@ -17,7 +17,7 @@ model:
   # Qwen3-VL Encoder
   qwen:
     model_name: "./models/qwen3_vl"
-    lora_path: "outputs/stage1_lora/"  # Stage 1 LoRA adapter (optional, set null if not needed)
+    lora_path: "/mnt/f/output/test_stage1/test_stage1_20260416_115004/lora_weights"  # Stage 1 LoRA (adapter_model.safetensors 所在目录)
     hidden_dim: 4096
     attn_implementation: "flash_attention_2"
 
@@ -46,7 +46,6 @@ model:
 # Inference Configuration
 # ----------------------------------------------------------------------------
 inference:
-  checkpoint_path: "outputs/stage2_full/checkpoint_best.pt"  # Trained model checkpoint
   threshold: 0.5              # Confidence threshold for heatmap binarization
   device: "cuda"              # "cuda", "cpu", or "auto"
 

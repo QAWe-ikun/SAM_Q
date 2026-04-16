@@ -49,6 +49,8 @@ def visualize_results(
     # Panel 2: Heatmap overlay
     axes[1].imshow(plane_np)
     heatmap = results["heatmap"]
+    if hasattr(heatmap, "cpu"):
+        heatmap = heatmap.cpu().numpy()
     axes[1].imshow(heatmap, alpha=0.5)
     axes[1].set_title("Placement Probability Heatmap", fontsize=14, fontweight="bold")
     axes[1].axis("off")
@@ -56,10 +58,19 @@ def visualize_results(
     # Panel 3: Mask with boxes
     axes[2].imshow(plane_np)
     mask = results["mask"]
+    if hasattr(mask, "cpu"):
+        mask = mask.cpu().numpy()
     axes[2].imshow(mask, alpha=0.5, cmap="Reds")
 
     # Draw bounding boxes
-    for i, (box, score) in enumerate(zip(results["boxes"], results["scores"])):
+    boxes = results["boxes"]
+    scores = results["scores"]
+    if hasattr(boxes, "cpu"):
+        boxes = boxes.cpu().numpy()
+    if hasattr(scores, "cpu"):
+        scores = scores.cpu().numpy()
+        
+    for i, (box, score) in enumerate(zip(boxes, scores)):
         rect = Rectangle(
             (box[0], box[1]),
             box[2] - box[0],
@@ -172,6 +183,8 @@ def visualize_comparison(
     for idx, (results, title) in enumerate(zip(results_list, titles)):
         axes[idx].imshow(plane_np)
         heatmap = results["heatmap"]
+        if hasattr(heatmap, "cpu"):
+            heatmap = heatmap.cpu().numpy()
         axes[idx].imshow(heatmap, alpha=0.5)
         axes[idx].set_title(title, fontsize=14, fontweight="bold")
         axes[idx].axis("off")
