@@ -118,11 +118,17 @@ class Trainer:
         model_config = self.config.get("model", {})
         num_seg_tokens = model_config.get("num_seg_tokens", 1)
 
+        # SAM3 checkpoint (pretrained or trained)
+        sam3_ckpt = model_config.get("sam3", {}).get("sam_checkpoint_path")
+
+        # Adapter checkpoint (trained split weights)
+        adapter_ckpt = model_config.get("adapter", {}).get("adapter_checkpoint_path")
+
         # Stage 1 (LM) does not need SAM3; Stage 2 (placement) requires it
-        sam3_ckpt = model_config.get("sam3", {}).get("checkpoint_path")
         if self.stage == "lm":
             sam3_ckpt = None
-        print(f"[Trainer] Initializing model with SAM3 checkpoint: {sam3_ckpt}")
+        print(f"[Trainer] Initializing SAM3 checkpoint: {sam3_ckpt}")
+        print(f"[Trainer] Initializing Adapter checkpoint: {adapter_ckpt}")
 
         # Stage 2 with pre-extracted seg_features doesn't need Qwen3-VL
         # This saves ~16GB VRAM
@@ -137,6 +143,7 @@ class Trainer:
 
         model = SAMQPlacementModel(
             sam3_checkpoint_path=sam3_ckpt,
+            adapter_checkpoint_path=adapter_ckpt,
             qwen_model_name=model_config.get("qwen", {}).get("model_name") if use_qwen else None,
             qwen_lora_path=model_config.get("qwen", {}).get("lora_path") if use_qwen else None,
             sam3_input_dim=model_config.get("sam3", {}).get("input_dim", 256),

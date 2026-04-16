@@ -37,6 +37,7 @@ class SAMQPlacementModel(nn.Module):
     def __init__(
         self,
         sam3_checkpoint_path: Optional[str] = None,
+        adapter_checkpoint_path: Optional[str] = None,
         qwen_model_name: Optional[str] = None,
         qwen_lora_path: Optional[str] = None,
         sam3_input_dim: int = 256,
@@ -54,6 +55,8 @@ class SAMQPlacementModel(nn.Module):
         Args:
             sam3_checkpoint_path: Path to SAM3 checkpoint file (.pt).
                            Can be pretrained weights OR a trained model checkpoint.
+            adapter_checkpoint_path: Path to Adapter checkpoint file (.pt).
+                           If provided, loads trained adapter weights directly.
             qwen_model_name: HuggingFace model name or local path for Qwen3-VL.
                            Set None to skip Qwen3-VL initialization (Stage 2 with seg_features).
             qwen_lora_path: Path to Qwen3-VL LoRA adapter directory (Stage 1 fine-tuned weights).
@@ -86,6 +89,7 @@ class SAMQPlacementModel(nn.Module):
             )
         
         self.qwen_lora_path = qwen_lora_path  # Store LoRA path for loading during forward pass
+        self.adapter_checkpoint_path = adapter_checkpoint_path  # Store adapter ckpt path
 
         # SAM3-related components (only initialized if checkpoint path is provided)
         self.sam3_loader = None
@@ -239,6 +243,35 @@ class SAMQPlacementModel(nn.Module):
         if self.sam3_loader is not None:
             if not self.sam3_loader.loaded:
                 self.sam3_loader.load_model(eval_mode=eval_mode)
+
+        # 4. Load Adapter checkpoint (if provided, typically Stage 2 trained weights)
+        if self.adapter_checkpoint_path is not None and Path(self.adapter_checkpoint_path).exists():
+            print(f"[PlacementModel] Loading Adapter weights from {self.adapter_checkpoint_path}")
+            ckpt = torch.load(self.adapter_checkpoint_path, map_location=self.device)
+            state_dict = ckpt.get("model_state_dict", ckpt)
+            
+            # Adapter
+            if self.adapter is not None:
+                adapter_state = {k.replace("adapter.", ""): v for k, v in state_dict.items() if k.startswith("adapter.")}
+                if adapter_state:
+                    self.adapter.load_state_dict(adapter_state)
+                    print(f"  Loaded adapter")
+            
+            # SegTokenProjector
+            if self.seg_projector is not None:
+                projector_state = {k.replace("seg_projector.", ""): v for k, v in state_dict.items() if k.startswith("seg_projector.")}
+                if projector_state:
+                    self.seg_projector.load_state_dict(projector_state)
+                    print(f"  Loaded seg_projector")
+            
+            # SEGActionHead
+            if self.seg_action_head is not None:
+                action_head_state = {k.replace("seg_action_head.", ""): v for k, v in state_dict.items() if k.startswith("seg_action_head.")}
+                if action_head_state:
+                    self.seg_action_head.load_state_dict(action_head_state)
+                    print(f"  Loaded seg_action_head")
+        elif self.adapter_checkpoint_path is not None:
+            print(f"[PlacementModel] Warning: Adapter checkpoint not found at {self.adapter_checkpoint_path}")
 
         # Set eval mode if requested
         if eval_mode:

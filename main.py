@@ -272,8 +272,14 @@ def run_predict(args):
     action_head_config = config.get("action_head", model_config.get("action_head", {}))
 
     # Initialize model
+    # Note: We pass the paths so the model knows where to look if we use load_all,
+    # but here we will explicitly load using the specific method for clarity and SAM3 support.
+    adapter_ckpt_path = adapter_config.get("adapter_checkpoint_path")
+    sam3_ckpt_path = sam3_config.get("sam3_checkpoint_path") # This is likely the pretrained one or the trained one
+
     model = SAMQPlacementModel(
-        sam3_checkpoint_path=sam3_config.get("checkpoint_path"),
+        sam3_checkpoint_path=sam3_config.get("sam_checkpoint_path"), # Pretrained base
+        adapter_checkpoint_path=None, # We will load explicitly below
         qwen_model_name=qwen_config.get("model_name"),
         qwen_lora_path=qwen_config.get("lora_path"),
         sam3_input_dim=sam3_config.get("input_dim", 256),
@@ -285,28 +291,48 @@ def run_predict(args):
     )
 
     # Load trained weights
-    model.load_all(eval_mode=True)  # Initialize Qwen + SAM3 structures
+    model.load_all(eval_mode=True)  # Loads Qwen + SAM3 Base + LoRA
 
-    # Determine checkpoint loading strategy
-    # Default to split checkpoints (since we no longer save combined checkpoints)
+    # Now load the trained Adapter and SAM3 Decoder weights if specified
+    # Priority: model config > auto-detect in output_dir
     output_dir = Path(inference_config.get("output_dir", "outputs/"))
-    adapter_ckpt = inference_config.get("adapter_checkpoint_path")
-    sam3_ckpt = inference_config.get("sam3_checkpoint_path")
-
-    # If not specified in config, try default split checkpoint paths
-    if not adapter_ckpt or not sam3_ckpt:
+    
+    # 1. Resolve Adapter Checkpoint
+    adapter_ckpt = adapter_ckpt_path
+    if not adapter_ckpt:
         default_adapter = output_dir / "adapter_checkpoint_best.pt"
-        default_sam3 = output_dir / "sam3_checkpoint_best.pt"
-        if default_adapter.exists() and default_sam3.exists():
+        if default_adapter.exists():
             adapter_ckpt = str(default_adapter)
-            sam3_ckpt = str(default_sam3)
 
-    if adapter_ckpt and sam3_ckpt:
-        # Load split checkpoints (Adapter + SAM3)
-        model.load_split_checkpoint(
-            adapter_checkpoint_path=adapter_ckpt,
-            sam3_checkpoint_path=sam3_ckpt,
-        )
+    # 2. Resolve SAM3 Checkpoint (Trained decoder weights)
+    # Note: sam3_config['sam_checkpoint_path'] might be the pretrained one used for init.
+    # We look for a specific 'sam3_checkpoint_best.pt' in output_dir for the *trained* weights.
+    sam3_ckpt = None # Default to using the pretrained one loaded in load_all
+    default_sam3_trained = output_dir / "sam3_checkpoint_best.pt"
+    if default_sam3_trained.exists():
+        sam3_ckpt = str(default_sam3_trained)
+
+    if adapter_ckpt or sam3_ckpt:
+        # Use the split loader
+        # If sam3_ckpt is None, it uses the pretrained one already loaded
+        # If adapter_ckpt is None, it skips adapter loading
+        if adapter_ckpt and sam3_ckpt:
+             model.load_split_checkpoint(
+                adapter_checkpoint_path=adapter_ckpt,
+                sam3_checkpoint_path=sam3_ckpt,
+            )
+        elif adapter_ckpt:
+             # Only adapter
+             model.load_split_checkpoint(
+                adapter_checkpoint_path=adapter_ckpt,
+                sam3_checkpoint_path=None,
+            )
+        elif sam3_ckpt:
+             # Only SAM3
+             model.load_split_checkpoint(
+                adapter_checkpoint_path=None,
+                sam3_checkpoint_path=sam3_ckpt,
+            )
     else:
         # Fallback: Load combined checkpoint (backward compatibility)
         fallback_ckpt = args.checkpoint if args.checkpoint else inference_config.get("checkpoint_path")
@@ -328,11 +354,7 @@ def run_predict(args):
             if result.missing_keys or result.unexpected_keys:
                 print(f"  Note: Some keys did not match (Expected for older checkpoints).")
         else:
-            raise FileNotFoundError(
-                "No checkpoint found!\n"
-                "  - Set adapter_checkpoint_path and sam3_checkpoint_path in config.yaml\n"
-                "  - Or ensure adapter_checkpoint_best.pt and sam3_checkpoint_best.pt exist in output_dir"
-            )
+             print("No trained checkpoints found. Using pretrained weights.")
 
     # Load images
     plane_image = Image.open(args.plane_image).convert("RGB")

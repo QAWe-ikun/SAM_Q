@@ -23,11 +23,12 @@ model:
 
   # SAM3 Components
   sam3:
-    checkpoint_path: "/mnt/f/outputs/stage2_full/stage2_decoder_20260416_142505/checkpoint_best.pt"  # SAM3 weights (pretrained or trained checkpoint)
+    sam_checkpoint_path: "/mnt/f/outputs/stage2_full/stage2_decoder_20260416_152846/sam3_checkpoint_final.pt"  # SAM3 pretrained weights (用于初始化模型结构)
     input_dim: 256
 
   # Adapter: <SEG> hidden state → SAM3 prompt embeddings
   adapter:
+    adapter_checkpoint_path: "/mnt/f/outputs/stage2_full/stage2_decoder_20260416_152846/adapter_checkpoint_final.pt"  # e.g., "outputs/stage2_full/adapter_checkpoint_best.pt" (Stage 2 训练后生成的 adapter 权重)
     hidden_dim: 512
     num_queries: 64
     dropout: 0.1
@@ -46,19 +47,7 @@ model:
 # Inference Configuration
 # ----------------------------------------------------------------------------
 inference:
-  # Default: Auto-detect split checkpoints from output_dir
-  # If adapter_checkpoint_path and sam3_checkpoint_path are not set,
-  # the system will look for adapter_checkpoint_best.pt and sam3_checkpoint_best.pt
-  # in the output_dir automatically.
-  
-  # Option 1: Explicit split checkpoint paths (recommended)
-  adapter_checkpoint_path: null  # e.g., "outputs/stage2_full/adapter_checkpoint_best.pt"
-  sam3_checkpoint_path: null     # e.g., "outputs/stage2_full/sam3_checkpoint_best.pt"
-  
-  # Option 2: Combined checkpoint (backward compatibility, used if split not found)
-  checkpoint_path: null  # e.g., "outputs/stage2_full/checkpoint_best.pt"
-  
-  output_dir: "outputs/"  # Where to look for default split checkpoints
+  output_dir: "outputs/"  # 自动查找拆分权重的目录
   
   threshold: 0.5              # Confidence threshold for heatmap binarization
   device: "cuda"              # "cuda", "cpu", or "auto"
