@@ -243,19 +243,14 @@ class Trainer:
     # Stage 1: Language Model training epoch
     # ------------------------------------------------------------------ #
 
-    def train_epoch_stage1(
+    def run_sft_stage1(
         self,
         dataloader: DataLoader,
-        log_interval: int = 10,
     ) -> Dict[str, float]:
         """
-        Stage 1 训练: 使用 HuggingFace SFTTrainer 微调 Qwen3-VL。
-
-        支持:
-            - 梯度累积 (gradient_accumulation_steps)
-            - 混合精度 (fp16/bf16)
-            - 自动 checkpointing
-            - 梯度裁剪
+        Stage 1 训练入口: 使用 HuggingFace SFTTrainer 微调 Qwen3-VL。
+        
+        该方法会接管整个训练流程（包含所有 Epochs），不需要外部循环。
         """
         try:
             from trl import SFTTrainer, SFTConfig
@@ -705,72 +700,66 @@ class Trainer:
         print(f"Starting training for {num_epochs} epochs")
         print(f"Output directory: {self.output_dir}")
         print(f"{'='*60}\n")
-        
-        for epoch in range(num_epochs):
-            self.current_epoch = epoch
 
-            # Train
-            if self.stage == "lm":
-                # SFTTrainer handles multi-epoch training internally
-                train_metrics = self.train_epoch_stage1(train_loader, log_interval)
-                # SFTTrainer already saves checkpoints, skip manual save
-                # But still run validation if needed
-                val_metrics = {}
-                if val_loader is not None and (epoch + 1) % val_interval == 0:
-                    val_metrics = self._validate_stage1(val_loader)
-                # Skip epoch logging for SFTTrainer (it logs internally)
-                break  # SFTTrainer runs all epochs in one call
-            else:
-                train_metrics = self.train_epoch_stage2(train_loader, log_interval)
-
-                # Validate
-                val_metrics = {}
-                if val_loader is not None and (epoch + 1) % val_interval == 0:
-                    val_metrics = self._validate_stage2(val_loader)
-
-                # Update scheduler
-                if self.scheduler is not None:
-                    self.scheduler.step()
-
-                # Log metrics
-                metrics = {
-                    "epoch": epoch + 1,
-                    **train_metrics,
-                    **val_metrics,
-                    "lr": self.optimizer.param_groups[0]["lr"],
-                }
-
-                # Print metrics
-                metrics_str = " | ".join(
-                    f"{k}: {v:.4f}" for k, v in metrics.items() if k != "epoch"
-                )
-                print(f"Epoch {metrics['epoch']:3d} | {metrics_str}")
-
-                # Save checkpoint
-                val_loss = val_metrics.get("val_loss", float("inf"))
-                self._save_checkpoint(epoch, val_loss)
-
-                # Early stopping
-                if self.early_stopping:
-                    if val_loss < self.best_val_loss:
-                        self.best_val_loss = val_loss
-                        self.patience_counter = 0
-                    else:
-                        self.patience_counter += 1
-                        if self.patience_counter >= self.patience:
-                            print(f"\nEarly stopping at epoch {epoch + 1}")
-                            break
-        
-        # Save final checkpoint
-        self._save_checkpoint("final", float("inf"))
-        print(f"\nTraining completed! Results saved to: {self.output_dir}")
-
-        # Stage 1 训练完自动提取 [SEG] features
+        # Stage 1: SFTTrainer handles its own loop
         if self.stage == "lm":
+            train_metrics = self.run_sft_stage1(train_loader)
+            # SFTTrainer 训练结束后，尝试提取 [SEG] 特征
             seg_dir = Path(self.config.get("data", {}).get("root_dir", "data/")) / "seg_features"
             self._extract_seg_features(train_loader, seg_dir)
             if val_loader is not None:
                 self._extract_seg_features(val_loader, seg_dir)
+            print(f"\nStage 1 training completed!")
+            return
+
+        # Stage 2: 自定义 Epoch 循环
+        for epoch in range(num_epochs):
+            self.current_epoch = epoch
+
+            # Train
+            train_metrics = self.train_epoch_stage2(train_loader, log_interval)
+
+            # Validate
+            val_metrics = {}
+            if val_loader is not None and (epoch + 1) % val_interval == 0:
+                val_metrics = self._validate_stage2(val_loader)
+
+            # Update scheduler
+            if self.scheduler is not None:
+                self.scheduler.step()
+
+            # Log metrics
+            metrics = {
+                "epoch": epoch + 1,
+                **train_metrics,
+                **val_metrics,
+                "lr": self.optimizer.param_groups[0]["lr"],
+            }
+
+            # Print metrics
+            metrics_str = " | ".join(
+                f"{k}: {v:.4f}" for k, v in metrics.items() if k != "epoch"
+            )
+            print(f"Epoch {metrics['epoch']:3d} | {metrics_str}")
+
+            # Save checkpoint
+            val_loss = val_metrics.get("val_loss", float("inf"))
+            self._save_checkpoint(epoch, val_loss)
+
+            # Early stopping
+            if self.early_stopping:
+                if val_loss < self.best_val_loss:
+                    self.best_val_loss = val_loss
+                    self.patience_counter = 0
+                else:
+                    self.patience_counter += 1
+                    if self.patience_counter >= self.patience:
+                        print(f"\nEarly stopping at epoch {epoch + 1}")
+                        break
+
+        # Save final checkpoint
+        self._save_checkpoint("final", float("inf"))
+        print(f"\nTraining completed! Results saved to: {self.output_dir}")
 
     @torch.no_grad()
     def _extract_seg_features(self, dataloader: DataLoader, output_dir: Path) -> None:
