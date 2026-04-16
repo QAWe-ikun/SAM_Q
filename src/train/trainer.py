@@ -903,43 +903,8 @@ class Trainer:
 
         # Save final checkpoint
         self._save_checkpoint("final", float("inf"))
-        
-        # If Stage 2, ensure split weights are also saved for the final checkpoint
-        training_config = self.config.get("training", {})
-        if self.stage == "placement" and training_config.get("save_split_weights", True):
-            self._save_split_checkpoint(suffix="_final")
-            
+
         print(f"\nTraining completed! Results saved to: {self.output_dir}")
-
-    def _save_split_checkpoint(self, suffix: str = "") -> None:
-        """
-        Separately save Adapter and SAM3 weights.
-        Useful for inference or modular deployment.
-        """
-        if not self.model.sam3_loader:
-            return
-
-        state_dict = self.model.state_dict()
-        adapter_state = {}
-        sam3_state = {}
-
-        for k, v in state_dict.items():
-            # Adapter parts
-            if any(k.startswith(p) for p in ["adapter.", "seg_projector.", "seg_action_head."]):
-                adapter_state[k] = v
-            # SAM3 parts
-            elif k.startswith("sam3_loader."):
-                sam3_state[k] = v
-        
-        if adapter_state:
-            path = self.output_dir / f"adapter_checkpoint{suffix}.pt"
-            torch.save({"model_state_dict": adapter_state, "config": self.config}, path)
-            print(f"  Split checkpoint saved: {path.name}")
-            
-        if sam3_state:
-            path = self.output_dir / f"sam3_checkpoint{suffix}.pt"
-            torch.save({"model_state_dict": sam3_state, "config": self.config}, path)
-            print(f"  Split checkpoint saved: {path.name}")
 
     @torch.no_grad()
     def _extract_seg_features(self, dataloader: DataLoader, output_dir: Path) -> None:
@@ -984,19 +949,19 @@ class Trainer:
 
     def _save_checkpoint(self, epoch: Any, val_loss: float, is_best: bool = False) -> None:
         """
-        Save model checkpoint.
+        Save model checkpoint (Stage 2 only).
 
-        Args:
-            epoch: Current epoch
-            val_loss: Validation loss
-            is_best: Whether this is the best model so far (updates self.best_val_loss)
+        Also saves split weights (Adapter + SAM3) when saving best/final checkpoint.
         """
         if is_best:
             self.best_val_loss = val_loss
 
+        state_dict = self.model.state_dict()
+
+        # Full checkpoint
         checkpoint = {
             "epoch": epoch,
-            "model_state_dict": self.model.state_dict(),
+            "model_state_dict": state_dict,
             "optimizer_state_dict": self.optimizer.state_dict(),
             "scheduler_state_dict": self.scheduler.state_dict() if self.scheduler else None,
             "best_val_loss": self.best_val_loss,
@@ -1009,21 +974,52 @@ class Trainer:
         save_epoch = training_config.get("save_epoch", False)
         save_interval = training_config.get("save_interval", 10)
 
+        # Determine suffix for split weights
+        suffix = ""
+        
         # Save epoch checkpoint
         if epoch == "final":
             path = self.output_dir / "checkpoint_final.pt"
             torch.save(checkpoint, path)
+            suffix = "_final"
         elif isinstance(epoch, int):
             # Save at specified intervals if save_epoch is enabled
             if save_epoch and (epoch + 1) % save_interval == 0:
                 path = self.output_dir / f"checkpoint_epoch_{epoch}.pt"
                 torch.save(checkpoint, path)
+                suffix = f"_epoch_{epoch}"
 
-        # Save best checkpoint
+        # Save best checkpoint + split weights
         if is_best and training_config.get("save_best", True):
             best_path = self.output_dir / "checkpoint_best.pt"
             torch.save(checkpoint, best_path)
-            
-            # Also save split weights for the best model in Stage 2
-            if self.stage == "placement" and self.model.sam3_loader is not None and training_config.get("save_split_weights", True):
-                self._save_split_checkpoint(suffix="_best")
+            suffix = "_best"
+
+        # Save split weights (Adapter + SAM3) for best/final checkpoints
+        if suffix and self.stage == "placement" and self.model.sam3_loader is not None:
+            self._save_split_weights(state_dict, suffix)
+
+    def _save_split_weights(self, state_dict: Dict, suffix: str) -> None:
+        """
+        Separately save Adapter and SAM3 weights from full state_dict.
+        """
+        adapter_state = {}
+        sam3_state = {}
+
+        for k, v in state_dict.items():
+            # Adapter parts
+            if any(k.startswith(p) for p in ["adapter.", "seg_projector.", "seg_action_head."]):
+                adapter_state[k] = v
+            # SAM3 parts
+            elif k.startswith("sam3_loader."):
+                sam3_state[k] = v
+
+        if adapter_state:
+            path = self.output_dir / f"adapter_checkpoint{suffix}.pt"
+            torch.save({"model_state_dict": adapter_state, "config": self.config}, path)
+            print(f"  Split checkpoint saved: {path.name}")
+
+        if sam3_state:
+            path = self.output_dir / f"sam3_checkpoint{suffix}.pt"
+            torch.save({"model_state_dict": sam3_state, "config": self.config}, path)
+            print(f"  Split checkpoint saved: {path.name}")

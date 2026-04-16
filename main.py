@@ -290,17 +290,16 @@ def run_predict(args):
     # Determine checkpoint loading strategy
     adapter_ckpt = inference_config.get("adapter_checkpoint_path")
     sam3_ckpt = inference_config.get("sam3_checkpoint_path")
-    full_ckpt = inference_config.get("checkpoint_path", args.checkpoint)
 
     if adapter_ckpt and sam3_ckpt:
-        # Option 2: Load split checkpoints
+        # Option: Load split checkpoints
         model.load_split_checkpoint(
             adapter_checkpoint_path=adapter_ckpt,
             sam3_checkpoint_path=sam3_ckpt,
         )
     else:
-        # Option 1: Load combined checkpoint
-        checkpoint = torch.load(full_ckpt, map_location=device)
+        # Default: Load combined checkpoint
+        checkpoint = torch.load(args.checkpoint, map_location=device)
         state_dict = checkpoint.get("model_state_dict", checkpoint)
         
         fixed_state_dict = {}
@@ -313,7 +312,7 @@ def run_predict(args):
                 fixed_state_dict[k] = v
                 
         result = model.load_state_dict(fixed_state_dict, strict=False)
-        print(f"Loaded full checkpoint: {full_ckpt}")
+        print(f"Loaded checkpoint: {args.checkpoint}")
         if result.missing_keys or result.unexpected_keys:
             print(f"  Note: Some keys did not match (Expected for older checkpoints).")
 

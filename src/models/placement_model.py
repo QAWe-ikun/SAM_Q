@@ -251,45 +251,44 @@ class SAMQPlacementModel(nn.Module):
     ):
         """
         Load separately saved checkpoints for Adapter and SAM3 components.
-        
-        This is used when you have saved 'adapter_checkpoint_best.pt' and 'sam3_checkpoint_best.pt'
-        separately instead of a single 'checkpoint_best.pt'.
 
         Args:
-            adapter_checkpoint_path: Path to adapter weights file.
-            sam3_checkpoint_path: Path to SAM3 weights file.
+            adapter_checkpoint_path: Path to adapter weights file (e.g., adapter_checkpoint_best.pt).
+            sam3_checkpoint_path: Path to SAM3 weights file (e.g., sam3_checkpoint_best.pt).
         """
         print(f"\n{'='*60}")
         print(f"Loading split checkpoints...")
         print(f"{'='*60}")
 
+        # 1. Load Adapter weights
         if adapter_checkpoint_path and Path(adapter_checkpoint_path).exists():
             ckpt = torch.load(adapter_checkpoint_path, map_location=self.device)
             state_dict = ckpt.get("model_state_dict", ckpt)
             
-            # 1. Adapter
+            # Adapter
             if self.adapter is not None:
                 adapter_state = {k.replace("adapter.", ""): v for k, v in state_dict.items() if k.startswith("adapter.")}
                 if adapter_state:
                     self.adapter.load_state_dict(adapter_state, strict=False)
-                    print(f"[PlacementModel] Loaded Adapter from {adapter_checkpoint_path}")
+                    print(f"[PlacementModel] Loaded Adapter from {Path(adapter_checkpoint_path).name}")
             
-            # 2. SegTokenProjector
+            # SegTokenProjector
             if self.seg_projector is not None:
                 projector_state = {k.replace("seg_projector.", ""): v for k, v in state_dict.items() if k.startswith("seg_projector.")}
                 if projector_state:
                     self.seg_projector.load_state_dict(projector_state, strict=False)
-                    print(f"[PlacementModel] Loaded SegTokenProjector from {adapter_checkpoint_path}")
+                    print(f"[PlacementModel] Loaded SegTokenProjector from {Path(adapter_checkpoint_path).name}")
             
-            # 3. SEGActionHead
+            # SEGActionHead
             if self.seg_action_head is not None:
                 action_head_state = {k.replace("seg_action_head.", ""): v for k, v in state_dict.items() if k.startswith("seg_action_head.")}
                 if action_head_state:
                     self.seg_action_head.load_state_dict(action_head_state, strict=False)
-                    print(f"[PlacementModel] Loaded SEGActionHead from {adapter_checkpoint_path}")
+                    print(f"[PlacementModel] Loaded SEGActionHead from {Path(adapter_checkpoint_path).name}")
         elif adapter_checkpoint_path:
             print(f"[PlacementModel] Warning: Adapter checkpoint not found at {adapter_checkpoint_path}")
 
+        # 2. Load SAM3 weights
         if sam3_checkpoint_path and Path(sam3_checkpoint_path).exists():
             ckpt = torch.load(sam3_checkpoint_path, map_location=self.device)
             state_dict = ckpt.get("model_state_dict", ckpt)
@@ -309,13 +308,13 @@ class SAMQPlacementModel(nn.Module):
                     if comp_state:
                         comp_obj.load_state_dict(comp_state, strict=False)
                         comp_obj.to(self.device, dtype=self.dtype)
-                        print(f"[PlacementModel] Loaded SAM3 {comp_name} from {sam3_checkpoint_path}")
+                        print(f"[PlacementModel] Loaded SAM3 {comp_name} from {Path(sam3_checkpoint_path).name}")
         elif sam3_checkpoint_path:
             print(f"[PlacementModel] Warning: SAM3 checkpoint not found at {sam3_checkpoint_path}")
         
         self.eval()
         print(f"{'='*60}\n")
-    
+
     def forward(
         self,
         plane_image,
