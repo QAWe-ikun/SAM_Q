@@ -50,7 +50,7 @@ def visualize_results(
     axes[1].imshow(plane_np)
     heatmap = results["heatmap"]
     if hasattr(heatmap, "cpu"):
-        heatmap = heatmap.cpu().numpy()
+        heatmap = heatmap.float().cpu().numpy()
     axes[1].imshow(heatmap, alpha=0.5)
     axes[1].set_title("Placement Probability Heatmap", fontsize=14, fontweight="bold")
     axes[1].axis("off")
@@ -59,7 +59,7 @@ def visualize_results(
     axes[2].imshow(plane_np)
     mask = results["mask"]
     if hasattr(mask, "cpu"):
-        mask = mask.cpu().numpy()
+        mask = mask.float().cpu().numpy()
     axes[2].imshow(mask, alpha=0.5, cmap="Reds")
 
     # Draw bounding boxes
@@ -135,7 +135,7 @@ def visualize_heatmap(
 
     ax.imshow(plane_np)
     if hasattr(heatmap, "cpu"):
-        heatmap = heatmap.cpu().numpy()
+        heatmap = heatmap.float().cpu().numpy()
     ax.imshow(heatmap, alpha=alpha)
     ax.set_title("Placement Heatmap", fontsize=16, fontweight="bold")
     ax.axis("off")
@@ -186,7 +186,7 @@ def visualize_comparison(
         axes[idx].imshow(plane_np)
         heatmap = results["heatmap"]
         if hasattr(heatmap, "cpu"):
-            heatmap = heatmap.cpu().numpy()
+            heatmap = heatmap.float().cpu().numpy()
         axes[idx].imshow(heatmap, alpha=0.5)
         axes[idx].set_title(title, fontsize=14, fontweight="bold")
         axes[idx].axis("off")
