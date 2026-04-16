@@ -5,13 +5,19 @@ Result Visualization for SAM-Q
 Provides visualization tools for inference results.
 """
 
+import warnings
+warnings.filterwarnings('ignore', category=UserWarning, module='matplotlib.font_manager')
+
 import numpy as np
 from PIL import Image
 from pathlib import Path
 from typing import Dict, Any, Union, Optional
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
+import matplotlib
 
+matplotlib.rcParams['font.sans-serif'] = ['WenQuanYi Micro Hei', 'SimHei', 'Noto Sans CJK SC']
+matplotlib.rcParams['axes.unicode_minus'] = False
 
 def visualize_results(
     plane_image: Union[Image.Image, np.ndarray],
@@ -101,12 +107,24 @@ def visualize_results(
         )
         axes[2].add_patch(rect)
 
+    # Extract rotation and scale for title
+    rot = results.get("rotation_deg", 0)
+    scl = results.get("scale_relative", 1.0)
+    if hasattr(rot, "item"):
+        rot = rot.item()
+    if hasattr(scl, "item"):
+        scl = scl.item()
+    # Ensure float
+    rot = float(rot)
+    scl = float(scl)
+
     axes[2].set_title(
         f"Predicted Placement Mask\n"
-        f"Rot: {results.get('rotation_deg', 0):.1f}° | Scale: {results.get('scale_relative', 1):.2f}x",
+        f"Rot: {rot:.1f}° | Scale: {scl:.2f}x",
         fontsize=12,
         fontweight="bold"
     )
+    
     axes[2].axis("off")
     if boxes and len(boxes) > 0:
         axes[2].legend(loc="upper right", fontsize=10)
