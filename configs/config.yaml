@@ -23,7 +23,7 @@ model:
 
   # SAM3 Components
   sam3:
-    pretrained_path: "./models/sam3/sam3.pt"  # SAM3 pretrained weights
+    checkpoint_path: "./models/sam3/sam3.pt"  # SAM3 weights (pretrained or trained checkpoint)
     input_dim: 256
 
   # Adapter: <SEG> hidden state → SAM3 prompt embeddings

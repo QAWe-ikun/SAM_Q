@@ -281,11 +281,11 @@ def run_predict(args):
     adapter_config = ckpt_model_config.get("adapter", model_config.get("adapter", {}))
     action_head_config = ckpt_model_config.get("action_head", model_config.get("action_head", {}))
 
-    # Initialize model with SAM3 pretrained path
-    sam3_pretrained = sam3_config.get("pretrained_path")
+    # Initialize model with SAM3 checkpoint path
+    sam3_ckpt = sam3_config.get("checkpoint_path")
 
     model = SAMQPlacementModel(
-        sam3_pretrained_path=sam3_pretrained,
+        sam3_checkpoint_path=sam3_ckpt,
         qwen_model_name=qwen_config.get("model_name", "./models/qwen3_vl"),
         qwen_lora_path=qwen_config.get("lora_path"),
         sam3_input_dim=sam3_config.get("input_dim", 256),

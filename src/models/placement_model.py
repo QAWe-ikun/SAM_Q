@@ -36,7 +36,7 @@ class SAMQPlacementModel(nn.Module):
     
     def __init__(
         self,
-        sam3_pretrained_path: Optional[str] = None,
+        sam3_checkpoint_path: Optional[str] = None,
         qwen_model_name: Optional[str] = None,
         qwen_lora_path: Optional[str] = None,
         sam3_input_dim: int = 256,
@@ -52,8 +52,8 @@ class SAMQPlacementModel(nn.Module):
         Initialize the placement model.
 
         Args:
-            sam3_pretrained_path: Path to SAM3 pretrained checkpoint file (.pt).
-                            Set None to skip SAM3 initialization (Stage 1).
+            sam3_checkpoint_path: Path to SAM3 checkpoint file (.pt).
+                           Can be pretrained weights OR a trained model checkpoint.
             qwen_model_name: HuggingFace model name or local path for Qwen3-VL.
                            Set None to skip Qwen3-VL initialization (Stage 2 with seg_features).
             qwen_lora_path: Path to Qwen3-VL LoRA adapter directory (Stage 1 fine-tuned weights).
@@ -93,10 +93,10 @@ class SAMQPlacementModel(nn.Module):
         self.seg_projector = None
         self.seg_action_head = None
 
-        if sam3_pretrained_path is not None:
+        if sam3_checkpoint_path is not None:
             # SAM3 Loader (lazy loading, version selection via checkpoint path)
             self.sam3_loader = SAM3Loader(
-                checkpoint_path=sam3_pretrained_path,
+                checkpoint_path=sam3_checkpoint_path,
                 device=self.device,
                 dtype=torch.bfloat16,  # SAM3 uses bfloat16
             )
