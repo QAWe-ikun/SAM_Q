@@ -149,7 +149,8 @@ class PlacementPredictor:
             )
 
         # Extract outputs
-        heatmap = output["heatmap"]  # [B, 1, H, W]
+        heatmap = output["heatmap"]  # [B, num_candidates, H, W]
+        class_logits = output.get("class_logits")  # [num_layers, B, num_candidates, 1]
         rotation_deg = output.get("rotation_deg")  # [B] or scalar
         scale_relative = output.get("scale_relative")  # [B] or scalar
 
@@ -169,6 +170,7 @@ class PlacementPredictor:
         # Postprocess
         results = self._postprocess(
             heatmap=heatmap,
+            class_logits=class_logits,
             rotation_deg=rotation_deg,
             scale_relative=scale_relative,
             original_size=original_size,
@@ -241,6 +243,7 @@ class PlacementPredictor:
     def _postprocess(
         self,
         heatmap: torch.Tensor,
+        class_logits: Optional[torch.Tensor],
         rotation_deg: Optional[torch.Tensor],
         scale_relative: Optional[torch.Tensor],
         original_size: tuple,
@@ -252,6 +255,7 @@ class PlacementPredictor:
 
         Args:
             heatmap: [B, num_candidates, H, W] placement heatmap (logits or sigmoid)
+            class_logits: [num_layers, B, num_candidates, 1] objectness scores
             rotation_deg: [B] predicted rotation angle
             scale_relative: [B] predicted relative scale
             original_size: Original plane image size (W, H)
@@ -262,16 +266,25 @@ class PlacementPredictor:
             Processed results dictionary
         """
         # Handle multi-candidate heatmap [B, num_candidates, H, W]
-        # Select the candidate with highest average probability (best IoU estimate)
         heat = heatmap[0]  # [num_candidates, H, W]
         
         # Apply sigmoid if logits
         if heat.min() < 0 or heat.max() > 1:
             heat = torch.sigmoid(heat)
         
-        # Select best candidate (highest mean probability = best IoU estimate)
-        candidate_scores = heat.flatten(1).mean(dim=1)  # [num_candidates]
-        best_idx = candidate_scores.argmax().item()
+        # Select best candidate using class_logits (SAM3 objectness score)
+        if class_logits is not None:
+            # Take last layer's logits, squeeze to [B, num_candidates]
+            scores = class_logits[-1, 0].squeeze(-1)  # [num_candidates]
+            best_idx = scores.argmax().item()
+            best_score = scores[best_idx].item()
+        else:
+            # Fallback: use mean probability
+            candidate_scores = heat.flatten(1).mean(dim=1)
+            best_idx = candidate_scores.argmax().item()
+            best_score = candidate_scores[best_idx].item()
+        
+        # Extract best candidate's heatmap
         heat = heat[best_idx]  # [H, W]
 
         # Resize to original image size
@@ -300,6 +313,7 @@ class PlacementPredictor:
             "scale_relative": scale,
             "image_size": original_size,
             "best_candidate_idx": best_idx,
+            "best_candidate_score": best_score,
         }
 
     def visualize(
