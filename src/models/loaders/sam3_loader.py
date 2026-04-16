@@ -12,9 +12,10 @@ Features:
 """
 
 import os
+from pathlib import Path
 import torch
 import torch.nn as nn
-from typing import Optional, Dict, Any, Tuple
+from typing import Optional, Dict, Any, Tuple, Union
 
 
 class SAM3Loader(nn.Module):

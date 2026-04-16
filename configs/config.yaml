@@ -46,6 +46,13 @@ model:
 # Inference Configuration
 # ----------------------------------------------------------------------------
 inference:
+  # Option 1: Load combined checkpoint (default)
+  checkpoint_path: "outputs/stage2_full/checkpoint_best.pt"
+  
+  # Option 2: Load split checkpoints (overrides checkpoint_path if set)
+  adapter_checkpoint_path: null  # e.g., "outputs/stage2_full/adapter_checkpoint_best.pt"
+  sam3_checkpoint_path: null     # e.g., "outputs/stage2_full/sam3_checkpoint_best.pt"
+  
   threshold: 0.5              # Confidence threshold for heatmap binarization
   device: "cuda"              # "cuda", "cpu", or "auto"
 

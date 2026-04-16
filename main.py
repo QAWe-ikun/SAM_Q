@@ -287,23 +287,35 @@ def run_predict(args):
     # Load trained weights
     model.load_all(eval_mode=True)  # Initialize Qwen + SAM3 structures
 
-    # Load Stage 2 Checkpoint (fix key mismatch: 'backbone...' -> 'sam3_loader.model.backbone...')
-    checkpoint = torch.load(args.checkpoint, map_location=device)
-    state_dict = checkpoint.get("model_state_dict", checkpoint)
-    
-    fixed_state_dict = {}
-    sam3_prefixes = ["backbone.", "geometry_encoder.", "transformer.", "segmentation_head.", "dot_prod_scoring."]
-    
-    for k, v in state_dict.items():
-        if any(k.startswith(p) for p in sam3_prefixes):
-            fixed_state_dict[f"sam3_loader.model.{k}"] = v
-        else:
-            fixed_state_dict[k] = v
-            
-    result = model.load_state_dict(fixed_state_dict, strict=False)
-    print(f"Loaded {args.checkpoint}")
-    if result.missing_keys or result.unexpected_keys:
-        print(f"  Note: Some keys did not match (Expected for older checkpoints).")
+    # Determine checkpoint loading strategy
+    adapter_ckpt = inference_config.get("adapter_checkpoint_path")
+    sam3_ckpt = inference_config.get("sam3_checkpoint_path")
+    full_ckpt = inference_config.get("checkpoint_path", args.checkpoint)
+
+    if adapter_ckpt and sam3_ckpt:
+        # Option 2: Load split checkpoints
+        model.load_split_checkpoint(
+            adapter_checkpoint_path=adapter_ckpt,
+            sam3_checkpoint_path=sam3_ckpt,
+        )
+    else:
+        # Option 1: Load combined checkpoint
+        checkpoint = torch.load(full_ckpt, map_location=device)
+        state_dict = checkpoint.get("model_state_dict", checkpoint)
+        
+        fixed_state_dict = {}
+        sam3_prefixes = ["backbone.", "geometry_encoder.", "transformer.", "segmentation_head.", "dot_prod_scoring."]
+        
+        for k, v in state_dict.items():
+            if any(k.startswith(p) for p in sam3_prefixes):
+                fixed_state_dict[f"sam3_loader.model.{k}"] = v
+            else:
+                fixed_state_dict[k] = v
+                
+        result = model.load_state_dict(fixed_state_dict, strict=False)
+        print(f"Loaded full checkpoint: {full_ckpt}")
+        if result.missing_keys or result.unexpected_keys:
+            print(f"  Note: Some keys did not match (Expected for older checkpoints).")
 
     # Load images
     plane_image = Image.open(args.plane_image).convert("RGB")

@@ -358,14 +358,16 @@ Epoch   2 | train_loss: 1.2345 | bce: 0.5678 | dice: 0.6667 | rot: 0.0987 | scl:
 | `iou` | Intersection over Union | 逐渐上升 |
 
 **输出**：
-- `outputs/stage2_full/checkpoint_best.pt` — Adapter + SAM3 Decoder 权重
-- `outputs/stage2_full/checkpoint_final.pt` — 最后一个 epoch 的权重
+- `outputs/stage2_full/checkpoint_best.pt` — 完整权重（含 Adapter + SAM3）
+- `outputs/stage2_full/checkpoint_final.pt` — 最后一个 epoch 的完整权重
+- **新增** `outputs/stage2_full/adapter_checkpoint_best.pt` — 仅 Adapter/ActionHead 权重
+- **新增** `outputs/stage2_full/sam3_checkpoint_best.pt` — 仅 SAM3 Decoder 权重
 
 ---
 
 ## 推理
 
-### 命令行
+### 方式一：加载完整 Checkpoint（默认）
 
 ```bash
 python main.py predict \
@@ -376,6 +378,23 @@ python main.py predict \
   --prompt "把椅子放在桌子旁边" \
   --output outputs/
 ```
+
+### 方式二：加载拆分 Checkpoint（推荐用于模块化部署）
+
+在 `configs/stage2_decoder.yaml` 中设置 `save_split_weights: true` 后，训练结束会自动生成：
+- `adapter_checkpoint_best.pt`
+- `sam3_checkpoint_best.pt`
+
+在推理配置 `configs/config.yaml` 中指定：
+
+```yaml
+inference:
+  checkpoint_path: null  # 留空
+  adapter_checkpoint_path: "outputs/stage2_full/adapter_checkpoint_best.pt"
+  sam3_checkpoint_path: "outputs/stage2_full/sam3_checkpoint_best.pt"
+```
+
+然后运行 predict 命令（此时 `--checkpoint` 参数会被忽略）。
 
 ### 参数说明
 

@@ -905,7 +905,8 @@ class Trainer:
         self._save_checkpoint("final", float("inf"))
         
         # If Stage 2, ensure split weights are also saved for the final checkpoint
-        if self.stage == "placement" and self.model.sam3_loader is not None:
+        training_config = self.config.get("training", {})
+        if self.stage == "placement" and training_config.get("save_split_weights", True):
             self._save_split_checkpoint(suffix="_final")
             
         print(f"\nTraining completed! Results saved to: {self.output_dir}")
@@ -1024,5 +1025,5 @@ class Trainer:
             torch.save(checkpoint, best_path)
             
             # Also save split weights for the best model in Stage 2
-            if self.stage == "placement" and self.model.sam3_loader is not None:
+            if self.stage == "placement" and self.model.sam3_loader is not None and training_config.get("save_split_weights", True):
                 self._save_split_checkpoint(suffix="_best")
