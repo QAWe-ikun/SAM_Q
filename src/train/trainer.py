@@ -209,17 +209,32 @@ class Trainer:
         if lora_ckpt:
             self._load_lora_checkpoint(lora_ckpt)
 
-        # 解冻 SAM3 decoder（如果配置要求）
+        # 解冻 SAM3 decoder（精确控制）
         sam3_cfg = model_config.get("sam3", {})
         if not sam3_cfg.get("freeze_detector", True):
             self.model.sam3_loader.load_model()
-            for p in self.model.sam3_loader.sam3_transformer.parameters():
+            
+            # ✅ 训练 transformer decoder（用于 heatmap 生成）
+            for p in self.model.sam3_loader.sam3_transformer.decoder.parameters():
                 p.requires_grad = True
+                
+            # ✅ 训练 segmentation head
             for p in self.model.sam3_loader.sam3_seg_head.parameters():
                 p.requires_grad = True
+                
+            # ✅ 训练 dot product scoring
             for p in self.model.sam3_loader.sam3_dot_scoring.parameters():
                 p.requires_grad = True
-            print("[Trainer] Stage 2: SAM3 decoder unfrozen")
+                
+            # ❌ 保持冻结：language backbone, geometry encoder, transformer encoder
+            for p in self.model.sam3_loader.model.backbone.language_backbone.parameters():
+                p.requires_grad = False
+            for p in self.model.sam3_loader.model.geometry_encoder.parameters():
+                p.requires_grad = False
+            for p in self.model.sam3_loader.model.transformer.encoder.parameters():
+                p.requires_grad = False
+                
+            print("[Trainer] Stage 2: SAM3 decoder unfrozen (only decoder + seg_head + dot_scoring)")
 
         # 解冻 Adapter
         if not model_config.get("adapter", {}).get("freeze", False):
@@ -235,6 +250,18 @@ class Trainer:
         seg_dir = self.config.get("data", {}).get("seg_feature_dir")
         if seg_dir:
             print(f"[Trainer] 使用预提取 <SEG> features: {seg_dir}, 跳过 Qwen3-VL")
+            
+        print(f"\n{'='*60}")
+        print(f"[Stage 2] Trainable Parameters Check:")
+        total_trainable = 0
+        for name, param in self.model.named_parameters():
+            if param.requires_grad:
+                total_trainable += param.numel()
+                # 只打印包含 'sam3' 或 'adapter' 的关键模块
+                if 'sam3' in name or 'adapter' in name or 'seg_action_head' in name:
+                    print(f"  [Train] {name}: {param.numel():,}")
+        print(f"[Stage 2] Total Trainable Params: {total_trainable:,}")
+        print(f"{'='*60}\n")
 
     def _load_lora_checkpoint(self, lora_ckpt: str):
         """加载 Stage 1 的 LoRA checkpoint。"""
