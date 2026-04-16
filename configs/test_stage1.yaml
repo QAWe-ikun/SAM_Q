@@ -15,8 +15,7 @@ experiment:
 data:
   root_dir: "data/"
   ann_file: "annotations.json"
-  batch_size: 1
-  num_workers: 0
+  num_workers: 0  # SFTTrainer 不使用 DataLoader
   pin_memory: false
 
 model:
@@ -78,8 +77,13 @@ training:
   num_epochs: 3
   device: "cuda"
   save_dir: "/mnt/f/output/test_stage1"
-  save_epoch: false  # Set true to save every epoch
-  save_interval: 1
+  save_epoch: false  # Set true to save at save_interval epochs
+  save_interval: 500  # Save every N steps
+  save_total_limit: 3
   save_best: false
   log_interval: 1
   early_stopping: false
+  gradient_accumulation_steps: 4  # Effective batch = batch_size * 4
+  batch_size: 2  # per_device_train_batch_size for SFTTrainer
+  fp16: false
+  bf16: true   # Recommended for RTX 30/40 series

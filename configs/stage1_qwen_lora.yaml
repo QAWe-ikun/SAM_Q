@@ -14,8 +14,7 @@ experiment:
 data:
   root_dir: "data/"
   ann_file: "annotations.json"
-  batch_size: 1
-  num_workers: 0
+  num_workers: 0  # SFTTrainer 不使用 DataLoader，此参数仅用于验证阶段
   pin_memory: false
 
 model:
@@ -89,7 +88,7 @@ training:
   save_total_limit: 3
   log_interval: 10
   early_stopping: false
-  gradient_accumulation_steps: 8  # 等效增大 batch size (batch_size * 8)
-  fp16: true  # 启用混合精度训练
-  bf16: false  # 如果显卡支持，可改为 true
-  batch_size: 2  # per_device_train_batch_size
+  gradient_accumulation_steps: 8  # Effective batch size = batch_size * gradient_accumulation_steps
+  batch_size: 2  # per_device_train_batch_size for SFTTrainer
+  fp16: false  # Set true for older GPUs (may cause NaN gradients)
+  bf16: true   # Recommended for RTX 30/40 series or newer
