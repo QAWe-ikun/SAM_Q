@@ -31,7 +31,7 @@ model:
     attn_implementation: "flash_attention_2"
 
   sam3:
-    checkpoint_path: "./models/sam3/sam3.pt"
+    pretrained_path: "./models/sam3/sam3.pt"
     input_dim: 256
     freeze_image_encoder: true  # SAM3 image encoder frozen
     freeze_detector: false      # ← SAM3 decoder trainable
@@ -71,7 +71,7 @@ scheduler:
 training:
   num_epochs: 50
   device: "cuda"
-  save_dir: "outputs/stage2_full/"
+  save_dir: "/mnt/f/outputs/stage2_full/"
   save_best: true
   save_epoch: false  # Set true to save at save_interval epochs
   save_interval: 10  # Save every N epochs (when save_epoch=true)

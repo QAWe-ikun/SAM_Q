@@ -281,9 +281,13 @@ def run_predict(args):
     adapter_config = ckpt_model_config.get("adapter", model_config.get("adapter", {}))
     action_head_config = ckpt_model_config.get("action_head", model_config.get("action_head", {}))
 
-    # Initialize model
+    # Initialize model with SAM3 pretrained path
+    sam3_pretrained = sam3_config.get("pretrained_path")
+
     model = SAMQPlacementModel(
+        sam3_pretrained_path=sam3_pretrained,
         qwen_model_name=qwen_config.get("model_name", "./models/qwen3_vl"),
+        qwen_lora_path=qwen_config.get("lora_path"),
         sam3_input_dim=sam3_config.get("input_dim", 256),
         qwen_hidden_dim=qwen_config.get("hidden_dim", 4096),
         adapter_hidden_dim=adapter_config.get("hidden_dim", 512),
@@ -292,9 +296,9 @@ def run_predict(args):
         action_head_config=action_head_config,
     )
 
-    # Load weights
+    # Load trained weights
     model.load_state_dict(checkpoint["model_state_dict"])
-    model.eval()
+    model.load_all(eval_mode=True)  # Load Qwen + SAM3 + LoRA components
 
     # Load images
     plane_image = Image.open(args.plane_image).convert("RGB")

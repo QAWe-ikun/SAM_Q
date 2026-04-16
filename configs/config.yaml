@@ -17,27 +17,28 @@ model:
   # Qwen3-VL Encoder
   qwen:
     model_name: "./models/qwen3_vl"
+    lora_path: "outputs/stage1_lora/"  # Stage 1 LoRA adapter (optional, set null if not needed)
     hidden_dim: 4096
     attn_implementation: "flash_attention_2"
 
   # SAM3 Components
   sam3:
-    model_name: "./models/sam3"
+    pretrained_path: "./models/sam3/sam3.pt"  # SAM3 pretrained weights
     input_dim: 256
 
-  # Adapter
+  # Adapter: <SEG> hidden state → SAM3 prompt embeddings
   adapter:
-    type: "cross_modal"
     hidden_dim: 512
     num_queries: 64
     dropout: 0.1
 
-  # <SEG> Token config
+  # <SEG> Token config (optional)
   seg_token:
-    max_generate_tokens: 128
+    max_generate_tokens: 128      # Max tokens for <SEG> generation
+    force_only_in_training: true  # Force <SEG>-only output during training
     dropout: 0.1
 
-  # SEGActionHead (rotation + scale)
+  # SEGActionHead (rotation + scale prediction)
   action_head:
     heatmap_size: 64
 
@@ -45,11 +46,10 @@ model:
 # Inference Configuration
 # ----------------------------------------------------------------------------
 inference:
-  checkpoint_path: null
-  threshold: 0.5
-  device: "cuda"
+  checkpoint_path: "outputs/stage2_full/checkpoint_best.pt"  # Trained model checkpoint
+  threshold: 0.5              # Confidence threshold for heatmap binarization
+  device: "cuda"              # "cuda", "cpu", or "auto"
 
-  save_visualizations: true
-  save_json: true
-  output_dir: "results/"
-
+  save_visualizations: true   # Save overlay image (prediction.png)
+  save_json: true             # Save structured results (prediction.json)
+  output_dir: "outputs/"      # Output directory for results

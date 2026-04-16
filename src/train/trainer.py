@@ -119,10 +119,10 @@ class Trainer:
         num_seg_tokens = model_config.get("num_seg_tokens", 1)
 
         # Stage 1 (LM) does not need SAM3; Stage 2 (placement) requires it
-        sam3_ckpt = model_config.get("sam3", {}).get("checkpoint_path")
+        sam3_pretrained = model_config.get("sam3", {}).get("pretrained_path")
         if self.stage == "lm":
-            sam3_ckpt = None
-        print(f"[Trainer] Initializing model with SAM3 checkpoint: {sam3_ckpt}")
+            sam3_pretrained = None
+        print(f"[Trainer] Initializing model with SAM3 pretrained: {sam3_pretrained}")
 
         # Stage 2 with pre-extracted seg_features doesn't need Qwen3-VL
         # This saves ~16GB VRAM
@@ -136,7 +136,7 @@ class Trainer:
             print(f"[Trainer] Stage 2 without seg_features: loading Qwen3-VL for online inference")
 
         model = SAMQPlacementModel(
-            sam3_checkpoint_path=sam3_ckpt,
+            sam3_pretrained_path=sam3_pretrained,
             qwen_model_name=model_config.get("qwen", {}).get("model_name") if use_qwen else None,
             qwen_lora_path=model_config.get("qwen", {}).get("lora_path") if use_qwen else None,
             sam3_input_dim=model_config.get("sam3", {}).get("input_dim", 256),
@@ -479,12 +479,13 @@ class Trainer:
                 seg_hidden_batch = seg_hidden_batch.to(self.device)
 
             # Process each sample
+            batch_loss_tensor = torch.tensor(0.0, device=self.device)
             batch_loss = 0.0
             batch_bce = 0.0
             batch_dice = 0.0
             batch_rot = 0.0
             batch_scl = 0.0
-            
+
             for i in range(len(plane_images_batch)):
                 plane_image = plane_images_batch[i]
                 sample_images = [img.to(self.device) for img in batch_images[i]]
@@ -511,6 +512,7 @@ class Trainer:
                     gt_rotation_6d=gt_rot[i:i+1] if gt_rot is not None else None,
                     gt_scale=gt_scl[i:i+1] if gt_scl is not None else None,
                 )
+                batch_loss_tensor = batch_loss_tensor + loss_dict["total"]
                 batch_loss += loss_dict["total"].item()
                 batch_bce += loss_dict.get("bce", 0).item() if isinstance(loss_dict.get("bce", 0), torch.Tensor) else loss_dict.get("bce", 0)
                 batch_dice += loss_dict.get("dice", 0).item() if isinstance(loss_dict.get("dice", 0), torch.Tensor) else loss_dict.get("dice", 0)
@@ -518,7 +520,7 @@ class Trainer:
                 batch_scl += loss_dict.get("scale", 0).item() if isinstance(loss_dict.get("scale", 0), torch.Tensor) else loss_dict.get("scale", 0)
 
             # Average loss
-            avg_loss = batch_loss / len(batch["plane_images"])
+            avg_loss = batch_loss_tensor / len(batch["plane_images"])
             avg_bce = batch_bce / len(batch["plane_images"])
             avg_dice = batch_dice / len(batch["plane_images"])
             avg_rot = batch_rot / len(batch["plane_images"])

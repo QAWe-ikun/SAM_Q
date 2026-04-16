@@ -36,7 +36,7 @@ class SAMQPlacementModel(nn.Module):
     
     def __init__(
         self,
-        sam3_checkpoint_path: Optional[str] = None,
+        sam3_pretrained_path: Optional[str] = None,
         qwen_model_name: Optional[str] = None,
         qwen_lora_path: Optional[str] = None,
         sam3_input_dim: int = 256,
@@ -52,7 +52,7 @@ class SAMQPlacementModel(nn.Module):
         Initialize the placement model.
 
         Args:
-            sam3_checkpoint_path: Path to SAM3 checkpoint file (.pt).
+            sam3_pretrained_path: Path to SAM3 pretrained checkpoint file (.pt).
                             Set None to skip SAM3 initialization (Stage 1).
             qwen_model_name: HuggingFace model name or local path for Qwen3-VL.
                            Set None to skip Qwen3-VL initialization (Stage 2 with seg_features).
@@ -84,6 +84,8 @@ class SAMQPlacementModel(nn.Module):
                 dtype=self.dtype,
                 num_seg_tokens=num_seg_tokens,
             )
+        
+        self.qwen_lora_path = qwen_lora_path  # Store LoRA path for loading during forward pass
 
         # SAM3-related components (only initialized if checkpoint path is provided)
         self.sam3_loader = None
@@ -91,10 +93,10 @@ class SAMQPlacementModel(nn.Module):
         self.seg_projector = None
         self.seg_action_head = None
 
-        if sam3_checkpoint_path is not None:
+        if sam3_pretrained_path is not None:
             # SAM3 Loader (lazy loading, version selection via checkpoint path)
             self.sam3_loader = SAM3Loader(
-                checkpoint_path=sam3_checkpoint_path,
+                checkpoint_path=sam3_pretrained_path,
                 device=self.device,
                 dtype=torch.bfloat16,  # SAM3 uses bfloat16
             )
@@ -136,10 +138,8 @@ class SAMQPlacementModel(nn.Module):
                 self.seg_projector.to(self.device)
         else:
             # Stage 1 (LM) mode: no SAM3/Adapter components needed
-            self._seg_force_only = True
-            self._seg_max_tokens = 128
-
-        self.qwen_lora_path = qwen_lora_path  # Store LoRA path for loading during forward pass
+            self._seg_force_only = seg_token_config.get("force_only_in_training", True) if seg_token_config else True
+            self._seg_max_tokens = seg_token_config.get("max_generate_tokens", 128) if seg_token_config else 128
         
     def freeze_qwen(self):
         """Freeze Qwen3-VL parameters."""
@@ -151,7 +151,70 @@ class SAMQPlacementModel(nn.Module):
         
     def freeze_sam3_image_encoder(self):
         """Freeze SAM3 vision backbone parameters."""
+        if self.sam3_loader is None:
+            return
         self.sam3_loader.freeze_vision_backbone()
+        
+    def freeze_all_except_adapter_and_detector(self):
+        """Freeze all components except adapter, action head, and detector."""
+        self.freeze_qwen()
+        self.freeze_sam3_image_encoder()
+
+        # Make adapter, action head, and detector trainable
+        for param in self.adapter.parameters():
+            param.requires_grad = True
+        for param in self.seg_action_head.parameters():
+            param.requires_grad = True
+        if self.seg_projector is not None:
+            for param in self.seg_projector.parameters():
+                param.requires_grad = True
+
+        # Unfreeze SAM3 transformer, seg_head, dot_scoring
+        self.sam3_loader.freeze_all_except(trainable_components=["transformer", "seg_head", "dot_scoring"])
+
+    def _encode_plane_image(self, image) -> Dict:
+        """Encode plane image using SAM3 vision backbone.
+
+        Args:
+            image: PIL.Image 或 torch.Tensor [C, H, W] / [B, C, H, W]
+        """
+        import torchvision.transforms.functional as TF
+
+        if isinstance(image, torch.Tensor):
+            # 已经是 tensor，确保形状正确
+            tensor = image.to(self.device, dtype=torch.float32)
+            if tensor.dim() == 3:
+                tensor = tensor.unsqueeze(0)  # [C,H,W] → [1,C,H,W]
+            # resize 到 SAM3 尺寸
+            tensor = F.interpolate(tensor, size=(_SAM3_SIZE, _SAM3_SIZE), mode="bilinear", align_corners=False)
+            # 归一化
+            mean = torch.tensor(_SAM3_MEAN, device=self.device).view(1, 3, 1, 1)
+            std  = torch.tensor(_SAM3_STD,  device=self.device).view(1, 3, 1, 1)
+            tensor = (tensor - mean) / std
+        else:
+            # PIL.Image 路径
+            img = image.convert("RGB").resize((_SAM3_SIZE, _SAM3_SIZE), Image.Resampling.BILINEAR)
+            tensor = TF.to_tensor(img).to(self.device, dtype=torch.float32)
+            mean = torch.tensor(_SAM3_MEAN, device=self.device).view(3, 1, 1)
+            std  = torch.tensor(_SAM3_STD,  device=self.device).view(3, 1, 1)
+            tensor = (tensor - mean) / std
+            tensor = tensor.unsqueeze(0)  # [1, 3, H, W]
+
+        # Cast input to match backbone checkpoint dtype (bfloat16)
+        backbone_dtype = next(self.sam3_loader.sam3_vision_backbone.parameters()).dtype
+        tensor = tensor.to(dtype=backbone_dtype)
+
+        with torch.no_grad():
+            img_feats, img_pos_embeds, _, _ = self.sam3_loader.sam3_vision_backbone(tensor)
+
+        # Construct feat_sizes from spatial dims (neck doesn't return them)
+        vis_feat_sizes = [(f.shape[2], f.shape[3]) for f in img_feats]
+
+        return {
+            "img_feats": img_feats,
+            "img_pos_embeds": img_pos_embeds,
+            "vis_feat_sizes": vis_feat_sizes,
+        }
 
     def load_all(self, eval_mode: bool = True):
         """
@@ -180,28 +243,11 @@ class SAMQPlacementModel(nn.Module):
         # Set eval mode if requested
         if eval_mode:
             self.eval()
-
-    def freeze_all_except_adapter_and_detector(self):
-        """Freeze all components except adapter, action head, and detector."""
-        self.freeze_qwen()
-        self.freeze_sam3_image_encoder()
-
-        # Make adapter, action head, and detector trainable
-        for param in self.adapter.parameters():
-            param.requires_grad = True
-        for param in self.seg_action_head.parameters():
-            param.requires_grad = True
-        if self.seg_projector is not None:
-            for param in self.seg_projector.parameters():
-                param.requires_grad = True
-
-        # Unfreeze SAM3 transformer, seg_head, dot_scoring
-        self.sam3_loader.freeze_all_except(trainable_components=["transformer", "seg_head", "dot_scoring"])
     
     def forward(
         self,
         plane_image,
-        text_prompt: str = "",
+        text_prompt: Optional[str] = None,
         images: Optional[List] = None,
         seg_hidden: Optional[torch.Tensor] = None,
         **kwargs,
@@ -209,20 +255,15 @@ class SAMQPlacementModel(nn.Module):
         """
         Forward pass: <SEG> token → parallel outputs.
 
-        Args:
-            plane_image: 房间俯视图（PIL.Image 或 Tensor）
-            text_prompt: 文本指令
-            images: Qwen3-VL 图片列表（seg_hidden 为 None 时需要）
-            seg_hidden: 预提取的 <SEG> hidden state [B, hidden_dim]（有值时跳过 Qwen3-VL）
-
         Qwen3-VL → <SEG> token
-            ├→ SAM3 Decoder → placement heatmap
-            └→ SEGActionHead → rotation + scale
+                            ├→ SAM3 Decoder → placement heatmap
+                            └→ SEGActionHead → rotation + scale
 
         Args:
             plane_image: Top-down view of the room (for SAM3)
             text_prompt: Text instruction with optional <image> placeholders
             images: List of PIL images for Qwen3-VL (e.g., [room_image, object_image])
+            seg_hidden: Optional pre-extracted <SEG> hidden state (skip Qwen3-VL if provided)
 
         Returns:
             output dict with:
@@ -333,50 +374,6 @@ class SAMQPlacementModel(nn.Module):
             "scale_relative": action_output["scale"],    # [B]
             "seg_hidden": seg_hidden,      # [B, 4096]
             "class_logits": class_logits,  # [num_layers, B, num_queries, 1]
-        }
-
-    def _encode_plane_image(self, image) -> Dict:
-        """Encode plane image using SAM3 vision backbone.
-
-        Args:
-            image: PIL.Image 或 torch.Tensor [C, H, W] / [B, C, H, W]
-        """
-        import torchvision.transforms.functional as TF
-
-        if isinstance(image, torch.Tensor):
-            # 已经是 tensor，确保形状正确
-            tensor = image.to(self.device, dtype=torch.float32)
-            if tensor.dim() == 3:
-                tensor = tensor.unsqueeze(0)  # [C,H,W] → [1,C,H,W]
-            # resize 到 SAM3 尺寸
-            tensor = F.interpolate(tensor, size=(_SAM3_SIZE, _SAM3_SIZE), mode="bilinear", align_corners=False)
-            # 归一化
-            mean = torch.tensor(_SAM3_MEAN, device=self.device).view(1, 3, 1, 1)
-            std  = torch.tensor(_SAM3_STD,  device=self.device).view(1, 3, 1, 1)
-            tensor = (tensor - mean) / std
-        else:
-            # PIL.Image 路径
-            img = image.convert("RGB").resize((_SAM3_SIZE, _SAM3_SIZE), Image.Resampling.BILINEAR)
-            tensor = TF.to_tensor(img).to(self.device, dtype=torch.float32)
-            mean = torch.tensor(_SAM3_MEAN, device=self.device).view(3, 1, 1)
-            std  = torch.tensor(_SAM3_STD,  device=self.device).view(3, 1, 1)
-            tensor = (tensor - mean) / std
-            tensor = tensor.unsqueeze(0)  # [1, 3, H, W]
-
-        # Cast input to match backbone checkpoint dtype (bfloat16)
-        backbone_dtype = next(self.sam3_loader.sam3_vision_backbone.parameters()).dtype
-        tensor = tensor.to(dtype=backbone_dtype)
-
-        with torch.no_grad():
-            img_feats, img_pos_embeds, _, _ = self.sam3_loader.sam3_vision_backbone(tensor)
-
-        # Construct feat_sizes from spatial dims (neck doesn't return them)
-        vis_feat_sizes = [(f.shape[2], f.shape[3]) for f in img_feats]
-
-        return {
-            "img_feats": img_feats,
-            "img_pos_embeds": img_pos_embeds,
-            "vis_feat_sizes": vis_feat_sizes,
         }
 
     def predict(

@@ -10,12 +10,10 @@ from .unified_scale_vla import (
     UnifiedScaleVLA,
     UnifiedScalePreprocessor,
     SEGActionHead,
-    VLAIterativeRefinement,
 )
 
 __all__ = [
     "UnifiedScaleVLA",
     "UnifiedScalePreprocessor",
     "SEGActionHead",
-    "VLAIterativeRefinement",
 ]
