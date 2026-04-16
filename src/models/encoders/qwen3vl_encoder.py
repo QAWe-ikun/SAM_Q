@@ -638,6 +638,11 @@ class Qwen3VLEncoder(nn.Module):
                 "Please install peft: pip install peft"
             ) from e
 
+        # Check if already loaded
+        if isinstance(self.model, PeftModel):
+            print(f"[Qwen3VLEncoder] LoRA adapter already loaded, skipping.")
+            return
+
         self.load_model(use_cache=True)  # Inference mode
 
         # Load the LoRA adapter on top of the base model
