@@ -1,7 +1,7 @@
 # 训练集说明
 
 Stage 1 和 Stage 2 **共用同一个数据集**，统一放在 `data/` 下。
-Stage 1 训练结束后自动提取 `[SEG]` hidden states 到 `data/seg_features/`，Stage 2 直接读取，无需加载 Qwen3-VL。
+Stage 1 训练结束后自动提取 `<SEG>` hidden states 到 `data/seg_features/`，Stage 2 直接读取，无需加载 Qwen3-VL。
 
 ## 目录结构
 
@@ -17,7 +17,7 @@ data/
 ├── masks/                        # GT 放置 mask（二值图）
 │   ├── scene_001_mask.png
 │   └── ...
-└── seg_features/                 # [SEG] hidden states（Stage 1 训练后自动生成）
+└── seg_features/                 # <SEG> hidden states（Stage 1 训练后自动生成）
     ├── scene_001.pt
     └── ...
 ```
@@ -40,7 +40,7 @@ data/
     ],
     "mask_path": "masks/scene_001_mask.png",
     "text_prompt": "<image>\n<image>\n把椅子放在桌子旁边",
-    "response": "好的，我会在桌子旁边放置椅子。[SEG]",
+    "response": "好的，我会在桌子旁边放置椅子。<SEG>",
     "rotation_6d": [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
     "scale": 1.0
   }
@@ -55,7 +55,7 @@ data/
 | `images_path` | list[str] | 必须 | 必须 | Qwen3-VL 输入的图片列表，**顺序必须与 `<image>` 占位符一致**，第一项通常为 `plane_image_path` |
 | `mask_path` | str | 必须 | 必须 | 二值 mask 图，白色 = 放置区域 |
 | `text_prompt` | str | 必须 | 必须 | 放置指令，支持 `<image>` 占位符 |
-| `response` | str | **必须** | 不需要 | Qwen3-VL 的目标回复，末尾包含 `[SEG]` |
+| `response` | str | **必须** | 不需要 | Qwen3-VL 的目标回复，末尾包含 `<SEG>` |
 | `rotation_6d` | list[6] | 不需要 | **必须** | 6D 旋转表示（旋转矩阵前两列） |
 | `scale` | float | 不需要 | **必须** | 缩放比例，1.0 = 原始大小 |
 | `split` | str | 可选 | 可选 | `"train"` / `"val"` / `"test"` |
@@ -83,15 +83,15 @@ data/
 
 ```
 # 正确
-"好的，我会在桌子旁边放置椅子。[SEG]"
-"I will place the chair next to the table. [SEG]"
+"好的，我会在桌子旁边放置椅子。<SEG>"
+"I will place the chair next to the table. <SEG>"
 
 # 错误
-"[SEG]"                              # 没有自然语言描述
-"好的，我会放置椅子。[SEG] 完成。"   # [SEG] 不在末尾
+"<SEG>"                              # 没有自然语言描述
+"好的，我会放置椅子。<SEG> 完成。"   # <SEG> 不在末尾
 ```
 
-缺失 `response` 时自动使用默认值：`"好的，我将为您放置物体。[SEG]"`
+缺失 `response` 时自动使用默认值：`"好的，我将为您放置物体。<SEG>"`
 
 ---
 
@@ -120,7 +120,7 @@ Stage 1 训练结束后**自动生成**，无需手动创建。
 每个 `.pt` 文件包含：
 ```python
 {
-    "seg_hidden": torch.Tensor,  # [4096]  Qwen3-VL 在 [SEG] 位置的 hidden state
+    "seg_hidden": torch.Tensor,  # [4096]  Qwen3-VL 在 <SEG> 位置的 hidden state
     "sample_id": str,            # 对应 annotations.json 中的 scene_id
 }
 ```
@@ -210,7 +210,7 @@ print(f"plane_image: {sample['plane_image'].shape}")     # [3, H, W] for SAM3
 print(f"images: {len(sample['images'])}")                # number of images for Qwen3-VL
 print(f"images[0]: {sample['images'][0].shape}")         # [3, H, W]
 print(f"mask: {sample['mask'].shape}")                   # [1, H, W]
-print(f"response: {sample['response']}")                 # 含 [SEG]
+print(f"response: {sample['response']}")                 # 含 <SEG>
 print(f"rotation_6d: {sample['rotation_6d']}")           # [6] 或 None
 print(f"scale: {sample['scale']}")                       # [1] 或 None
 print(f"seg_hidden: {sample['seg_hidden'].shape if sample['seg_hidden'] is not None else None}")  # [4096] 或 None

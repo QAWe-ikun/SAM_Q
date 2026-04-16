@@ -72,7 +72,7 @@ class Trainer:
 
         # Initialize loss
         if self.stage == "lm":
-            # Stage 1: 语言模型损失（cross-entropy on [SEG] token prediction）
+            # Stage 1: 语言模型损失（cross-entropy on <SEG> token prediction）
             self.criterion = None  # LM loss 在 train_epoch_stage1 里计算
             self._setup_stage1()
         else:
@@ -225,7 +225,7 @@ class Trainer:
         # 检测是否使用预提取 seg features
         seg_dir = self.config.get("data", {}).get("seg_feature_dir")
         if seg_dir:
-            print(f"[Trainer] 使用预提取 [SEG] features: {seg_dir}, 跳过 Qwen3-VL")
+            print(f"[Trainer] 使用预提取 <SEG> features: {seg_dir}, 跳过 Qwen3-VL")
 
     def _load_lora_checkpoint(self, lora_ckpt: str):
         """加载 Stage 1 的 LoRA checkpoint。"""
@@ -253,8 +253,8 @@ class Trainer:
         该方法会接管整个训练流程（包含所有 Epochs），不需要外部循环。
         """
         try:
-            from trl import SFTTrainer, SFTConfig
-            from transformers import DataCollatorForSeq2Seq
+            from trl import SFTTrainer
+            from transformers import TrainingArguments
         except ImportError:
             raise ImportError(
                 "Please install trl: pip install trl>=0.8.0"
@@ -277,7 +277,7 @@ class Trainer:
         qwen_model = self.model.qwen_encoder.model
         tokenizer = self.model.qwen_encoder.processor.tokenizer
 
-        # Configure training arguments (similar to TrainingArguments)
+        # Configure training arguments
         grad_accum = training_config.get("gradient_accumulation_steps", 1)
         batch_size = training_config.get("batch_size", 1)
         num_epochs = training_config.get("num_epochs", 3)
@@ -290,7 +290,9 @@ class Trainer:
         use_bf16 = self.config.get("training", {}).get("bf16", False)
         use_fp16 = self.config.get("training", {}).get("fp16", True)
 
-        sft_config = SFTConfig(
+        # Use TrainingArguments instead of SFTConfig to avoid version conflicts
+        # SFTTrainer works fine with TrainingArguments when using a custom collator
+        sft_config = TrainingArguments(
             output_dir=str(self.output_dir),
             num_train_epochs=num_epochs,
             per_device_train_batch_size=batch_size,
@@ -302,7 +304,6 @@ class Trainer:
             save_steps=save_steps,
             save_total_limit=training_config.get("save_total_limit", 3),
             save_strategy="steps" if save_steps < 1000 else "epoch",
-            evaluation_strategy="no",
             report_to="none",
             warmup_steps=warmup_steps,
             lr_scheduler_type="cosine",
@@ -310,9 +311,6 @@ class Trainer:
             weight_decay=self.config.get("optimizer", {}).get("weight_decay", 0.01),
             max_grad_norm=1.0,
             remove_unused_columns=False,
-            dataset_text_field="",  # We handle multimodal input manually
-            dataset_kwargs={"skip_prepare_dataset": True},
-            max_seq_length=4096,  # Qwen3-VL max context
         )
 
         # Create data collator for Qwen3-VL format
@@ -323,7 +321,7 @@ class Trainer:
 
             for ex in examples:
                 text_prompt = ex.get("text_prompt", "")
-                response = ex.get("response", "好的，我将为您放置物体。[SEG]")
+                response = ex.get("response", "好的，我将为您放置物体。<SEG>")
 
                 # Build messages
                 messages, img_list = self.model.qwen_encoder._build_message(
@@ -349,15 +347,38 @@ class Trainer:
 
             # Create labels for LM loss
             labels = inputs["input_ids"].clone()
-            # Mask out prompt tokens (will be handled by model internally)
+
+            # Mask out prompt tokens: only compute loss on the Assistant response
+            for i, ex in enumerate(examples):
+                response = ex.get("response", "")
+                # 计算 response 的 token 长度
+                response_tokens = tokenizer(response, add_special_tokens=False)["input_ids"]
+                resp_len = len(response_tokens)
+
+                # 获取该样本的实际长度（不含 padding）
+                real_len = inputs["attention_mask"][i].sum().item()
+
+                # 将 response 之前的所有 token 设为 -100 (ignore index)
+                # 注意：response 总是位于序列末尾（在生成文本之前）
+                if real_len > resp_len:
+                    labels[i, :real_len - resp_len] = -100
+                else:
+                    # 极端情况：response 比实际长度还长（通常是因为 special tokens 差异）
+                    # 这种情况下至少要把非 response 的部分 mask 掉
+                    # 为了安全，我们假设回复在最后，前面的都 mask
+                    pass 
+
+                # 确保 padding 部分也是 -100
+                labels[i, real_len:] = -100
             
             inputs["labels"] = labels
             return inputs
 
         # Initialize SFTTrainer
+        # Note: We use a custom data_collator, so passing 'tokenizer' is not strictly required
+        # and avoids compatibility issues with different trl versions.
         trainer = SFTTrainer(
             model=qwen_model,
-            tokenizer=tokenizer,
             train_dataset=dataloader.dataset,
             data_collator=qwen_data_collator,
             args=sft_config,
@@ -504,7 +525,7 @@ class Trainer:
                     text_prompt = batch["text_prompts"][i]
                     response = batch.get("responses", [None] * batch_size)[i]
                     if response is None:
-                        response = "好的，我将为您放置物体。[SEG]"
+                        response = "好的，我将为您放置物体。<SEG>"
 
                     # 构造输入
                     messages, image_list = self.model.qwen_encoder._build_message(
@@ -704,7 +725,7 @@ class Trainer:
         # Stage 1: SFTTrainer handles its own loop
         if self.stage == "lm":
             train_metrics = self.run_sft_stage1(train_loader)
-            # SFTTrainer 训练结束后，尝试提取 [SEG] 特征
+            # SFTTrainer 训练结束后，尝试提取 <SEG> 特征
             seg_dir = Path(self.config.get("data", {}).get("root_dir", "data/")) / "seg_features"
             self._extract_seg_features(train_loader, seg_dir)
             if val_loader is not None:
@@ -763,19 +784,19 @@ class Trainer:
 
     @torch.no_grad()
     def _extract_seg_features(self, dataloader: DataLoader, output_dir: Path) -> None:
-        """Stage 1 训练完后, 自动提取 [SEG] hidden states 保存到 data/seg_features/。"""
+        """Stage 1 训练完后, 自动提取 <SEG> hidden states 保存到 data/seg_features/。"""
         output_dir.mkdir(parents=True, exist_ok=True)
         self.model.eval()
         self.model.qwen_encoder.load_model()
 
         print(f"\n{'=' * 60}")
-        print(f"提取 [SEG] features → {output_dir}")
+        print(f"提取 <SEG> features → {output_dir}")
         print(f"{'=' * 60}")
 
         count = 0
         dataset = dataloader.dataset
 
-        for idx in tqdm(range(len(dataset)), desc="提取 [SEG]", leave=False):
+        for idx in tqdm(range(len(dataset)), desc="提取 <SEG>", leave=False):
             sample = dataset[idx]
             ann = dataset.annotations[idx]
             sample_id = ann.get("id", ann.get("scene_id", f"{dataset.split}_{idx:06d}"))

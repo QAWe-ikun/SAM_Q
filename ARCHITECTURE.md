@@ -150,9 +150,9 @@ embeddings = encoder(object_image=pil_img, text_prompt="Place near window")
 - Flash attention support (CUDA)
 - Conversation-format input
 
-**[SEG] Token Bridging (SA2VA-style)**:
+**<SEG> Token Bridging (SA2VA-style)**:
 
-The encoder supports a special `[SEG]` token mode that bridges Qwen3-VL reasoning to SAM3 segmentation:
+The encoder supports a special `<SEG>` token mode that bridges Qwen3-VL reasoning to SAM3 segmentation:
 
 ```python
 # Single SEG (most common): [B, 4096]
@@ -164,11 +164,11 @@ seg_hidden, _ = encoder.generate_with_seg(obj_img, "放椅子和桌子", force_o
 
 How it works:
 ```
-Input: [Image Tokens] [Text Tokens] [SEG]
+Input: [Image Tokens] [Text Tokens] <SEG>
        ↓
-Self-Attention (causal mask): [SEG] attends to all preceding tokens
+Self-Attention (causal mask): <SEG> attends to all preceding tokens
        ↓
-[SEG] Hidden State = attend(image_tokens + text_tokens)
+<SEG> Hidden State = attend(image_tokens + text_tokens)
        → NOT a fixed vector; dynamically computed from context
        ↓
 SEG Projector → SAM3 Decoder → Placement Mask
@@ -176,8 +176,8 @@ SEG Projector → SAM3 Decoder → Placement Mask
 
 Key design decisions:
 - `[SEG0]`~`[SEG63]` are added to the vocabulary as special tokens
-- `force_only=True` (training): directly append [SEG] and extract hidden state in one pass
-- `force_only=False` (inference): model may naturally generate [SEG]; fallback to force-append
+- `force_only=True` (training): directly append <SEG> and extract hidden state in one pass
+- `force_only=False` (inference): model may naturally generate <SEG>; fallback to force-append
 - Hidden states vary with input — the model learns *when* and *where* to trigger segmentation
 
 **LoRA/QLoRA Fine-Tuning**:
@@ -311,12 +311,12 @@ Update H-MVP
 
 #### Unified Architecture (Parallel SAM3 + SEGActionHead)
 
-**Core Idea**: Single `[SEG]` token feeds two parallel branches:
+**Core Idea**: Single `<SEG>` token feeds two parallel branches:
 - **SAM3 Decoder**: Generates placement heatmap (2D position)
 - **SEGActionHead**: Generates rotation angle + relative scale
 
 ```
-Qwen3-VL → [SEG] hidden state [B, 4096]
+Qwen3-VL → <SEG> hidden state [B, 4096]
     ↓
     ├→ CrossModalAdapter → SAM3 Decoder → Heatmap [B, num_candidates, H, W]
     └→ SEGActionHead → rotation [B] + scale [B]
@@ -328,7 +328,7 @@ Qwen3-VL → [SEG] hidden state [B, 4096]
     "heatmap": [B, num_candidates, H, W],   # SAM3 placement heatmap
     "rotation_deg": [B],                     # -180 to 180 degrees
     "scale_relative": [B],                   # 0.5x to 2.0x
-    "seg_hidden": [B, 4096],                # [SEG] token hidden state
+    "seg_hidden": [B, 4096],                # <SEG> token hidden state
 }
 ```
 
@@ -363,11 +363,11 @@ output = model.predict(
 
 #### SEGActionHead
 
-**Purpose**: Decode `[SEG]` hidden state into rotation and scale.
+**Purpose**: Decode `<SEG>` hidden state into rotation and scale.
 
 **Architecture**:
 ```
-[SEG] hidden [B, 4096]
+<SEG> hidden [B, 4096]
     ↓
 Linear(4096→512) → LayerNorm → GELU
     ↓                    ↓

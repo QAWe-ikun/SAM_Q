@@ -10,7 +10,7 @@ physical scale through image resolution, without explicit size injection.
 - Scene scaled similarly
 - VLM sees: "object is X pixels, scene is Y pixels" → natural scale understanding
 
-Uses [SEG] token for dual purpose:
+Uses <SEG> token for dual purpose:
   - Segmentation: triggers SAM3 mask generation
   - Action output: position (heatmap) + rotation + scale
 """
@@ -101,7 +101,7 @@ def rotation_6d_to_matrix(rot_6d: torch.Tensor) -> torch.Tensor:
 
 class SEGActionHead(nn.Module):
     """
-    Action head that decodes [SEG] token hidden state into:
+    Action head that decodes <SEG> token hidden state into:
       - Coarse placement heatmap (position)
       - 6D rotation representation (Zhou et al. 2019)
       - Relative scale (1.0 = original size, 0.5-2.0 range)
@@ -116,7 +116,7 @@ class SEGActionHead(nn.Module):
         self.hidden_dim = hidden_dim
         self.heatmap_size = heatmap_size
 
-        # Project [SEG] hidden to action features
+        # Project <SEG> hidden to action features
         self.proj = nn.Sequential(
             nn.Linear(hidden_dim, 512),
             nn.LayerNorm(512),
@@ -142,7 +142,7 @@ class SEGActionHead(nn.Module):
     ) -> Dict[str, torch.Tensor]:
         """
         Args:
-            seg_hidden: [B, hidden_dim] hidden state at [SEG] position
+            seg_hidden: [B, hidden_dim] hidden state at <SEG> position
 
         Returns:
             Dict with heatmap, rotation_6d, rotation_matrix, scale
@@ -177,10 +177,10 @@ class UnifiedScaleVLA(nn.Module):
 
     Architecture:
         Object (scaled to physical size) ──┐
-                                           ├→ Qwen3-VL → [SEG] token → Action Head
+                                           ├→ Qwen3-VL → <SEG> token → Action Head
         Scene  (scaled to physical size) ──┘
 
-    The [SEG] token's hidden state contains the full reasoning about:
+    The <SEG> token's hidden state contains the full reasoning about:
       - Where to place (decoded to heatmap)
       - How to rotate (decoded to angle)
       - How to scale (decoded to relative size)
@@ -256,10 +256,10 @@ class UnifiedScaleVLA(nn.Module):
         self, seg_hidden: torch.Tensor, scene_size_meters: float
     ) -> Dict[str, torch.Tensor]:
         """
-        Decode [SEG] hidden state into physical actions.
+        Decode <SEG> hidden state into physical actions.
 
         Args:
-            seg_hidden: [B, hidden_dim] from Qwen3-VL at [SEG] position
+            seg_hidden: [B, hidden_dim] from Qwen3-VL at <SEG> position
             scene_size_meters: Scene physical size in meters
 
         Returns:

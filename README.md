@@ -28,7 +28,7 @@
 ### Key Features
 
 - **Language-Guided Placement**: Natural language instructions control placement semantics
-- **[SEG] Token Parallel Output**: Single `[SEG]` token feeds two parallel branches — SAM3 Decoder (placement heatmap) + SEGActionHead (rotation + scale)
+- **<SEG> Token Parallel Output**: Single `<SEG>` token feeds two parallel branches — SAM3 Decoder (placement heatmap) + SEGActionHead (rotation + scale)
 - **Cross-Modal Fusion**: Novel adapter architecture bridges Qwen3-VL (4096D) and SAM3 (256D) embedding spaces
 - **LoRA/QLoRA Fine-Tuning**: Parameter-efficient tuning with multi-SEG token support; trainable <0.1% of Qwen3-VL parameters
 - **Hierarchical Collision Detection**: H-MVP (Hierarchical Multi-View Projection) enables 3D-aware placement
@@ -100,8 +100,8 @@
 - **Purpose**: Replaces SAM3's text encoder with multimodal vision-language capabilities
 - **Input**: Object image + text instruction in conversation format
 - **Output**: 4096-dimensional token embeddings
-- **[SEG] Token Support**:
-  - Single `[SEG]` mode: one token for single placement prediction
+- **<SEG> Token Support**:
+  - Single `<SEG>` mode: one token for single placement prediction
   - Multi `[SEG0]`~`[SEG63]` mode: SA2VA-style for multiple placements or complex spatial reasoning
   - Hidden states are **not fixed vectors** — they are dynamically computed via self-attention over the full image + text context
 - **LoRA/QLoRA Fine-Tuning**:
@@ -134,14 +134,14 @@
 
 #### 5. VLA Action Output (Parallel with SAM3)
 - **Purpose**: Outputs position (heatmap), rotation, and scale for intelligent placement
-- **Architecture**: `[SEG]` token feeds two parallel branches:
+- **Architecture**: `<SEG>` token feeds two parallel branches:
   ```
-  Qwen3-VL → [SEG] token
+  Qwen3-VL → <SEG> token
       ├→ SAM3 Decoder → placement heatmap (position)
       └→ SEGActionHead → rotation_deg + scale_relative
   ```
 - **Key Design**:
-  - Single `[SEG]` token serves as the shared representation
+  - Single `<SEG>` token serves as the shared representation
   - SAM3 generates the placement heatmap (2D position)
   - `SEGActionHead` generates rotation angle and relative scale
   - Unified `predict()` returns all outputs in one call
@@ -344,27 +344,27 @@ advanced:
 
 ---
 
-## Fine-Tuning Qwen3-VL with [SEG] Tokens
+## Fine-Tuning Qwen3-VL with <SEG> Tokens
 
-SAM-Q supports parameter-efficient fine-tuning of Qwen3-VL using **LoRA** combined with **SA2VA-style [SEG] token bridging**.
+SAM-Q supports parameter-efficient fine-tuning of Qwen3-VL using **LoRA** combined with **SA2VA-style <SEG> token bridging**.
 
 📖 **完整指南**: [docs/FINETUNE_QWEN3VL.md](docs/FINETUNE_QWEN3VL.md)
 
-### How [SEG] Tokens Work
+### How <SEG> Tokens Work
 
-The `[SEG]` token is a special token added to Qwen3-VL's vocabulary. During forward pass:
+The `<SEG>` token is a special token added to Qwen3-VL's vocabulary. During forward pass:
 
 ```
-Input: [Image Tokens] "Place the chair near the table" [SEG]
+Input: [Image Tokens] "Place the chair near the table" <SEG>
        ↓
-Self-Attention (causal mask): [SEG] attends to all preceding tokens
+Self-Attention (causal mask): <SEG> attends to all preceding tokens
        ↓
-[SEG] Hidden State: dynamically computed from image + text context (NOT a fixed vector)
+<SEG> Hidden State: dynamically computed from image + text context (NOT a fixed vector)
        ↓
 SEG Projector → SAM3 Decoder → Placement Mask
 ```
 
-**Key insight**: The [SEG] token's hidden state varies based on input context — it learns *when* and *where* to trigger segmentation through joint training.
+**Key insight**: The <SEG> token's hidden state varies based on input context — it learns *when* and *where* to trigger segmentation through joint training.
 
 ### Multi-SEG Mode
 

@@ -2,7 +2,7 @@
 Placement Model - SAM3 with Qwen3-VL for Object Placement Prediction
 
 Architecture:
-    Qwen3-VL → [SEG] token → 并行输出:
+    Qwen3-VL → <SEG> token → 并行输出:
         ├→ SAM3 Decoder → 摆放位置热力图
         └→ SEGActionHead → 旋转角度 + 缩放比例
 """
@@ -61,10 +61,10 @@ class SAMQPlacementModel(nn.Module):
             sam3_input_dim: SAM3 Detector input dimension. Ignored if stage="lm".
             qwen_hidden_dim: Qwen3-VL hidden dimension
             adapter_hidden_dim: Adapter hidden dimension. Ignored if stage="lm".
-            num_seg_tokens: Number of [SEG] tokens. 1=single placement, >1=multi-placement.
+            num_seg_tokens: Number of <SEG> tokens. 1=single placement, >1=multi-placement.
             device: Device to run model on
             dtype: Data type for model
-            seg_token_config: Config for [SEG] token. Ignored if stage="lm".
+            seg_token_config: Config for <SEG> token. Ignored if stage="lm".
             action_head_config: Config for SEGActionHead. Ignored if stage="lm".
         """
         super().__init__()
@@ -91,7 +91,7 @@ class SAMQPlacementModel(nn.Module):
         self.vla_refinement = None
 
         if sam3_checkpoint_path is not None:
-            # Adapter: [SEG] hidden state → SAM3 prompt embeddings
+            # Adapter: <SEG> hidden state → SAM3 prompt embeddings
             self.adapter = CrossModalAdapter(
                 qwen_dim=qwen_hidden_dim,
                 sam3_dim=sam3_input_dim,
@@ -109,7 +109,7 @@ class SAMQPlacementModel(nn.Module):
                     dropout=seg_cfg.get("dropout", 0.1),
                 )
 
-            # SEGActionHead: [SEG] hidden → rotation + scale (parallel to SAM3)
+            # SEGActionHead: <SEG> hidden → rotation + scale (parallel to SAM3)
             ah_cfg = action_head_config or {}
             heatmap_size = ah_cfg.get("heatmap_size", 64)
             self.seg_action_head = SEGActionHead(
@@ -124,7 +124,7 @@ class SAMQPlacementModel(nn.Module):
                 dtype=torch.bfloat16,  # SAM3 uses bfloat16
             )
 
-            # [SEG] token config
+            # <SEG> token config
             self._seg_force_only = seg_token_config.get("force_only_in_training", True) if seg_token_config else True
             self._seg_max_tokens = seg_token_config.get("max_generate_tokens", 128) if seg_token_config else 128
 
@@ -244,15 +244,15 @@ class SAMQPlacementModel(nn.Module):
         **kwargs,
     ) -> Dict[str, torch.Tensor]:
         """
-        Forward pass: [SEG] token → parallel outputs.
+        Forward pass: <SEG> token → parallel outputs.
 
         Args:
             plane_image: 房间俯视图（PIL.Image 或 Tensor）
             text_prompt: 文本指令
             images: Qwen3-VL 图片列表（seg_hidden 为 None 时需要）
-            seg_hidden: 预提取的 [SEG] hidden state [B, hidden_dim]（有值时跳过 Qwen3-VL）
+            seg_hidden: 预提取的 <SEG> hidden state [B, hidden_dim]（有值时跳过 Qwen3-VL）
 
-        Qwen3-VL → [SEG] token
+        Qwen3-VL → <SEG> token
             ├→ SAM3 Decoder → placement heatmap
             └→ SEGActionHead → rotation + scale
 
@@ -266,13 +266,13 @@ class SAMQPlacementModel(nn.Module):
                 - heatmap: [B, 1, H_heatmap, W_heatmap] placement heatmap
                 - rotation_deg: [B] rotation angle (-180 to 180)
                 - scale_relative: [B] relative scale (0.5 to 2.0)
-                - seg_hidden: [B, 4096] [SEG] token hidden state
+                - seg_hidden: [B, 4096] <SEG> token hidden state
         """
         self.load_all() 
         # 1. Encode plane image with SAM3 vision backbone
         backbone_out = self._encode_plane_image(plane_image)
 
-        # 2. [SEG] hidden state: 预提取 or Qwen3-VL 在线推理
+        # 2. <SEG> hidden state: 预提取 or Qwen3-VL 在线推理
         if seg_hidden is None:
             seg_hidden, _ = self.qwen_encoder.generate_with_seg(
                 text_prompt=text_prompt,
@@ -288,7 +288,7 @@ class SAMQPlacementModel(nn.Module):
             seg_hidden = seg_hidden.to(self.device)
 
         # === Parallel Branch 1: SAM3 → Heatmap ===
-        # Project [SEG] to SAM3 prompt space
+        # Project <SEG> to SAM3 prompt space
         seg_3d = seg_hidden.unsqueeze(1)  # [B, 1, 4096]
         text_embeddings = self.adapter(seg_3d.to(device=self.device, dtype=torch.float32))
 

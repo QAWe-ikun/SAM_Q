@@ -2,10 +2,10 @@
 SEG Token Projector Module
 ============================
 
-SA2VA-inspired projector that maps the [SEG] token hidden state
+SA2VA-inspired projector that maps the <SEG> token hidden state
 from Qwen3-VL to SAM3 prompt embedding space.
 
-The [SEG] token's hidden state encodes the full semantic understanding
+The <SEG> token's hidden state encodes the full semantic understanding
 of the placement instruction (after the LLM has attended to all prior context).
 This projector expands it into multiple query tokens for the SAM3 detector.
 """
@@ -16,13 +16,13 @@ import torch.nn as nn
 
 class SegTokenProjector(nn.Module):
     """
-    Projects [SEG] token hidden state to SAM3 prompt tokens.
+    Projects <SEG> token hidden state to SAM3 prompt tokens.
 
     Architecture:
-        [SEG] hidden state [B, qwen_dim]
+        <SEG> hidden state [B, qwen_dim]
             -> Input projection + LayerNorm + GELU
         Learnable queries [num_output_tokens, hidden_dim]
-            -> Cross-attention (queries attend to projected [SEG] state)
+            -> Cross-attention (queries attend to projected <SEG> state)
             -> Output projection -> [B, num_output_tokens, sam3_dim]
 
     Output shape matches CrossModalAdapter so SAM3 detector interface is unchanged.
@@ -40,7 +40,7 @@ class SegTokenProjector(nn.Module):
 
         self.num_output_tokens = num_output_tokens
 
-        # Project [SEG] hidden state to hidden space
+        # Project <SEG> hidden state to hidden space
         self.input_proj = nn.Sequential(
             nn.Linear(qwen_dim, hidden_dim),
             nn.LayerNorm(hidden_dim),
@@ -50,7 +50,7 @@ class SegTokenProjector(nn.Module):
         # Learnable output queries (expand single token to multiple)
         self.query_embed = nn.Embedding(num_output_tokens, hidden_dim)
 
-        # Cross-attention: queries attend to projected [SEG] state
+        # Cross-attention: queries attend to projected <SEG> state
         self.cross_attn = nn.MultiheadAttention(
             embed_dim=hidden_dim,
             num_heads=8,
@@ -69,7 +69,7 @@ class SegTokenProjector(nn.Module):
     def forward(self, seg_hidden_state: torch.Tensor) -> torch.Tensor:
         """
         Args:
-            seg_hidden_state: [B, qwen_dim] hidden state at [SEG] position
+            seg_hidden_state: [B, qwen_dim] hidden state at <SEG> position
 
         Returns:
             output: [B, num_output_tokens, sam3_dim]
@@ -81,7 +81,7 @@ class SegTokenProjector(nn.Module):
         batch_size = seg_hidden_state.size(0)
         queries = self.query_embed.weight.unsqueeze(0).expand(batch_size, -1, -1)
 
-        # Cross-attention: queries attend to single projected [SEG] token
+        # Cross-attention: queries attend to single projected <SEG> token
         attended, _ = self.cross_attn(
             query=queries,
             key=projected,

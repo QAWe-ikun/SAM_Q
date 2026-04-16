@@ -2,7 +2,7 @@
 # SAM-Q Inference Configuration
 # ============================================================================
 # Config for Basic Inference (predict command).
-# [SEG] token → parallel outputs:
+# <SEG> token → parallel outputs:
 #   ├→ SAM3 Decoder    → placement heatmap (position)
 #   └→ SEGActionHead   → rotation_6d + rotation_matrix + scale_relative
 # ============================================================================
@@ -11,7 +11,7 @@
 # Model Architecture
 # ----------------------------------------------------------------------------
 model:
-  # [SEG] tokens: 1=single placement, >1=multi-placement
+  # <SEG> tokens: 1=single placement, >1=multi-placement
   num_seg_tokens: 1
 
   # Qwen3-VL Encoder
@@ -32,7 +32,7 @@ model:
     num_queries: 64
     dropout: 0.1
 
-  # [SEG] Token config
+  # <SEG> Token config
   seg_token:
     max_generate_tokens: 128
     dropout: 0.1

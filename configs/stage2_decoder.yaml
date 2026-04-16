@@ -1,7 +1,7 @@
 # ============================================================================
 # Stage 2: Adapter + SAM3 Decoder Training
 # ============================================================================
-# Goal: Train [SEG] hidden state → physical space mapping
+# Goal: Train <SEG> hidden state → physical space mapping
 # Loss: Dice + BCE (heatmap) + rotation L2 + scale L2
 # Trainable: Adapter + SAM3 Decoder (Projector + SEGActionHead)
 # Requires: Stage 1 LoRA checkpoint
@@ -15,7 +15,7 @@ experiment:
 data:
   root_dir: "data/"
   ann_file: "annotations.json"
-  seg_feature_dir: "data/seg_features/"  # 预提取的 [SEG] hidden states
+  seg_feature_dir: "data/seg_features/"  # 预提取的 <SEG> hidden states
   batch_size: 4
   num_workers: 4
   pin_memory: true

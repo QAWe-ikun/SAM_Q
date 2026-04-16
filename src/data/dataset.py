@@ -51,7 +51,7 @@ class ObjectPlacementDataset(Dataset):
             transform: Optional transforms to apply
             split: Dataset split ('train', 'val', 'test')
             ann_file: Annotation filename
-            seg_feature_dir: Directory containing pre-extracted [SEG] hidden states (for Stage 2)
+            seg_feature_dir: Directory containing pre-extracted <SEG> hidden states (for Stage 2)
         """
         self.data_dir = Path(data_dir)
         self.transform = transform
@@ -113,14 +113,14 @@ class ObjectPlacementDataset(Dataset):
 
         # Get text prompt and optional stage1 response
         text_prompt = ann.get("text_prompt", "Place the object here.")
-        # stage1 conversation response (contains [SEG] token)
+        # stage1 conversation response (contains <SEG> token)
         response = ann.get("response", None)
 
         # Stage 2 GT: 6D rotation [6] + scale [1] (optional)
         rotation_6d = torch.tensor(ann["rotation_6d"], dtype=torch.float32) if "rotation_6d" in ann else None
         scale = torch.tensor([ann["scale"]], dtype=torch.float32) if "scale" in ann else None
 
-        # Pre-extracted [SEG] hidden state (for Stage 2)
+        # Pre-extracted <SEG> hidden state (for Stage 2)
         seg_hidden = None
         if self.seg_feature_dir is not None:
             sample_id = ann.get("id", ann.get("scene_id", f"{self.split}_{idx:06d}"))

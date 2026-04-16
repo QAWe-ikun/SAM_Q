@@ -1,7 +1,7 @@
 # ============================================================================
 # Stage 1: Qwen3-VL LoRA Fine-tuning
 # ============================================================================
-# Goal: Teach Qwen3-VL to output [SEG] token based on text + images
+# Goal: Teach Qwen3-VL to output <SEG> token based on text + images
 # Loss: Language modeling (next-token prediction)
 # Trainable: Qwen3-VL LoRA only (~0.1% of 8B params)
 # ============================================================================
@@ -9,12 +9,11 @@
 experiment:
   name: "stage1_qwen_lora"
   seed: 42
-  description: "Stage 1: Fine-tune Qwen3-VL with LoRA to output [SEG] token"
+  description: "Stage 1: Fine-tune Qwen3-VL with LoRA to output <SEG> token"
 
 data:
   root_dir: "data/"
   ann_file: "annotations.json"
-  num_workers: 0  # SFTTrainer 不使用 DataLoader，此参数仅用于验证阶段
   pin_memory: false
 
 model:
@@ -79,7 +78,7 @@ scheduler:
   warmup_epochs: 1
 
 training:
-  num_epochs: 3  # 2-5 epochs typically sufficient
+  num_epochs: 30  # 2-5 epochs typically sufficient
   device: "cuda"
   save_dir: "outputs/stage1_lora/"
   save_best: true

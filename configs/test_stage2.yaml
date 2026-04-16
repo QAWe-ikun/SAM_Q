@@ -4,7 +4,7 @@
 # 前置条件:
 #   1. 已完成 Stage 1: python main.py train --config configs/test_stage1.yaml
 #   2. 已预提取: python scripts/extract_seg_features.py --config configs/test_stage1.yaml --output_dir data/seg_features/
-# 本阶段不加载 Qwen3-VL，直接读取预提取的 [SEG] hidden states
+# 本阶段不加载 Qwen3-VL，直接读取预提取的 <SEG> hidden states
 # ============================================================================
 
 experiment:
