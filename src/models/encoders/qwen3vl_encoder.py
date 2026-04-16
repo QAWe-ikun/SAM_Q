@@ -672,6 +672,59 @@ class Qwen3VLEncoder(nn.Module):
         self.model = self.model.merge_and_unload()
         print("[Qwen3VLEncoder] LoRA weights merged into base model.")
 
+    def generate_response(
+        self,
+        text_prompt: str,
+        images: Optional[List[Image.Image]] = None,
+        max_new_tokens: int = 128,
+    ) -> str:
+        """
+        Generate text response from Qwen3-VL.
+
+        Args:
+            text_prompt: User prompt with optional <image> placeholders
+            images: List of PIL images
+            max_new_tokens: Maximum tokens to generate
+
+        Returns:
+            Generated text response
+        """
+        self.load_model(use_cache=True)
+
+        messages, image_list = self._build_message(
+            text_prompt=text_prompt,
+            images=images,
+        )
+
+        # Apply chat template
+        text = self.processor.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True,
+        )
+
+        # Tokenize and process
+        inputs = self.processor(
+            text=[text],
+            images=image_list if image_list else None,
+            return_tensors="pt",
+        ).to(self.device)
+
+        # Generate response
+        with torch.no_grad():
+            outputs = self.model.generate(
+                **inputs,
+                max_new_tokens=max_new_tokens,
+                do_sample=False,
+            )
+
+        # Decode only the generated part (exclude input tokens)
+        input_len = inputs["input_ids"].shape[1]
+        generated_tokens = outputs[0, input_len:]
+        response = self.processor.decode(generated_tokens, skip_special_tokens=True)
+
+        return response
+
 
 class Qwen3VLEncoderWithProjection(nn.Module):
     """

@@ -34,15 +34,28 @@ def visualize_results(
         Matplotlib figure
     """
     fig, axes = plt.subplots(1, 3, figsize=figsize)
-    
+
     # Convert PIL image to numpy if needed
     if isinstance(plane_image, Image.Image):
         plane_np = np.array(plane_image)
     else:
         plane_np = plane_image
 
-    # Panel 1: Original image
+    # Panel 1: Original image + Qwen response text
     axes[0].imshow(plane_np)
+    
+    # Add Qwen response as text overlay
+    qwen_text = results.get("qwen_response", "N/A")
+    if qwen_text:
+        # Truncate if too long
+        if len(qwen_text) > 100:
+            qwen_text = qwen_text[:97] + "..."
+        textstr = f"Qwen Response:\n{qwen_text}"
+        props = dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.8)
+        axes[0].text(0.02, 0.98, textstr, transform=axes[0].transAxes,
+                    fontsize=10, verticalalignment='top',
+                    bbox=props, color='black')
+    
     axes[0].set_title("Plane/Room View", fontsize=14, fontweight="bold")
     axes[0].axis("off")
 
@@ -89,8 +102,9 @@ def visualize_results(
         axes[2].add_patch(rect)
 
     axes[2].set_title(
-        f"Predicted Placement Masks ({len(results['boxes'])} regions)",
-        fontsize=14,
+        f"Predicted Placement Masks ({len(results.get('boxes', []))} regions)\n"
+        f"Rot: {results.get('rotation_deg', 0):.1f}° | Scale: {results.get('scale_relative', 1):.2f}x",
+        fontsize=12,
         fontweight="bold"
     )
     axes[2].axis("off")

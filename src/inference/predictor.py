@@ -141,7 +141,7 @@ class PlacementPredictor:
         with torch.no_grad():
             # Build input for model
             images = [plane_image, object_image]
-            
+
             output = self.model(
                 plane_image=plane_image,
                 text_prompt=text_prompt,
@@ -153,6 +153,19 @@ class PlacementPredictor:
         rotation_deg = output.get("rotation_deg")  # [B] or scalar
         scale_relative = output.get("scale_relative")  # [B] or scalar
 
+        # Generate Qwen3-VL text response (if available)
+        qwen_response = None
+        if self.model.qwen_encoder is not None and self.model.qwen_encoder.model is not None:
+            try:
+                qwen_response = self.model.qwen_encoder.generate_response(
+                    text_prompt=text_prompt,
+                    images=images,
+                    max_new_tokens=128,
+                )
+            except Exception as e:
+                print(f"[Warning] Qwen text generation failed: {e}")
+                qwen_response = None
+
         # Postprocess
         results = self._postprocess(
             heatmap=heatmap,
@@ -162,6 +175,10 @@ class PlacementPredictor:
             threshold=th,
             return_heatmap_raw=return_heatmap_raw,
         )
+
+        # Add Qwen response to results
+        if qwen_response is not None:
+            results["qwen_response"] = qwen_response
 
         return results
 
