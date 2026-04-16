@@ -88,3 +88,4 @@ training:
   save_interval: 1  # Save every N epochs (when save_epoch=true)
   log_interval: 10
   early_stopping: false
+  gradient_accumulation_steps: 8  # 等效增大 batch size (batch_size * 8)

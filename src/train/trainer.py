@@ -251,26 +251,36 @@ class Trainer:
         """
         Stage 1 训练: next-token prediction loss, 教 Qwen3-VL 输出 [SEG]。
 
+        支持 HuggingFace 风格的梯度累积:
+            loss = outputs.loss / grad_accum_steps
+            loss.backward()
+            if step % grad_accum_steps == 0:
+                optimizer.step()
+                optimizer.zero_grad()
+
         Dataset 需要提供 `response` 字段（含 [SEG] 的 GPT 回复）。
         如果 dataset 没有 `response`, 自动使用 "好的, 我将为您放置物体。[SEG]" 作为目标。
         """
         # Model already loaded in enable_finetuning()
         self.model.train()
 
+        # 获取梯度累积步数（从 config 读取，默认 1）
+        training_config = self.config.get("training", {})
+        grad_accum_steps = training_config.get("gradient_accumulation_steps", 1)
+
         tokenizer = self.model.qwen_encoder.processor.tokenizer
         qwen_model = self.model.qwen_encoder.model
 
         total_loss = 0.0
         num_batches = 0
+        accumulated_grads = 0  # 当前累积步数
 
         progress_bar = tqdm(dataloader, desc=f"[Stage1] Epoch {self.current_epoch + 1}", leave=False)
 
         for batch_idx, batch in enumerate(progress_bar):
-            self.optimizer.zero_grad()
-
             batch_images = batch["images"]  # List[List[Tensor]]
             batch_size = len(batch_images)
-            accumulated_loss = 0.0
+            batch_loss = 0.0
 
             for i in range(batch_size):
                 sample_images = batch_images[i]  # List[Tensor]
@@ -312,22 +322,33 @@ class Trainer:
                 )
                 loss = outputs.loss
                 if loss is not None:
-                    # 立即 backward 并累积梯度（避免 computation graph 累积）
-                    (loss / batch_size).backward()
-                    accumulated_loss += loss.item()
+                    # 梯度累积：除以 grad_accum_steps
+                    batch_loss += loss.item() / grad_accum_steps
+                    (loss / grad_accum_steps).backward()
 
-            # 梯度裁剪
+            # 梯度累积：达到累积步数后才更新参数
+            accumulated_grads += 1
+            if accumulated_grads >= grad_accum_steps:
+                torch.nn.utils.clip_grad_norm_(
+                    filter(lambda p: p.requires_grad, self.model.parameters()), 1.0
+                )
+                self.optimizer.step()
+                self.optimizer.zero_grad()
+                accumulated_grads = 0
+
+            total_loss += batch_loss / batch_size
+            num_batches += 1
+
+            if batch_idx % log_interval == 0:
+                progress_bar.set_postfix({"loss": f"{batch_loss / batch_size:.4f}"})
+
+        # 清理剩余梯度（如果最后没达到 grad_accum_steps）
+        if accumulated_grads > 0:
             torch.nn.utils.clip_grad_norm_(
                 filter(lambda p: p.requires_grad, self.model.parameters()), 1.0
             )
             self.optimizer.step()
-
-            avg_loss = accumulated_loss / batch_size
-            total_loss += avg_loss
-            num_batches += 1
-
-            if batch_idx % log_interval == 0:
-                progress_bar.set_postfix({"loss": f"{avg_loss:.4f}"})
+            self.optimizer.zero_grad()
 
         return {"train_loss": total_loss / max(num_batches, 1)}
 
