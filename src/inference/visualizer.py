@@ -14,8 +14,9 @@ from matplotlib.patches import Rectangle
 import matplotlib
 
 # Configure Chinese font (Noto Sans SC is available on this system)
-matplotlib.rcParams['font.sans-serif'] = ['Noto Sans SC', 'DejaVu Sans']
-matplotlib.rcParams['axes.unicode_minus'] = False
+matplotlib.rcParams['font.sans-serif'] = ['SimHei'] #font.sans-serif参数来指定"SimHei"字体
+matplotlib.rcParams['axes.unicode_minus'] = False	#axes.unicode_minus参数用于显示负号
+
 
 def visualize_results(
     plane_image: Union[Image.Image, np.ndarray],
@@ -51,10 +52,17 @@ def visualize_results(
     # Add Qwen response as text overlay
     qwen_text = results.get("qwen_response", "N/A")
     if qwen_text:
-        # Truncate if too long
-        if len(qwen_text) > 100:
-            qwen_text = qwen_text[:97] + "..."
-        textstr = f"Qwen Response:\n{qwen_text}"
+        # Check if text contains non-ASCII characters (Chinese, etc.)
+        # WSL may not have CJK fonts, so use placeholder
+        has_cjk = any(ord(c) > 127 for c in qwen_text)
+        
+        if has_cjk:
+            # Truncate to first 50 chars for display
+            display_text = qwen_text[:50] + "..." if len(qwen_text) > 50 else qwen_text
+            textstr = f"Qwen Response:\n{display_text}"
+        else:
+            textstr = f"Qwen Response:\n{qwen_text[:80]}"
+        
         props = dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.8)
         axes[0].text(0.02, 0.98, textstr, transform=axes[0].transAxes,
                     fontsize=10, verticalalignment='top',
