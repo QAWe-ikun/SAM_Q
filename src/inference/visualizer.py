@@ -5,9 +5,6 @@ Result Visualization for SAM-Q
 Provides visualization tools for inference results.
 """
 
-import warnings
-warnings.filterwarnings('ignore', category=UserWarning, module='matplotlib.font_manager')
-
 import numpy as np
 from PIL import Image
 from pathlib import Path
@@ -16,7 +13,8 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
 import matplotlib
 
-matplotlib.rcParams['font.sans-serif'] = ['WenQuanYi Micro Hei', 'SimHei', 'Noto Sans CJK SC']
+# Configure Chinese font (Noto Sans SC is available on this system)
+matplotlib.rcParams['font.sans-serif'] = ['Noto Sans SC', 'DejaVu Sans']
 matplotlib.rcParams['axes.unicode_minus'] = False
 
 def visualize_results(
