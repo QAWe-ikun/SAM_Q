@@ -805,20 +805,26 @@ class Trainer:
             )
             print(f"Epoch {metrics['epoch']:3d} | {metrics_str}")
 
-            # Save checkpoint
+            # Determine if this is the best model so far
             val_loss = val_metrics.get("val_loss", float("inf"))
-            self._save_checkpoint(epoch, val_loss)
+            is_best = val_loss < self.best_val_loss
+
+            # Update best_val_loss immediately
+            if is_best:
+                self.best_val_loss = val_loss
 
             # Early stopping
             if self.early_stopping:
-                if val_loss < self.best_val_loss:
-                    self.best_val_loss = val_loss
+                if is_best:
                     self.patience_counter = 0
                 else:
                     self.patience_counter += 1
                     if self.patience_counter >= self.patience:
                         print(f"\nEarly stopping at epoch {epoch + 1}")
                         break
+
+            # Save checkpoint
+            self._save_checkpoint(epoch, val_loss, is_best)
 
         # Save final checkpoint
         self._save_checkpoint("final", float("inf"))
@@ -865,16 +871,15 @@ class Trainer:
 
         print(f"完成: {count} 个特征已保存到 {output_dir}")
 
-    def _save_checkpoint(self, epoch: Any, val_loss: float) -> None:
+    def _save_checkpoint(self, epoch: Any, val_loss: float, is_best: bool = False) -> None:
         """
         Save model checkpoint.
 
         Args:
             epoch: Current epoch
             val_loss: Validation loss
+            is_best: Whether this is the best model so far (updates self.best_val_loss)
         """
-        is_best = val_loss < self.best_val_loss
-
         if is_best:
             self.best_val_loss = val_loss
 
