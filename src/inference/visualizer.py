@@ -13,9 +13,10 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
 import matplotlib
 
-# Configure Chinese font (Noto Sans SC is available on this system)
-matplotlib.rcParams['font.sans-serif'] = ['SimHei'] #font.sans-serif参数来指定"SimHei"字体
-matplotlib.rcParams['axes.unicode_minus'] = False	#axes.unicode_minus参数用于显示负号
+# Configure Chinese font
+# WSL usually has WenQuanYi Micro Hei installed via apt-get install fonts-wqy-microhei
+matplotlib.rcParams['font.sans-serif'] = ['WenQuanYi Micro Hei', 'SimHei', 'Noto Sans CJK SC', 'DejaVu Sans']
+matplotlib.rcParams['axes.unicode_minus'] = False
 
 
 def visualize_results(
