@@ -798,14 +798,6 @@ class Trainer:
             train_loader: Training DataLoader
             val_loader: Validation DataLoader (optional)
         """
-        training_config = self.config.get("training", {})
-        num_epochs = training_config.get("num_epochs", 100)
-        
-        print(f"\n{'='*60}")
-        print(f"Starting training for {num_epochs} epochs")
-        print(f"Output directory: {self.output_dir}")
-        print(f"{'='*60}\n")
-
         # Stage 1: SFTTrainer handles its own loop
         if self.stage == "lm":
             self.run_sft_stage1(train_loader)

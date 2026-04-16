@@ -271,6 +271,7 @@ def run_predict(args):
     adapter_config = config.get("adapter", model_config.get("adapter", {}))
     action_head_config = config.get("action_head", model_config.get("action_head", {}))
 
+    # Initialize model
     model = SAMQPlacementModel(
         sam3_checkpoint_path=sam3_config.get("checkpoint_path"),
         qwen_model_name=qwen_config.get("model_name"),
@@ -284,7 +285,25 @@ def run_predict(args):
     )
 
     # Load trained weights
-    model.load_all(eval_mode=True)  # Load Qwen + SAM3 + LoRA components
+    model.load_all(eval_mode=True)  # Initialize Qwen + SAM3 structures
+
+    # Load Stage 2 Checkpoint (fix key mismatch: 'backbone...' -> 'sam3_loader.model.backbone...')
+    checkpoint = torch.load(args.checkpoint, map_location=device)
+    state_dict = checkpoint.get("model_state_dict", checkpoint)
+    
+    fixed_state_dict = {}
+    sam3_prefixes = ["backbone.", "geometry_encoder.", "transformer.", "segmentation_head.", "dot_prod_scoring."]
+    
+    for k, v in state_dict.items():
+        if any(k.startswith(p) for p in sam3_prefixes):
+            fixed_state_dict[f"sam3_loader.model.{k}"] = v
+        else:
+            fixed_state_dict[k] = v
+            
+    result = model.load_state_dict(fixed_state_dict, strict=False)
+    print(f"Loaded {args.checkpoint}")
+    if result.missing_keys or result.unexpected_keys:
+        print(f"  Note: Some keys did not match (Expected for older checkpoints).")
 
     # Load images
     plane_image = Image.open(args.plane_image).convert("RGB")
