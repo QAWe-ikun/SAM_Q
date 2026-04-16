@@ -251,7 +251,7 @@ class PlacementPredictor:
         Postprocess model outputs.
 
         Args:
-            heatmap: [B, 1, H, W] placement heatmap (logits or sigmoid)
+            heatmap: [B, num_candidates, H, W] placement heatmap (logits or sigmoid)
             rotation_deg: [B] predicted rotation angle
             scale_relative: [B] predicted relative scale
             original_size: Original plane image size (W, H)
@@ -261,12 +261,18 @@ class PlacementPredictor:
         Returns:
             Processed results dictionary
         """
-        # Take first batch item
-        heat = heatmap[0, 0]  # [H, W]
-
-        # Apply sigmoid if logits (values outside 0~1 range)
+        # Handle multi-candidate heatmap [B, num_candidates, H, W]
+        # Select the candidate with highest average probability (best IoU estimate)
+        heat = heatmap[0]  # [num_candidates, H, W]
+        
+        # Apply sigmoid if logits
         if heat.min() < 0 or heat.max() > 1:
             heat = torch.sigmoid(heat)
+        
+        # Select best candidate (highest mean probability = best IoU estimate)
+        candidate_scores = heat.flatten(1).mean(dim=1)  # [num_candidates]
+        best_idx = candidate_scores.argmax().item()
+        heat = heat[best_idx]  # [H, W]
 
         # Resize to original image size
         orig_w, orig_h = original_size
@@ -278,7 +284,7 @@ class PlacementPredictor:
         ).squeeze(0).squeeze(0)  # [H, W]
 
         # Convert to numpy
-        heatmap_np = heat.cpu().numpy()  # [H, W], 0~1
+        heatmap_np = heat.float().cpu().numpy()  # [H, W], 0~1
 
         # Create binary mask
         mask_np = (heatmap_np >= threshold).astype(np.uint8)
@@ -293,6 +299,7 @@ class PlacementPredictor:
             "rotation_deg": rot_deg,
             "scale_relative": scale,
             "image_size": original_size,
+            "best_candidate_idx": best_idx,
         }
 
     def visualize(
