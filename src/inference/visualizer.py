@@ -134,6 +134,8 @@ def visualize_heatmap(
         plane_np = plane_image
 
     ax.imshow(plane_np)
+    if hasattr(heatmap, "cpu"):
+        heatmap = heatmap.cpu().numpy()
     ax.imshow(heatmap, alpha=alpha)
     ax.set_title("Placement Heatmap", fontsize=16, fontweight="bold")
     ax.axis("off")
