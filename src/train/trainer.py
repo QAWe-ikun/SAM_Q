@@ -903,7 +903,42 @@ class Trainer:
 
         # Save final checkpoint
         self._save_checkpoint("final", float("inf"))
+        
+        # If Stage 2, ensure split weights are also saved for the final checkpoint
+        if self.stage == "placement" and self.model.sam3_loader is not None:
+            self._save_split_checkpoint(suffix="_final")
+            
         print(f"\nTraining completed! Results saved to: {self.output_dir}")
+
+    def _save_split_checkpoint(self, suffix: str = "") -> None:
+        """
+        Separately save Adapter and SAM3 weights.
+        Useful for inference or modular deployment.
+        """
+        if not self.model.sam3_loader:
+            return
+
+        state_dict = self.model.state_dict()
+        adapter_state = {}
+        sam3_state = {}
+
+        for k, v in state_dict.items():
+            # Adapter parts
+            if any(k.startswith(p) for p in ["adapter.", "seg_projector.", "seg_action_head."]):
+                adapter_state[k] = v
+            # SAM3 parts
+            elif k.startswith("sam3_loader."):
+                sam3_state[k] = v
+        
+        if adapter_state:
+            path = self.output_dir / f"adapter_checkpoint{suffix}.pt"
+            torch.save({"model_state_dict": adapter_state, "config": self.config}, path)
+            print(f"  Split checkpoint saved: {path.name}")
+            
+        if sam3_state:
+            path = self.output_dir / f"sam3_checkpoint{suffix}.pt"
+            torch.save({"model_state_dict": sam3_state, "config": self.config}, path)
+            print(f"  Split checkpoint saved: {path.name}")
 
     @torch.no_grad()
     def _extract_seg_features(self, dataloader: DataLoader, output_dir: Path) -> None:
@@ -987,3 +1022,7 @@ class Trainer:
         if is_best and training_config.get("save_best", True):
             best_path = self.output_dir / "checkpoint_best.pt"
             torch.save(checkpoint, best_path)
+            
+            # Also save split weights for the best model in Stage 2
+            if self.stage == "placement" and self.model.sam3_loader is not None:
+                self._save_split_checkpoint(suffix="_best")
