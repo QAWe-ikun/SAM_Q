@@ -51,6 +51,9 @@ def visualize_results(
     heatmap = results["heatmap"]
     if hasattr(heatmap, "cpu"):
         heatmap = heatmap.float().cpu().numpy()
+    # Squeeze batch and channel dimensions if present
+    if heatmap.ndim > 2:
+        heatmap = heatmap.squeeze()
     axes[1].imshow(heatmap, alpha=0.5)
     axes[1].set_title("Placement Probability Heatmap", fontsize=14, fontweight="bold")
     axes[1].axis("off")
@@ -60,6 +63,9 @@ def visualize_results(
     mask = results["mask"]
     if hasattr(mask, "cpu"):
         mask = mask.float().cpu().numpy()
+    # Squeeze batch and channel dimensions if present
+    if mask.ndim > 2:
+        mask = mask.squeeze()
     axes[2].imshow(mask, alpha=0.5, cmap="Reds")
 
     # Draw bounding boxes
@@ -136,6 +142,9 @@ def visualize_heatmap(
     ax.imshow(plane_np)
     if hasattr(heatmap, "cpu"):
         heatmap = heatmap.float().cpu().numpy()
+    # Squeeze extra dimensions
+    if heatmap.ndim > 2:
+        heatmap = heatmap.squeeze()
     ax.imshow(heatmap, alpha=alpha)
     ax.set_title("Placement Heatmap", fontsize=16, fontweight="bold")
     ax.axis("off")
@@ -187,6 +196,9 @@ def visualize_comparison(
         heatmap = results["heatmap"]
         if hasattr(heatmap, "cpu"):
             heatmap = heatmap.float().cpu().numpy()
+        # Squeeze extra dimensions
+        if heatmap.ndim > 2:
+            heatmap = heatmap.squeeze()
         axes[idx].imshow(heatmap, alpha=0.5)
         axes[idx].set_title(title, fontsize=14, fontweight="bold")
         axes[idx].axis("off")
