@@ -596,6 +596,8 @@ SAM-Q/
 |   |-- models/                  # Model architectures
 |   |   |-- encoders/           # Encoder modules
 |   |   |   +-- qwen3vl_encoder.py
+|   |   |-- loaders/            # SAM3 modules
+|   |   |   +-- sam3_loader.py
 |   |   |-- adapters/           # Adapter modules
 |   |   |   |-- base_adapter.py
 |   |   |   |-- cross_modal_adapter.py

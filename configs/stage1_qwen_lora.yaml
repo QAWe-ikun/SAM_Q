@@ -26,6 +26,7 @@ model:
     hidden_dim: 4096
     freeze: false  # ← Enable LoRA training
     attn_implementation: "flash_attention_2"
+    lora_path: null  # ← No pre-trained LoRA for Stage 1
 
     lora:
       enabled: true

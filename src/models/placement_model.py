@@ -36,6 +36,7 @@ class SAMQPlacementModel(nn.Module):
     
     def __init__(
         self,
+        stage: str = "placement",
         sam3_checkpoint_path: Optional[str] = None,
         qwen_model_name: str = "Qwen/Qwen3-VL-8B-Instruct",
         qwen_lora_path: Optional[str] = None,
@@ -52,18 +53,19 @@ class SAMQPlacementModel(nn.Module):
         Initialize the placement model.
 
         Args:
-            sam3_checkpoint_path: Path to SAM3 checkpoint file (.pt). If None, uses default search path.
+            stage: Training stage. "lm" (Stage 1) or "placement" (Stage 2/Inference).
+            sam3_checkpoint_path: Path to SAM3 checkpoint file (.pt). Ignored if stage="lm".
             qwen_model_name: HuggingFace model name or local path for Qwen3-VL
             qwen_lora_path: Path to Qwen3-VL LoRA adapter directory (Stage 1 fine-tuned weights).
                            If provided, the LoRA adapter will be loaded for inference.
-            sam3_input_dim: SAM3 Detector input dimension
+            sam3_input_dim: SAM3 Detector input dimension. Ignored if stage="lm".
             qwen_hidden_dim: Qwen3-VL hidden dimension
-            adapter_hidden_dim: Adapter hidden dimension
+            adapter_hidden_dim: Adapter hidden dimension. Ignored if stage="lm".
             num_seg_tokens: Number of [SEG] tokens. 1=single placement, >1=multi-placement.
             device: Device to run model on
             dtype: Data type for model
-            seg_token_config: Config for [SEG] token (heatmap, rotation, scale)
-            action_head_config: Config for SEGActionHead (rotation + scale)
+            seg_token_config: Config for [SEG] token. Ignored if stage="lm".
+            action_head_config: Config for SEGActionHead. Ignored if stage="lm".
         """
         super().__init__()
 
@@ -81,71 +83,72 @@ class SAMQPlacementModel(nn.Module):
             num_seg_tokens=num_seg_tokens,
         )
 
-        # Adapter: [SEG] hidden state → SAM3 prompt embeddings
-        self.adapter = CrossModalAdapter(
-            qwen_dim=qwen_hidden_dim,
-            sam3_dim=sam3_input_dim,
-            hidden_dim=adapter_hidden_dim,
-        )
-
-        # SegTokenProjector: optional, used when num_seg_tokens > 1
+        # SAM3-related components (only initialized if checkpoint path is provided)
+        self.sam3_loader = None
+        self.adapter = None
         self.seg_projector = None
-        if num_seg_tokens > 1:
-            seg_cfg = seg_token_config or {}
-            self.seg_projector = SegTokenProjector(
+        self.seg_action_head = None
+        self.vla_refinement = None
+
+        if sam3_checkpoint_path is not None:
+            # Adapter: [SEG] hidden state → SAM3 prompt embeddings
+            self.adapter = CrossModalAdapter(
                 qwen_dim=qwen_hidden_dim,
                 sam3_dim=sam3_input_dim,
-                num_output_tokens=seg_cfg.get("num_output_tokens", 64),
-                hidden_dim=seg_cfg.get("hidden_dim", adapter_hidden_dim),
-                dropout=seg_cfg.get("dropout", 0.1),
+                hidden_dim=adapter_hidden_dim,
             )
 
-        # SEGActionHead: [SEG] hidden → rotation + scale (parallel to SAM3)
-        ah_cfg = action_head_config or {}
-        heatmap_size = ah_cfg.get("heatmap_size", 64)
-        self.seg_action_head = SEGActionHead(
-            hidden_dim=qwen_hidden_dim,
-            heatmap_size=heatmap_size,
-        )
+            # SegTokenProjector: optional, used when num_seg_tokens > 1
+            if num_seg_tokens > 1:
+                seg_cfg = seg_token_config or {}
+                self.seg_projector = SegTokenProjector(
+                    qwen_dim=qwen_hidden_dim,
+                    sam3_dim=sam3_input_dim,
+                    num_output_tokens=seg_cfg.get("num_output_tokens", 64),
+                    hidden_dim=seg_cfg.get("hidden_dim", adapter_hidden_dim),
+                    dropout=seg_cfg.get("dropout", 0.1),
+                )
 
-        # SAM3 Loader (lazy loading, version selection via checkpoint path)
-        self.sam3_loader = SAM3Loader(
-            checkpoint_path=sam3_checkpoint_path,
-            device=self.device,
-            dtype=torch.bfloat16,  # SAM3 uses bfloat16
-        )
-
-        # [SEG] token config
-        self._seg_force_only = seg_token_config.get("force_only_in_training", True) if seg_token_config else True
-        self._seg_max_tokens = seg_token_config.get("max_generate_tokens", 128) if seg_token_config else 128
-
-        # Optional iterative refinement
-        self.vla_refinement = None
-        if ah_cfg.get("use_iterative_refinement", False):
-            # Note: refinement uses same SEGActionHead, not separate module
-            self.vla_refinement = VLAIterativeRefinement(
-                vla_model=self,
-                max_iterations=ah_cfg.get("max_iterations", 3),
-                adjustment_threshold=ah_cfg.get("adjustment_threshold", 0.01),
+            # SEGActionHead: [SEG] hidden → rotation + scale (parallel to SAM3)
+            ah_cfg = action_head_config or {}
+            heatmap_size = ah_cfg.get("heatmap_size", 64)
+            self.seg_action_head = SEGActionHead(
+                hidden_dim=qwen_hidden_dim,
+                heatmap_size=heatmap_size,
             )
 
-        # Move trainable components to device
-        self.adapter.to(self.device)
-        self.seg_action_head.to(self.device)
-        if self.seg_projector is not None:
-            self.seg_projector.to(self.device)
+            # SAM3 Loader (lazy loading, version selection via checkpoint path)
+            self.sam3_loader = SAM3Loader(
+                checkpoint_path=sam3_checkpoint_path,
+                device=self.device,
+                dtype=torch.bfloat16,  # SAM3 uses bfloat16
+            )
 
-        # Load Qwen3-VL LoRA adapter if provided (Stage 1 fine-tuned weights)
-        if qwen_lora_path is not None:
-            self.qwen_encoder.load_lora_adapter(qwen_lora_path)
+            # [SEG] token config
+            self._seg_force_only = seg_token_config.get("force_only_in_training", True) if seg_token_config else True
+            self._seg_max_tokens = seg_token_config.get("max_generate_tokens", 128) if seg_token_config else 128
+
+            # Optional iterative refinement
+            if ah_cfg.get("use_iterative_refinement", False):
+                # Note: refinement uses same SEGActionHead, not separate module
+                self.vla_refinement = VLAIterativeRefinement(
+                    vla_model=self,
+                    max_iterations=ah_cfg.get("max_iterations", 3),
+                    adjustment_threshold=ah_cfg.get("adjustment_threshold", 0.01),
+                )
+
+            # Move trainable components to device
+            self.adapter.to(self.device)
+            self.seg_action_head.to(self.device)
+            if self.seg_projector is not None:
+                self.seg_projector.to(self.device)
+        else:
+            # Stage 1 (LM) mode: no SAM3/Adapter components needed
+            self._seg_force_only = True
+            self._seg_max_tokens = 128
+
+        self.qwen_lora_path = qwen_lora_path  # Store LoRA path for loading during forward pass
         
-    def _load_sam3(self):
-        """Lazy load SAM3 model via SAM3Loader."""
-        if self.sam3_loader.loaded:
-            return
-
-        self.sam3_loader.load_model()
-
     def freeze_qwen(self):
         """Freeze Qwen3-VL parameters."""
         for param in self.qwen_encoder.parameters():
@@ -154,8 +157,66 @@ class SAMQPlacementModel(nn.Module):
         
     def freeze_sam3_image_encoder(self):
         """Freeze SAM3 vision backbone parameters."""
-        self._load_sam3()
         self.sam3_loader.freeze_vision_backbone()
+
+    def load_all(self, eval_mode: bool = True):
+        """
+        Load all model components (Qwen3-VL, SAM3, LoRA adapter).
+
+        This is useful for inference mode after training is complete.
+
+        Args:
+            eval_mode: Whether to set all models to eval mode.
+        """
+        print(f"\n{'='*60}")
+        print(f"Loading all model components...")
+        print(f"{'='*60}")
+
+        # 1. Load Qwen3-VL
+        if not self.qwen_encoder.model:
+            print(f"[1/3] Loading Qwen3-VL from {self.qwen_encoder.model_name}...")
+            self.qwen_encoder.load_model(use_cache=eval_mode)
+        else:
+            print(f"[1/3] Qwen3-VL already loaded, skipping.")
+
+        # 2. Load LoRA adapter (Stage 1 fine-tuned weights)
+        if self.qwen_lora_path is not None:
+            print(f"[2/3] Loading Qwen3-VL LoRA from {self.qwen_lora_path}...")
+            self.qwen_encoder.load_lora_adapter(self.qwen_lora_path)
+        else:
+            print(f"[2/3] No Qwen3-VL LoRA path specified, skipping.")
+
+        # 3. Load SAM3
+        if self.sam3_loader is not None:
+            if not self.sam3_loader.loaded:
+                ckpt = self.sam3_loader.checkpoint_path or "default path"
+                print(f"[3/4] Loading SAM3 from {ckpt}...")
+                self.sam3_loader.load_model(eval_mode=eval_mode)
+            else:
+                print(f"[3/4] SAM3 already loaded, skipping.")
+        else:
+            print(f"[3/4] SAM3 not initialized (Stage 1 mode).")
+
+        # 4. Verify Adapter / Components status
+        if self.adapter is not None:
+            adapter_params = sum(p.numel() for p in self.adapter.parameters())
+            print(f"[4/4] Adapter initialized: {adapter_params:,} parameters")
+            if self.seg_projector is not None:
+                projector_params = sum(p.numel() for p in self.seg_projector.parameters())
+                print(f"     SegTokenProjector: {projector_params:,} parameters")
+            action_head_params = sum(p.numel() for p in self.seg_action_head.parameters())
+            print(f"     SEGActionHead: {action_head_params:,} parameters")
+        else:
+            print(f"[4/4] Stage 1 mode: Adapter/SAM3 components skipped.")
+
+        # Set eval mode if requested
+        if eval_mode:
+            self.eval()
+            print(f"\nAll models set to eval mode.")
+
+        print(f"{'='*60}")
+        print(f"Model loading complete!")
+        print(f"{'='*60}\n")
 
     def freeze_all_except_adapter_and_detector(self):
         """Freeze all components except adapter, action head, and detector."""
@@ -172,7 +233,6 @@ class SAMQPlacementModel(nn.Module):
                 param.requires_grad = True
 
         # Unfreeze SAM3 transformer, seg_head, dot_scoring
-        self._load_sam3()
         self.sam3_loader.freeze_all_except(trainable_components=["transformer", "seg_head", "dot_scoring"])
     
     def forward(
@@ -208,8 +268,7 @@ class SAMQPlacementModel(nn.Module):
                 - scale_relative: [B] relative scale (0.5 to 2.0)
                 - seg_hidden: [B, 4096] [SEG] token hidden state
         """
-        self._load_sam3()
-
+        self.load_all() 
         # 1. Encode plane image with SAM3 vision backbone
         backbone_out = self._encode_plane_image(plane_image)
 

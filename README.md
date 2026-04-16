@@ -497,6 +497,7 @@ SAM-Q/
 +-- src/
 |   +-- models/                  # Model architectures
 |   |   +-- encoders/           # Qwen3-VL encoder
+|   |   +-- loaders/           # SAM3 loader
 |   |   +-- adapters/           # Cross-modal adapters
 |   |   +-- collision/          # H-MVP + incremental memory
 |   |   +-- vla/                # VLA action output

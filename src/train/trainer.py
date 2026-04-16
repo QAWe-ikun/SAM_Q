@@ -59,9 +59,6 @@ class Trainer:
         config_path = self.output_dir / "config.yaml"
         with open(config_path, 'w', encoding='utf-8') as f:
             yaml.dump(config, f, default_flow_style=False, sort_keys=False)
-        
-        # Initialize model
-        self.model = model or self._init_model()
 
         # 根据 loss.type 确定训练阶段
         # stage1 (lm)        → Qwen3-VL LoRA 微调, 语言模型损失
@@ -69,6 +66,9 @@ class Trainer:
         loss_config = config.get("loss", {})
         self.stage = loss_config.get("type", "placement")  # "lm" | "placement"
         print(f"[Trainer] Training stage: {self.stage}")
+
+        # Initialize model (needs self.stage)
+        self.model = model or self._init_model()
 
         # Initialize loss
         if self.stage == "lm":
@@ -118,12 +118,18 @@ class Trainer:
         model_config = self.config.get("model", {})
         num_seg_tokens = model_config.get("num_seg_tokens", 1)
 
+        # Stage 1 (LM) does not need SAM3; Stage 2 (placement) requires it
+        sam3_ckpt = model_config.get("sam3", {}).get("checkpoint_path")
+        if self.stage == "lm":
+            sam3_ckpt = None
+
         model = SAMQPlacementModel(
+            stage=self.stage,
             qwen_model_name=model_config.get("qwen", {}).get(
                 "model_name", "Qwen/Qwen3-VL-8B-Instruct"
             ),
             qwen_lora_path=model_config.get("qwen", {}).get("lora_path"),
-            sam3_checkpoint_path=model_config.get("sam3", {}).get("checkpoint_path"),
+            sam3_checkpoint_path=sam3_ckpt,
             sam3_input_dim=model_config.get("sam3", {}).get("input_dim", 256),
             qwen_hidden_dim=model_config.get("qwen", {}).get("hidden_dim", 4096),
             adapter_hidden_dim=model_config.get("adapter", {}).get("hidden_dim", 512),
@@ -136,7 +142,8 @@ class Trainer:
         # Freeze components
         if model_config.get("qwen", {}).get("freeze", True):
             model.freeze_qwen()
-        if model_config.get("sam3", {}).get("freeze_image_encoder", True):
+        # Only freeze SAM3 if it was loaded (i.e. not None)
+        if model.sam3_loader is not None and model_config.get("sam3", {}).get("freeze_image_encoder", True):
             model.freeze_sam3_image_encoder()
         
         model.to(self.device)
@@ -152,10 +159,11 @@ class Trainer:
         qwen_cfg = model_config.get("qwen", {})
         lora_cfg = qwen_cfg.get("lora", {})
 
-        # 确保 SAM3 / Adapter 冻结
-        self.model.freeze_sam3_image_encoder()
-        if hasattr(self.model, "freeze_sam3_decoder"):
-            self.model.freeze_sam3_decoder()
+        # 确保 SAM3 / Adapter 冻结 (if they exist)
+        if self.model.sam3_loader is not None:
+            self.model.freeze_sam3_image_encoder()
+            if hasattr(self.model, "freeze_sam3_decoder"):
+                self.model.freeze_sam3_decoder()
         if hasattr(self.model, "adapter") and self.model.adapter is not None:
             for p in self.model.adapter.parameters():
                 p.requires_grad = False
