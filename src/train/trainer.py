@@ -254,12 +254,9 @@ class Trainer:
         print(f"\n{'='*60}")
         print(f"[Stage 2] Trainable Parameters Check:")
         total_trainable = 0
-        for name, param in self.model.named_parameters():
+        for _, param in self.model.named_parameters():
             if param.requires_grad:
                 total_trainable += param.numel()
-                # 只打印包含 'sam3' 或 'adapter' 的关键模块
-                if 'sam3' in name or 'adapter' in name or 'seg_action_head' in name:
-                    print(f"  [Train] {name}: {param.numel():,}")
         print(f"[Stage 2] Total Trainable Params: {total_trainable:,}")
         print(f"{'='*60}\n")
 
@@ -458,16 +455,20 @@ class Trainer:
             Metrics dictionary
         """
         self.model.train()
-        
+
         total_loss = 0.0
+        total_bce_loss = 0.0
+        total_dice_loss = 0.0
+        total_rotation_loss = 0.0
+        total_scale_loss = 0.0
         num_batches = 0
-        
+
         progress_bar = tqdm(
             dataloader,
             desc=f"Epoch {self.current_epoch + 1}",
             leave=False,
         )
-        
+
         for batch_idx, batch in enumerate(progress_bar):
             # Move data to device
             plane_images_batch = batch["plane_images"].to(self.device)
@@ -479,6 +480,11 @@ class Trainer:
 
             # Process each sample
             batch_loss = 0.0
+            batch_bce = 0.0
+            batch_dice = 0.0
+            batch_rot = 0.0
+            batch_scl = 0.0
+            
             for i in range(len(plane_images_batch)):
                 plane_image = plane_images_batch[i]
                 sample_images = [img.to(self.device) for img in batch_images[i]]
@@ -505,34 +511,52 @@ class Trainer:
                     gt_rotation_6d=gt_rot[i:i+1] if gt_rot is not None else None,
                     gt_scale=gt_scl[i:i+1] if gt_scl is not None else None,
                 )
-                batch_loss += loss_dict["total"]
+                batch_loss += loss_dict["total"].item()
+                batch_bce += loss_dict.get("bce", 0).item() if isinstance(loss_dict.get("bce", 0), torch.Tensor) else loss_dict.get("bce", 0)
+                batch_dice += loss_dict.get("dice", 0).item() if isinstance(loss_dict.get("dice", 0), torch.Tensor) else loss_dict.get("dice", 0)
+                batch_rot += loss_dict.get("rotation", 0).item() if isinstance(loss_dict.get("rotation", 0), torch.Tensor) else loss_dict.get("rotation", 0)
+                batch_scl += loss_dict.get("scale", 0).item() if isinstance(loss_dict.get("scale", 0), torch.Tensor) else loss_dict.get("scale", 0)
 
             # Average loss
             avg_loss = batch_loss / len(batch["plane_images"])
-            
+            avg_bce = batch_bce / len(batch["plane_images"])
+            avg_dice = batch_dice / len(batch["plane_images"])
+            avg_rot = batch_rot / len(batch["plane_images"])
+            avg_scl = batch_scl / len(batch["plane_images"])
+
             # Backward pass
             self.optimizer.zero_grad()
             avg_loss.backward()
             self.optimizer.step()
-            
+
             # Update metrics
-            total_loss += avg_loss.item()
+            total_loss += avg_loss
+            total_bce_loss += avg_bce
+            total_dice_loss += avg_dice
+            total_rotation_loss += avg_rot
+            total_scale_loss += avg_scl
             num_batches += 1
-            
+
             # Update progress bar
-            progress_bar.set_postfix({"loss": f"{avg_loss.item():.4f}"})
-            
+            progress_bar.set_postfix({"loss": f"{avg_loss:.4f}"})
+
             # Log intermediate metrics
             if (batch_idx + 1) % log_interval == 0:
                 print(
                     f"  Batch {batch_idx + 1}/{len(dataloader)} - "
-                    f"Loss: {avg_loss.item():.4f}"
+                    f"Loss: {avg_loss:.4f}"
                 )
-        
+
         avg_epoch_loss = total_loss / num_batches
         self.train_losses.append(avg_epoch_loss)
-        
-        return {"train_loss": avg_epoch_loss}
+
+        return {
+            "train_loss": avg_epoch_loss,
+            "train_bce_loss": total_bce_loss / num_batches,
+            "train_dice_loss": total_dice_loss / num_batches,
+            "train_rotation_loss": total_rotation_loss / num_batches,
+            "train_scale_loss": total_scale_loss / num_batches,
+        }
     
     def _validate_stage1(
         self,
@@ -659,6 +683,10 @@ class Trainer:
         self.model.eval()
 
         total_loss = 0.0
+        total_bce_loss = 0.0
+        total_dice_loss = 0.0
+        total_rotation_loss = 0.0
+        total_scale_loss = 0.0
         num_batches = 0
         all_metrics = {
             "iou": 0.0,
@@ -676,6 +704,11 @@ class Trainer:
                 seg_hidden_batch = seg_hidden_batch.to(self.device)
 
             batch_loss = 0.0
+            batch_bce = 0.0
+            batch_dice = 0.0
+            batch_rot = 0.0
+            batch_scl = 0.0
+            
             for i in range(len(plane_images_batch)):
                 plane_image = plane_images_batch[i]
                 sample_images = [img.to(self.device) for img in batch_images[i]]
@@ -700,7 +733,11 @@ class Trainer:
                     gt_rotation_6d=gt_rot[i:i+1] if gt_rot is not None else None,
                     gt_scale=gt_scl[i:i+1] if gt_scl is not None else None,
                 )
-                batch_loss += loss_dict["total"]
+                batch_loss += loss_dict["total"].item()
+                batch_bce += loss_dict.get("bce", 0).item() if isinstance(loss_dict.get("bce", 0), torch.Tensor) else loss_dict.get("bce", 0)
+                batch_dice += loss_dict.get("dice", 0).item() if isinstance(loss_dict.get("dice", 0), torch.Tensor) else loss_dict.get("dice", 0)
+                batch_rot += loss_dict.get("rotation", 0).item() if isinstance(loss_dict.get("rotation", 0), torch.Tensor) else loss_dict.get("rotation", 0)
+                batch_scl += loss_dict.get("scale", 0).item() if isinstance(loss_dict.get("scale", 0), torch.Tensor) else loss_dict.get("scale", 0)
 
                 # Compute metrics
                 with torch.no_grad():
@@ -720,19 +757,32 @@ class Trainer:
                     metrics = compute_metrics(pred_mask, gt_mask)
                     for key in all_metrics:
                         all_metrics[key] += metrics[key]
-            
+
             avg_loss = batch_loss / len(batch["plane_images"])
-            total_loss += avg_loss.item()
+            avg_bce = batch_bce / len(batch["plane_images"])
+            avg_dice = batch_dice / len(batch["plane_images"])
+            avg_rot = batch_rot / len(batch["plane_images"])
+            avg_scl = batch_scl / len(batch["plane_images"])
+            
+            total_loss += avg_loss
+            total_bce_loss += avg_bce
+            total_dice_loss += avg_dice
+            total_rotation_loss += avg_rot
+            total_scale_loss += avg_scl
             num_batches += 1
-        
+
         avg_val_loss = total_loss / num_batches
         self.val_losses.append(avg_val_loss)
-        
+
         # Average metrics
         for key in all_metrics:
             all_metrics[key] /= num_batches
-        
+
         all_metrics["val_loss"] = avg_val_loss
+        all_metrics["val_bce_loss"] = total_bce_loss / num_batches
+        all_metrics["val_dice_loss"] = total_dice_loss / num_batches
+        all_metrics["val_rotation_loss"] = total_rotation_loss / num_batches
+        all_metrics["val_scale_loss"] = total_scale_loss / num_batches
         
         return all_metrics
 
@@ -827,10 +877,16 @@ class Trainer:
             }
 
             # Print metrics
-            metrics_str = " | ".join(
-                f"{k}: {v:.4f}" for k, v in metrics.items() if k != "epoch"
-            )
-            print(f"Epoch {metrics['epoch']:3d} | {metrics_str}")
+            epoch_num = metrics['epoch']
+            print(f"Epoch {epoch_num:3d} | "
+                  f"train_loss: {metrics.get('train_loss', 0):.4f} | "
+                  f"bce: {metrics.get('train_bce_loss', 0):.4f} | "
+                  f"dice: {metrics.get('train_dice_loss', 0):.4f} | "
+                  f"rot: {metrics.get('train_rotation_loss', 0):.4f} | "
+                  f"scl: {metrics.get('train_scale_loss', 0):.4f} | "
+                  f"val_loss: {metrics.get('val_loss', 0):.4f} | "
+                  f"iou: {metrics.get('iou', 0):.4f} | "
+                  f"lr: {metrics.get('lr', 0):.6f}")
 
             # Determine if this is the best model so far
             val_loss = val_metrics.get("val_loss", float("inf"))
