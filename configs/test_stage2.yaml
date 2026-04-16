@@ -72,7 +72,7 @@ training:
   num_epochs: 50
   device: "cuda"
   save_dir: "/mnt/f/outputs/stage2_full/"
-  save_best: true
+  save_best: false
   save_epoch: false  # Set true to save at save_interval epochs
   save_interval: 10  # Save every N epochs (when save_epoch=true)
   save_split_weights: true  # ← Automatically save separate adapter/sam3 weights

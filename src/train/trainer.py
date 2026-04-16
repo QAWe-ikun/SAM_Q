@@ -271,9 +271,46 @@ class Trainer:
             print("[Trainer] LoRA checkpoint loaded")
         except Exception as e:
             print(f"[Trainer] Warning: failed to load LoRA checkpoint: {e}")
+            
+    def train(
+        self,
+        train_loader: DataLoader,
+        val_loader: Optional[DataLoader] = None,
+    ) -> None:
+        """
+        Full training loop.
+        
+        Args:
+            train_loader: Training DataLoader
+            val_loader: Validation DataLoader (optional)
+        """
+        # Stage 1: SFTTrainer handles its own loop
+        if self.stage == "lm":
+            self.run_sft_stage1(train_loader)
+
+            # Run validation to check generation quality
+            if val_loader is not None:
+                print(f"\n{'='*60}")
+                print(f"Running Stage 1 Validation (Check <SEG> generation)...")
+                self._validate_stage1(val_loader)
+                print(f"{'='*60}\n")
+
+            # SFTTrainer 训练结束后，尝试提取 <SEG> 特征
+            seg_dir = Path(self.config.get("data", {}).get("root_dir", "data/")) / "seg_features"
+            self._extract_seg_features(train_loader, seg_dir)
+            if val_loader is not None:
+                self._extract_seg_features(val_loader, seg_dir)
+            print(f"\nStage 1 training completed!")
+            return
+
+        # Stage 2: Custom Epoch loop
+        self.train_stage2(train_loader, val_loader)
+        print(f"\n{'='*60}")
+        print(f"Stage 2 training completed!")
+        print(f"{'='*60}\n")
 
     # ------------------------------------------------------------------ #
-    # Stage 1: Language Model training epoch
+    # Stage 1: Language Model training
     # ------------------------------------------------------------------ #
 
     def run_sft_stage1(
@@ -437,6 +474,120 @@ class Trainer:
 
         return {"train_loss": train_result.metrics.get("train_loss", 0.0)}
     
+    def _validate_stage1(
+        self,
+        dataloader: DataLoader,
+    ) -> Dict[str, float]:
+        """
+        Stage 1 验证：计算 LM Loss 并生成回复文本。
+        """
+        self.model.qwen_encoder.load_model()
+        self.model.eval()
+
+        tokenizer = self.model.qwen_encoder.processor.tokenizer
+        qwen_model = self.model.qwen_encoder.model
+
+        total_loss = 0.0
+        num_batches = 0
+
+        with torch.no_grad():
+            for batch_idx, batch in enumerate(tqdm(dataloader, desc="[Val] Stage1", leave=False)):
+                batch_loss = 0.0
+                batch_images = batch["images"]
+                batch_size = len(batch_images)
+
+                for i in range(batch_size):
+                    sample_images = [img.to(self.device) for img in batch_images[i]]
+                    text_prompt = batch["text_prompts"][i]
+                    response = batch.get("responses", [None] * batch_size)[i]
+                    if response is None:
+                        response = "好的，我将为您放置物体。<SEG>"
+
+                    # 构造输入
+                    messages, image_list = self.model.qwen_encoder._build_message(
+                        text_prompt=text_prompt,
+                        images=sample_images,
+                    )
+                    messages.append({"role": "assistant", "content": [{"type": "text", "text": response}]})
+
+                    text = self.model.qwen_encoder.processor.apply_chat_template(
+                        messages, tokenize=False, add_generation_prompt=False,
+                    )
+                    inputs = self.model.qwen_encoder.processor(
+                        text=[text],
+                        images=image_list if image_list else None,
+                        return_tensors="pt",
+                        padding=True,
+                    ).to(self.device)
+
+                    # 计算 Loss
+                    input_ids = inputs["input_ids"]
+                    labels = input_ids.clone()
+                    response_tokens = tokenizer(response, add_special_tokens=False)["input_ids"]
+                    resp_len = len(response_tokens)
+                    labels[:, :-resp_len] = -100
+
+                    outputs = qwen_model(
+                        **inputs,
+                        labels=labels,
+                    )
+                    loss = outputs.loss
+                    if loss is not None:
+                        batch_loss += loss.item()
+
+                total_loss += batch_loss / batch_size
+                num_batches += 1
+
+                # 在第一个 batch 生成样本并打印
+                if batch_idx == 0:
+                    print(f"\n{'='*60}")
+                    print(f"[Stage1 Validation Samples] (Epoch {self.current_epoch+1})")
+                    print(f"{'='*60}")
+
+                    # 生成样本（前 2 个）
+                    num_gen_samples = min(2, batch_size)
+                    for i in range(num_gen_samples):
+                        sample_images = [img.to(self.device) for img in batch["images"][i]]
+                        text_prompt = batch["text_prompts"][i]
+                        response_gt = batch.get("responses", [None] * batch_size)[i]
+
+                        # 构造仅含 prompt 的输入
+                        messages, image_list = self.model.qwen_encoder._build_message(
+                            text_prompt=text_prompt,
+                            images=sample_images,
+                        )
+                        
+                        text = self.model.qwen_encoder.processor.apply_chat_template(
+                            messages, tokenize=False, add_generation_prompt=True,
+                        )
+                        inputs = self.model.qwen_encoder.processor(
+                            text=[text],
+                            images=image_list if image_list else None,
+                            return_tensors="pt",
+                            padding=True,
+                        ).to(self.device)
+
+                        # 生成回复
+                        generated_ids = qwen_model.generate(
+                            **inputs,
+                            max_new_tokens=1024,
+                            do_sample=False,
+                        )
+                        
+                        # 解码并打印
+                        generated_text = tokenizer.decode(generated_ids[0], skip_special_tokens=False)
+                        # 提取 assistant 部分
+                        assistant_marker = "assistant"
+                        if assistant_marker in generated_text:
+                            generated_text = generated_text.split(assistant_marker)[-1]
+
+                        print(f"Prompt:   {text_prompt[:60]}...")
+                        print(f"Generated: {generated_text.strip()}")
+                        print(f"Expected:  {response_gt.strip() if response_gt else 'N/A'}")
+                        print(f"{'-'*60}")
+
+        return {"val_loss": total_loss / max(num_batches, 1)}
+    
     @torch.no_grad()
     def _extract_seg_features(self, dataloader: DataLoader, output_dir: Path) -> None:
         """Stage 1 训练完后, 自动提取 <SEG> hidden states 保存到 data/seg_features/。"""
@@ -477,6 +628,95 @@ class Trainer:
             count += 1
 
         print(f"完成: {count} 个特征已保存到 {output_dir}")
+        
+
+    # ------------------------------------------------------------------ #
+    # Stage 2: SAM3 training
+    # ------------------------------------------------------------------ #
+
+        
+    def train_stage2(
+        self,
+        train_loader: DataLoader,
+        val_loader: Optional[DataLoader] = None,
+    ) -> None:
+        """
+        Stage 2 Training: Adapter + SAM3 Decoder.
+
+        Args:
+            train_loader: Training DataLoader
+            val_loader: Validation DataLoader (optional)
+        """
+        training_config = self.config.get("training", {})
+        num_epochs = training_config.get("num_epochs", 100)
+        val_interval = training_config.get("val_interval", 1)
+        log_interval = training_config.get("log_interval", 10)
+
+        print(f"\n{'='*60}")
+        print(f"Starting Stage 2 Training for {num_epochs} epochs")
+        print(f"Output directory: {self.output_dir}")
+        print(f"{'='*60}\n")
+
+        for epoch in range(num_epochs):
+            self.current_epoch = epoch
+
+            # Train
+            train_metrics = self.train_epoch_stage2(train_loader, log_interval)
+
+            # Validate
+            val_metrics = {}
+            if val_loader is not None and (epoch + 1) % val_interval == 0:
+                val_metrics = self._validate_stage2(val_loader)
+
+            # Update scheduler
+            if self.scheduler is not None:
+                self.scheduler.step()
+
+            # Log metrics
+            metrics = {
+                "epoch": epoch + 1,
+                **train_metrics,
+                **val_metrics,
+                "lr": self.optimizer.param_groups[0]["lr"],
+            }
+
+            # Print metrics
+            epoch_num = metrics['epoch']
+            print(f"Epoch {epoch_num:3d} | "
+                  f"train_loss: {metrics.get('train_loss', 0):.4f} | "
+                  f"bce: {metrics.get('train_bce_loss', 0):.4f} | "
+                  f"dice: {metrics.get('train_dice_loss', 0):.4f} | "
+                  f"rot: {metrics.get('train_rotation_loss', 0):.4f} | "
+                  f"scl: {metrics.get('train_scale_loss', 0):.4f} | "
+                  f"val_loss: {metrics.get('val_loss', 0):.4f} | "
+                  f"iou: {metrics.get('iou', 0):.4f} | "
+                  f"lr: {metrics.get('lr', 0):.6f}")
+
+            # Determine if this is the best model so far
+            val_loss = val_metrics.get("val_loss", float("inf"))
+            is_best = val_loss < self.best_val_loss
+
+            # Update best_val_loss immediately
+            if is_best:
+                self.best_val_loss = val_loss
+
+            # Early stopping
+            if self.early_stopping:
+                if is_best:
+                    self.patience_counter = 0
+                else:
+                    self.patience_counter += 1
+                    if self.patience_counter >= self.patience:
+                        print(f"\nEarly stopping at epoch {epoch + 1}")
+                        break
+
+            # Save checkpoint
+            self._save_checkpoint(epoch, val_loss, is_best)
+
+        # Save final checkpoint
+        self._save_checkpoint("final", float("inf"))
+
+        print(f"\nTraining completed! Results saved to: {self.output_dir}")
 
     def train_epoch_stage2(
         self,
@@ -598,120 +838,6 @@ class Trainer:
             "train_rotation_loss": total_rotation_loss / num_batches,
             "train_scale_loss": total_scale_loss / num_batches,
         }
-    
-    def _validate_stage1(
-        self,
-        dataloader: DataLoader,
-    ) -> Dict[str, float]:
-        """
-        Stage 1 验证：计算 LM Loss 并生成回复文本。
-        """
-        self.model.qwen_encoder.load_model()
-        self.model.eval()
-
-        tokenizer = self.model.qwen_encoder.processor.tokenizer
-        qwen_model = self.model.qwen_encoder.model
-
-        total_loss = 0.0
-        num_batches = 0
-
-        with torch.no_grad():
-            for batch_idx, batch in enumerate(tqdm(dataloader, desc="[Val] Stage1", leave=False)):
-                batch_loss = 0.0
-                batch_images = batch["images"]
-                batch_size = len(batch_images)
-
-                for i in range(batch_size):
-                    sample_images = [img.to(self.device) for img in batch_images[i]]
-                    text_prompt = batch["text_prompts"][i]
-                    response = batch.get("responses", [None] * batch_size)[i]
-                    if response is None:
-                        response = "好的，我将为您放置物体。<SEG>"
-
-                    # 构造输入
-                    messages, image_list = self.model.qwen_encoder._build_message(
-                        text_prompt=text_prompt,
-                        images=sample_images,
-                    )
-                    messages.append({"role": "assistant", "content": [{"type": "text", "text": response}]})
-
-                    text = self.model.qwen_encoder.processor.apply_chat_template(
-                        messages, tokenize=False, add_generation_prompt=False,
-                    )
-                    inputs = self.model.qwen_encoder.processor(
-                        text=[text],
-                        images=image_list if image_list else None,
-                        return_tensors="pt",
-                        padding=True,
-                    ).to(self.device)
-
-                    # 计算 Loss
-                    input_ids = inputs["input_ids"]
-                    labels = input_ids.clone()
-                    response_tokens = tokenizer(response, add_special_tokens=False)["input_ids"]
-                    resp_len = len(response_tokens)
-                    labels[:, :-resp_len] = -100
-
-                    outputs = qwen_model(
-                        **inputs,
-                        labels=labels,
-                    )
-                    loss = outputs.loss
-                    if loss is not None:
-                        batch_loss += loss.item()
-
-                total_loss += batch_loss / batch_size
-                num_batches += 1
-
-                # 在第一个 batch 生成样本并打印
-                if batch_idx == 0:
-                    print(f"\n{'='*60}")
-                    print(f"[Stage1 Validation Samples] (Epoch {self.current_epoch+1})")
-                    print(f"{'='*60}")
-
-                    # 生成样本（前 2 个）
-                    num_gen_samples = min(2, batch_size)
-                    for i in range(num_gen_samples):
-                        sample_images = [img.to(self.device) for img in batch["images"][i]]
-                        text_prompt = batch["text_prompts"][i]
-                        response_gt = batch.get("responses", [None] * batch_size)[i]
-
-                        # 构造仅含 prompt 的输入
-                        messages, image_list = self.model.qwen_encoder._build_message(
-                            text_prompt=text_prompt,
-                            images=sample_images,
-                        )
-                        
-                        text = self.model.qwen_encoder.processor.apply_chat_template(
-                            messages, tokenize=False, add_generation_prompt=True,
-                        )
-                        inputs = self.model.qwen_encoder.processor(
-                            text=[text],
-                            images=image_list if image_list else None,
-                            return_tensors="pt",
-                            padding=True,
-                        ).to(self.device)
-
-                        # 生成回复
-                        generated_ids = qwen_model.generate(
-                            **inputs,
-                            max_new_tokens=1024,
-                            do_sample=False,
-                        )
-                        
-                        # 解码并打印
-                        generated_text = tokenizer.decode(generated_ids[0], skip_special_tokens=False)
-                        # 提取 assistant 部分
-                        assistant_marker = "assistant"
-                        if assistant_marker in generated_text:
-                            generated_text = generated_text.split(assistant_marker)[-1]
-
-                        print(f"Prompt:   {text_prompt[:60]}...")
-                        print(f"Generated: {generated_text.strip()}")
-                        print(f"Expected:  {response_gt.strip() if response_gt else 'N/A'}")
-                        print(f"{'-'*60}")
-
-        return {"val_loss": total_loss / max(num_batches, 1)}
 
     @torch.no_grad()
     def _validate_stage2(
@@ -826,126 +952,6 @@ class Trainer:
         all_metrics["val_scale_loss"] = total_scale_loss / num_batches
         
         return all_metrics
-
-    def train(
-        self,
-        train_loader: DataLoader,
-        val_loader: Optional[DataLoader] = None,
-    ) -> None:
-        """
-        Full training loop.
-        
-        Args:
-            train_loader: Training DataLoader
-            val_loader: Validation DataLoader (optional)
-        """
-        # Stage 1: SFTTrainer handles its own loop
-        if self.stage == "lm":
-            self.run_sft_stage1(train_loader)
-
-            # Run validation to check generation quality
-            if val_loader is not None:
-                print(f"\n{'='*60}")
-                print(f"Running Stage 1 Validation (Check <SEG> generation)...")
-                self._validate_stage1(val_loader)
-                print(f"{'='*60}\n")
-
-            # SFTTrainer 训练结束后，尝试提取 <SEG> 特征
-            seg_dir = Path(self.config.get("data", {}).get("root_dir", "data/")) / "seg_features"
-            self._extract_seg_features(train_loader, seg_dir)
-            if val_loader is not None:
-                self._extract_seg_features(val_loader, seg_dir)
-            print(f"\nStage 1 training completed!")
-            return
-
-        # Stage 2: Custom Epoch loop
-        self.train_stage2(train_loader, val_loader)
-        print(f"\n{'='*60}")
-        print(f"Stage 2 training completed!")
-        print(f"{'='*60}\n")
-
-    def train_stage2(
-        self,
-        train_loader: DataLoader,
-        val_loader: Optional[DataLoader] = None,
-    ) -> None:
-        """
-        Stage 2 Training: Adapter + SAM3 Decoder.
-
-        Args:
-            train_loader: Training DataLoader
-            val_loader: Validation DataLoader (optional)
-        """
-        training_config = self.config.get("training", {})
-        num_epochs = training_config.get("num_epochs", 100)
-        val_interval = training_config.get("val_interval", 1)
-        log_interval = training_config.get("log_interval", 10)
-
-        print(f"\n{'='*60}")
-        print(f"Starting Stage 2 Training for {num_epochs} epochs")
-        print(f"Output directory: {self.output_dir}")
-        print(f"{'='*60}\n")
-
-        for epoch in range(num_epochs):
-            self.current_epoch = epoch
-
-            # Train
-            train_metrics = self.train_epoch_stage2(train_loader, log_interval)
-
-            # Validate
-            val_metrics = {}
-            if val_loader is not None and (epoch + 1) % val_interval == 0:
-                val_metrics = self._validate_stage2(val_loader)
-
-            # Update scheduler
-            if self.scheduler is not None:
-                self.scheduler.step()
-
-            # Log metrics
-            metrics = {
-                "epoch": epoch + 1,
-                **train_metrics,
-                **val_metrics,
-                "lr": self.optimizer.param_groups[0]["lr"],
-            }
-
-            # Print metrics
-            epoch_num = metrics['epoch']
-            print(f"Epoch {epoch_num:3d} | "
-                  f"train_loss: {metrics.get('train_loss', 0):.4f} | "
-                  f"bce: {metrics.get('train_bce_loss', 0):.4f} | "
-                  f"dice: {metrics.get('train_dice_loss', 0):.4f} | "
-                  f"rot: {metrics.get('train_rotation_loss', 0):.4f} | "
-                  f"scl: {metrics.get('train_scale_loss', 0):.4f} | "
-                  f"val_loss: {metrics.get('val_loss', 0):.4f} | "
-                  f"iou: {metrics.get('iou', 0):.4f} | "
-                  f"lr: {metrics.get('lr', 0):.6f}")
-
-            # Determine if this is the best model so far
-            val_loss = val_metrics.get("val_loss", float("inf"))
-            is_best = val_loss < self.best_val_loss
-
-            # Update best_val_loss immediately
-            if is_best:
-                self.best_val_loss = val_loss
-
-            # Early stopping
-            if self.early_stopping:
-                if is_best:
-                    self.patience_counter = 0
-                else:
-                    self.patience_counter += 1
-                    if self.patience_counter >= self.patience:
-                        print(f"\nEarly stopping at epoch {epoch + 1}")
-                        break
-
-            # Save checkpoint
-            self._save_checkpoint(epoch, val_loss, is_best)
-
-        # Save final checkpoint
-        self._save_checkpoint("final", float("inf"))
-
-        print(f"\nTraining completed! Results saved to: {self.output_dir}")
 
     def _save_checkpoint(self, epoch: Any, val_loss: float, is_best: bool = False) -> None:
         """
