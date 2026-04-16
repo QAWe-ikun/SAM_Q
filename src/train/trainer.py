@@ -334,9 +334,7 @@ class Trainer:
             fp16=use_fp16,
             bf16=use_bf16,
             logging_steps=log_steps,
-            save_steps=save_steps,
-            save_total_limit=training_config.get("save_total_limit", 3),
-            save_strategy="steps" if save_steps < 1000 else "epoch",
+            save_strategy="no",  # Disable SFTTrainer's automatic checkpoint saving
             report_to="none",
             warmup_steps=warmup_steps,
             lr_scheduler_type="cosine",
