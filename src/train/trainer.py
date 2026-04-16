@@ -502,13 +502,13 @@ class Trainer:
                 gt_rot = batch.get("rotation_6d")
                 gt_scl = batch.get("scale")
                 loss_dict = self.criterion(
-                    output["heatmap"],
-                    masks[i:i+1],
-                    output.get("rotation_6d"),
-                    output.get("scale_relative"),
-                    output.get("class_logits"),
+                    predicted_masks=output["heatmap"],
+                    target_masks=masks[i:i+1],
+                    pred_rotation_6d=output.get("rotation_6d"),
+                    pred_scale=output.get("scale_relative"),
                     gt_rotation_6d=gt_rot[i:i+1] if gt_rot is not None else None,
                     gt_scale=gt_scl[i:i+1] if gt_scl is not None else None,
+                    class_logits=output.get("class_logits"),
                 )
                 batch_loss_tensor = batch_loss_tensor + loss_dict["total"]
                 batch_loss += loss_dict["total"].item()
@@ -725,13 +725,13 @@ class Trainer:
                 gt_rot = batch.get("rotation_6d")
                 gt_scl = batch.get("scale")
                 loss_dict = self.criterion(
-                    output["heatmap"],
-                    masks[i:i+1],
-                    output.get("rotation_6d"),
-                    output.get("scale_relative"),
-                    output.get("class_logits"),
+                    predicted_masks=output["heatmap"],
+                    target_masks=masks[i:i+1],
+                    pred_rotation_6d=output.get("rotation_6d"),
+                    pred_scale=output.get("scale_relative"),
                     gt_rotation_6d=gt_rot[i:i+1] if gt_rot is not None else None,
                     gt_scale=gt_scl[i:i+1] if gt_scl is not None else None,
+                    class_logits=output.get("class_logits"),
                 )
                 batch_loss += loss_dict["total"].item()
                 batch_bce += loss_dict.get("bce", 0).item() if isinstance(loss_dict.get("bce", 0), torch.Tensor) else loss_dict.get("bce", 0)
