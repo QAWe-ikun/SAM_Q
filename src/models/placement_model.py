@@ -15,7 +15,7 @@ from PIL import Image
 
 from .encoders.qwen3vl_encoder import Qwen3VLEncoder
 from .adapters import CrossModalAdapter, SegTokenProjector
-from .vla import SEGActionHead, VLAIterativeRefinement
+from .vla import SEGActionHead
 from .loaders import SAM3Loader
 
 # SAM3 image normalization constants
@@ -37,7 +37,7 @@ class SAMQPlacementModel(nn.Module):
     def __init__(
         self,
         sam3_checkpoint_path: Optional[str] = None,
-        qwen_model_name: Optional[str] = "Qwen/Qwen3-VL-8B-Instruct",
+        qwen_model_name: Optional[str] = None,
         qwen_lora_path: Optional[str] = None,
         sam3_input_dim: int = 256,
         qwen_hidden_dim: int = 4096,
@@ -53,6 +53,7 @@ class SAMQPlacementModel(nn.Module):
 
         Args:
             sam3_checkpoint_path: Path to SAM3 checkpoint file (.pt).
+                            Set None to skip SAM3 initialization (Stage 1).
             qwen_model_name: HuggingFace model name or local path for Qwen3-VL.
                            Set None to skip Qwen3-VL initialization (Stage 2 with seg_features).
             qwen_lora_path: Path to Qwen3-VL LoRA adapter directory (Stage 1 fine-tuned weights).
@@ -89,16 +90,22 @@ class SAMQPlacementModel(nn.Module):
         self.adapter = None
         self.seg_projector = None
         self.seg_action_head = None
-        self.vla_refinement = None
 
         if sam3_checkpoint_path is not None:
+            # SAM3 Loader (lazy loading, version selection via checkpoint path)
+            self.sam3_loader = SAM3Loader(
+                checkpoint_path=sam3_checkpoint_path,
+                device=self.device,
+                dtype=torch.bfloat16,  # SAM3 uses bfloat16
+            )
+            
             # Adapter: <SEG> hidden state → SAM3 prompt embeddings
             self.adapter = CrossModalAdapter(
                 qwen_dim=qwen_hidden_dim,
                 sam3_dim=sam3_input_dim,
                 hidden_dim=adapter_hidden_dim,
             )
-
+            
             # SegTokenProjector: optional, used when num_seg_tokens > 1
             if num_seg_tokens > 1:
                 seg_cfg = seg_token_config or {}
@@ -118,25 +125,9 @@ class SAMQPlacementModel(nn.Module):
                 heatmap_size=heatmap_size,
             )
 
-            # SAM3 Loader (lazy loading, version selection via checkpoint path)
-            self.sam3_loader = SAM3Loader(
-                checkpoint_path=sam3_checkpoint_path,
-                device=self.device,
-                dtype=torch.bfloat16,  # SAM3 uses bfloat16
-            )
-
             # <SEG> token config
             self._seg_force_only = seg_token_config.get("force_only_in_training", True) if seg_token_config else True
             self._seg_max_tokens = seg_token_config.get("max_generate_tokens", 128) if seg_token_config else 128
-
-            # Optional iterative refinement
-            if ah_cfg.get("use_iterative_refinement", False):
-                # Note: refinement uses same SEGActionHead, not separate module
-                self.vla_refinement = VLAIterativeRefinement(
-                    vla_model=self,
-                    max_iterations=ah_cfg.get("max_iterations", 3),
-                    adjustment_threshold=ah_cfg.get("adjustment_threshold", 0.01),
-                )
 
             # Move trainable components to device
             self.adapter.to(self.device)
