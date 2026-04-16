@@ -36,9 +36,8 @@ class SAMQPlacementModel(nn.Module):
     
     def __init__(
         self,
-        stage: str = "placement",
         sam3_checkpoint_path: Optional[str] = None,
-        qwen_model_name: str = "Qwen/Qwen3-VL-8B-Instruct",
+        qwen_model_name: Optional[str] = "Qwen/Qwen3-VL-8B-Instruct",
         qwen_lora_path: Optional[str] = None,
         sam3_input_dim: int = 256,
         qwen_hidden_dim: int = 4096,
@@ -53,19 +52,19 @@ class SAMQPlacementModel(nn.Module):
         Initialize the placement model.
 
         Args:
-            stage: Training stage. "lm" (Stage 1) or "placement" (Stage 2/Inference).
-            sam3_checkpoint_path: Path to SAM3 checkpoint file (.pt). Ignored if stage="lm".
-            qwen_model_name: HuggingFace model name or local path for Qwen3-VL
+            sam3_checkpoint_path: Path to SAM3 checkpoint file (.pt).
+            qwen_model_name: HuggingFace model name or local path for Qwen3-VL.
+                           Set None to skip Qwen3-VL initialization (Stage 2 with seg_features).
             qwen_lora_path: Path to Qwen3-VL LoRA adapter directory (Stage 1 fine-tuned weights).
                            If provided, the LoRA adapter will be loaded for inference.
-            sam3_input_dim: SAM3 Detector input dimension. Ignored if stage="lm".
+            sam3_input_dim: SAM3 Detector input dimension.
             qwen_hidden_dim: Qwen3-VL hidden dimension
-            adapter_hidden_dim: Adapter hidden dimension. Ignored if stage="lm".
+            adapter_hidden_dim: Adapter hidden dimension.
             num_seg_tokens: Number of <SEG> tokens. 1=single placement, >1=multi-placement.
             device: Device to run model on
             dtype: Data type for model
-            seg_token_config: Config for <SEG> token. Ignored if stage="lm".
-            action_head_config: Config for SEGActionHead. Ignored if stage="lm".
+            seg_token_config: Config for <SEG> token.
+            action_head_config: Config for SEGActionHead.
         """
         super().__init__()
 
@@ -75,13 +74,15 @@ class SAMQPlacementModel(nn.Module):
         self.qwen_hidden_dim = qwen_hidden_dim
         self.num_seg_tokens = num_seg_tokens
 
-        # Qwen3-VL Encoder (frozen during training)
-        self.qwen_encoder = Qwen3VLEncoder(
-            model_name=qwen_model_name,
-            device=self.device,
-            dtype=self.dtype,
-            num_seg_tokens=num_seg_tokens,
-        )
+        # Qwen3-VL Encoder (only if qwen_model_name is provided)
+        self.qwen_encoder = None
+        if qwen_model_name is not None:
+            self.qwen_encoder = Qwen3VLEncoder(
+                model_name=qwen_model_name,
+                device=self.device,
+                dtype=self.dtype,
+                num_seg_tokens=num_seg_tokens,
+            )
 
         # SAM3-related components (only initialized if checkpoint path is provided)
         self.sam3_loader = None
@@ -151,6 +152,8 @@ class SAMQPlacementModel(nn.Module):
         
     def freeze_qwen(self):
         """Freeze Qwen3-VL parameters."""
+        if self.qwen_encoder is None:
+            return
         for param in self.qwen_encoder.parameters():
             param.requires_grad = False
         self.qwen_encoder.eval()
@@ -168,55 +171,24 @@ class SAMQPlacementModel(nn.Module):
         Args:
             eval_mode: Whether to set all models to eval mode.
         """
-        print(f"\n{'='*60}")
-        print(f"Loading all model components...")
-        print(f"{'='*60}")
 
-        # 1. Load Qwen3-VL
-        if not self.qwen_encoder.model:
-            print(f"[1/3] Loading Qwen3-VL from {self.qwen_encoder.model_name}...")
-            self.qwen_encoder.load_model(use_cache=eval_mode)
-        else:
-            print(f"[1/3] Qwen3-VL already loaded, skipping.")
+        # 1. Load Qwen3-VL (if initialized)
+        if self.qwen_encoder is not None:
+            if not self.qwen_encoder.model:
+                self.qwen_encoder.load_model(use_cache=eval_mode)
 
-        # 2. Load LoRA adapter (Stage 1 fine-tuned weights)
-        if self.qwen_lora_path is not None:
-            print(f"[2/3] Loading Qwen3-VL LoRA from {self.qwen_lora_path}...")
-            self.qwen_encoder.load_lora_adapter(self.qwen_lora_path)
-        else:
-            print(f"[2/3] No Qwen3-VL LoRA path specified, skipping.")
+            # 2. Load LoRA adapter (Stage 1 fine-tuned weights)
+            if self.qwen_lora_path is not None:
+                self.qwen_encoder.load_lora_adapter(self.qwen_lora_path)
 
         # 3. Load SAM3
         if self.sam3_loader is not None:
             if not self.sam3_loader.loaded:
-                ckpt = self.sam3_loader.checkpoint_path or "default path"
-                print(f"[3/4] Loading SAM3 from {ckpt}...")
                 self.sam3_loader.load_model(eval_mode=eval_mode)
-            else:
-                print(f"[3/4] SAM3 already loaded, skipping.")
-        else:
-            print(f"[3/4] SAM3 not initialized (Stage 1 mode).")
-
-        # 4. Verify Adapter / Components status
-        if self.adapter is not None:
-            adapter_params = sum(p.numel() for p in self.adapter.parameters())
-            print(f"[4/4] Adapter initialized: {adapter_params:,} parameters")
-            if self.seg_projector is not None:
-                projector_params = sum(p.numel() for p in self.seg_projector.parameters())
-                print(f"     SegTokenProjector: {projector_params:,} parameters")
-            action_head_params = sum(p.numel() for p in self.seg_action_head.parameters())
-            print(f"     SEGActionHead: {action_head_params:,} parameters")
-        else:
-            print(f"[4/4] Stage 1 mode: Adapter/SAM3 components skipped.")
 
         # Set eval mode if requested
         if eval_mode:
             self.eval()
-            print(f"\nAll models set to eval mode.")
-
-        print(f"{'='*60}")
-        print(f"Model loading complete!")
-        print(f"{'='*60}\n")
 
     def freeze_all_except_adapter_and_detector(self):
         """Freeze all components except adapter, action head, and detector."""
@@ -268,12 +240,17 @@ class SAMQPlacementModel(nn.Module):
                 - scale_relative: [B] relative scale (0.5 to 2.0)
                 - seg_hidden: [B, 4096] <SEG> token hidden state
         """
-        self.load_all() 
+        self.load_all()
         # 1. Encode plane image with SAM3 vision backbone
         backbone_out = self._encode_plane_image(plane_image)
 
         # 2. <SEG> hidden state: 预提取 or Qwen3-VL 在线推理
         if seg_hidden is None:
+            if self.qwen_encoder is None:
+                raise ValueError(
+                    "qwen_model_name is None but seg_hidden is also None. "
+                    "Either provide seg_hidden or set qwen_model_name."
+                )
             seg_hidden, _ = self.qwen_encoder.generate_with_seg(
                 text_prompt=text_prompt,
                 images=images,

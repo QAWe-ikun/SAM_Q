@@ -78,7 +78,7 @@ scheduler:
   warmup_epochs: 1
 
 training:
-  num_epochs: 30  # 2-5 epochs typically sufficient
+  num_epochs: 3  # 2-5 epochs typically sufficient
   device: "cuda"
   save_dir: "outputs/stage1_lora/"
   save_best: true

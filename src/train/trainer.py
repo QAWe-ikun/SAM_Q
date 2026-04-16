@@ -122,14 +122,23 @@ class Trainer:
         sam3_ckpt = model_config.get("sam3", {}).get("checkpoint_path")
         if self.stage == "lm":
             sam3_ckpt = None
+        print(f"[Trainer] Initializing model with SAM3 checkpoint: {sam3_ckpt}")
+
+        # Stage 2 with pre-extracted seg_features doesn't need Qwen3-VL
+        # This saves ~16GB VRAM
+        data_config = self.config.get("data", {})
+        seg_feature_dir = data_config.get("seg_feature_dir")
+        use_qwen = self.stage != "placement" or seg_feature_dir is None
+
+        if self.stage == "placement" and seg_feature_dir is not None:
+            print(f"[Trainer] Stage 2 with seg_features: skipping Qwen3-VL (saves ~16GB VRAM)")
+        elif self.stage == "placement":
+            print(f"[Trainer] Stage 2 without seg_features: loading Qwen3-VL for online inference")
 
         model = SAMQPlacementModel(
-            stage=self.stage,
-            qwen_model_name=model_config.get("qwen", {}).get(
-                "model_name", "Qwen/Qwen3-VL-8B-Instruct"
-            ),
-            qwen_lora_path=model_config.get("qwen", {}).get("lora_path"),
             sam3_checkpoint_path=sam3_ckpt,
+            qwen_model_name=model_config.get("qwen", {}).get("model_name") if use_qwen else None,
+            qwen_lora_path=model_config.get("qwen", {}).get("lora_path") if use_qwen else None,
             sam3_input_dim=model_config.get("sam3", {}).get("input_dim", 256),
             qwen_hidden_dim=model_config.get("qwen", {}).get("hidden_dim", 4096),
             adapter_hidden_dim=model_config.get("adapter", {}).get("hidden_dim", 512),
@@ -140,7 +149,7 @@ class Trainer:
         )
         
         # Freeze components
-        if model_config.get("qwen", {}).get("freeze", True):
+        if model.qwen_encoder is not None and model_config.get("qwen", {}).get("freeze", True):
             model.freeze_qwen()
         # Only freeze SAM3 if it was loaded (i.e. not None)
         if model.sam3_loader is not None and model_config.get("sam3", {}).get("freeze_image_encoder", True):
@@ -203,12 +212,12 @@ class Trainer:
         # 解冻 SAM3 decoder（如果配置要求）
         sam3_cfg = model_config.get("sam3", {})
         if not sam3_cfg.get("freeze_detector", True):
-            self.model._load_sam3()
-            for p in self.model.sam3_transformer.parameters():
+            self.model.sam3_loader.load_model()
+            for p in self.model.sam3_loader.sam3_transformer.parameters():
                 p.requires_grad = True
-            for p in self.model.sam3_seg_head.parameters():
+            for p in self.model.sam3_loader.sam3_seg_head.parameters():
                 p.requires_grad = True
-            for p in self.model.sam3_dot_scoring.parameters():
+            for p in self.model.sam3_loader.sam3_dot_scoring.parameters():
                 p.requires_grad = True
             print("[Trainer] Stage 2: SAM3 decoder unfrozen")
 
@@ -714,8 +723,6 @@ class Trainer:
         """
         training_config = self.config.get("training", {})
         num_epochs = training_config.get("num_epochs", 100)
-        val_interval = training_config.get("val_interval", 1)
-        log_interval = training_config.get("log_interval", 10)
         
         print(f"\n{'='*60}")
         print(f"Starting training for {num_epochs} epochs")
@@ -724,7 +731,15 @@ class Trainer:
 
         # Stage 1: SFTTrainer handles its own loop
         if self.stage == "lm":
-            train_metrics = self.run_sft_stage1(train_loader)
+            self.run_sft_stage1(train_loader)
+
+            # Run validation to check generation quality
+            if val_loader is not None:
+                print(f"\n{'='*60}")
+                print(f"Running Stage 1 Validation (Check <SEG> generation)...")
+                self._validate_stage1(val_loader)
+                print(f"{'='*60}\n")
+
             # SFTTrainer 训练结束后，尝试提取 <SEG> 特征
             seg_dir = Path(self.config.get("data", {}).get("root_dir", "data/")) / "seg_features"
             self._extract_seg_features(train_loader, seg_dir)
@@ -733,7 +748,34 @@ class Trainer:
             print(f"\nStage 1 training completed!")
             return
 
-        # Stage 2: 自定义 Epoch 循环
+        # Stage 2: Custom Epoch loop
+        self.train_stage2(train_loader, val_loader)
+        print(f"\n{'='*60}")
+        print(f"Stage 2 training completed!")
+        print(f"{'='*60}\n")
+
+    def train_stage2(
+        self,
+        train_loader: DataLoader,
+        val_loader: Optional[DataLoader] = None,
+    ) -> None:
+        """
+        Stage 2 Training: Adapter + SAM3 Decoder.
+
+        Args:
+            train_loader: Training DataLoader
+            val_loader: Validation DataLoader (optional)
+        """
+        training_config = self.config.get("training", {})
+        num_epochs = training_config.get("num_epochs", 100)
+        val_interval = training_config.get("val_interval", 1)
+        log_interval = training_config.get("log_interval", 10)
+
+        print(f"\n{'='*60}")
+        print(f"Starting Stage 2 Training for {num_epochs} epochs")
+        print(f"Output directory: {self.output_dir}")
+        print(f"{'='*60}\n")
+
         for epoch in range(num_epochs):
             self.current_epoch = epoch
 
