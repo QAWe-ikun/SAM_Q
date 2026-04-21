@@ -112,11 +112,6 @@ class SAM3Loader(nn.Module):
         else:
             ckpt_keys = list(ckpt_data.keys())
         
-        print(f"\n[Debug] SAM3 Checkpoint '{ckpt_path}' keys:")
-        print(f"  Total keys: {len(ckpt_keys)}")
-        print(f"  First 10 keys: {ckpt_keys[:10]}")
-        print(f"  Last 5 keys: {ckpt_keys[-5:]}")
-        
         # Check if backbone keys exist in checkpoint
         backbone_keys = [k for k in ckpt_keys if "backbone" in k or "vision" in k]
         print(f"  Backbone-related keys: {len(backbone_keys)}")
