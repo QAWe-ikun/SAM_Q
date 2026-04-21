@@ -17,6 +17,8 @@ opencv-python>=4.8.0,<4.13.0
 
 # Utilities
 numpy>=1.26.0,<2.0.0
+scipy>=1.11.0
+trimesh>=4.0.0
 tqdm>=4.65.0
 pyyaml>=6.0
 einops>=0.7.0
