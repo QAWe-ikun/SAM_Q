@@ -216,20 +216,12 @@ python -c "import transformers; print(f'Transformers: {transformers.__version__}
 ```bash
 # Single placement prediction (uses defaults)
 python main.py predict \
-  --checkpoint checkpoints/checkpoint_best.pt \
+  --config configs/config.yaml \
   --plane_image examples/room.png \
   --object_image examples/chair.png \
   --prompt "Place the chair near the dining table" \
   --output results/ \
   --threshold 0.5
-
-# With config file
-python main.py predict \
-  --checkpoint checkpoints/checkpoint_best.pt \
-  --config configs/config.yaml \
-  --plane_image examples/room.png \
-  --object_image examples/chair.png \
-  --prompt "Place the chair near the dining table"
 ```
 
 **Note:** `--object_image` is used internally as part of the `images` list alongside the plane image. The model receives `[plane_image, object_image]` for multi-image reasoning.
@@ -242,7 +234,10 @@ from PIL import Image
 
 # Load model
 model = SAMQPlacementModel(
+    sam_checkpoint_path="./outputs/sam3_checkpoint_final.pt",
+    adapter_checkpoint_path="./outputs/adapter_checkpoint_final.pt",
     qwen_model_name="./models/qwen3_vl",
+    qwen_lora_path="./outputs/lora_weights",
     sam3_input_dim=256,
     qwen_hidden_dim=4096,
     adapter_hidden_dim=512,
@@ -250,10 +245,8 @@ model = SAMQPlacementModel(
     action_head_config={"heatmap_size": 64},
 )
 
-# Load checkpoint
-checkpoint = torch.load("checkpoints/checkpoint_best.pt", map_location="cuda")
-model.load_state_dict(checkpoint["model_state_dict"])
-model.eval()
+# Load all checkpoints
+model.load_all(eval_mode=True)
 
 # Predict
 room_img = Image.open("examples/room.png").convert("RGB")
@@ -268,6 +261,7 @@ output = model.predict(
 
 # Results
 print(f"Scale: {output['scale_relative']}")
+print(f"Heatmap shape: {output['heatmap'].shape}")
 ```
 
 ---
@@ -275,33 +269,59 @@ print(f"Scale: {output['scale_relative']}")
 
 ## Training
 
+### Two-Stage Training Pipeline
+
+SAM-Q uses a **two-stage training** strategy:
+
+- **Stage 1**: Fine-tune Qwen3-VL with LoRA to generate `<SEG>` tokens
+- **Stage 2**: Train Adapter + SAM3 Decoder for placement prediction (heatmap + rotation + scale)
+
 ### Prepare Dataset
+
+#### Option 1: Use Existing Dataset
 
 ```
 data/
-+-- annotations.json          # Metadata with splits
-+-- plane_images/            # Room top-down views (1024x1024)
-|   +-- scene_001.png
-|   +-- ...
-+-- object_images/           # Object top-down views (1024x1024)
-|   +-- obj_001.png
-|   +-- ...
-+-- masks/                   # Ground truth placement masks
-    +-- scene_001_mask.png
-    +-- ...
+├── annotations.json          # Unified annotation file
+├── plane_images/            # Room top-down views (1024x1024)
+│   └── scene_001.png
+├── object_images/           # Object top-down views (1024x1024)
+│   └── chair_001.png
+└── masks/                   # Ground truth placement heatmaps
+    └── scene_001_mask.png
 ```
+
+#### Option 2: Auto-Generate Dataset from 3D Scenes
+
+If you have SSR3D-FRONT dataset:
+
+```bash
+python src/pretreatment/generate_training_data.py \
+  --scene_dir path/to/scenes \
+  --model_dir path/to/3D-FUTURE-model \
+  --output_dir data/ \
+  --num_samples 1000 \
+  --augmentation
+```
+
+📖 **See**: [docs/DATA_GENERATION.md](docs/DATA_GENERATION.md) for details.
 
 **annotations.json format**:
 ```json
 [
   {
     "scene_id": "scene_001",
-    "object_id": "obj_001",
+    "split": "train",
     "plane_image_path": "plane_images/scene_001.png",
-    "object_image_path": "object_images/obj_001.png",
+    "images_path": [
+      "plane_images/scene_001.png",
+      "object_images/chair_001.png"
+    ],
     "mask_path": "masks/scene_001_mask.png",
-    "text_prompt": "Place the chair near the table",
-    "split": "train"
+    "text_prompt": "<image>\n<image>\n把椅子放在桌子旁边",
+    "response": "好的，我会在桌子旁边放置椅子。<SEG>",
+    "rotation_6d": [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+    "scale": 1.0
   }
 ]
 ```
@@ -309,22 +329,28 @@ data/
 ### Run Training
 
 ```bash
-# Basic training
-python main.py train --config configs/config.yaml
+# Stage 1: Qwen3-VL LoRA fine-tuning
+python main.py train --config configs/stage1_qwen_lora.yaml
 
-# With overrides
-python main.py train \
-  --config configs/config.yaml \
-  --data_dir /path/to/data \
-  --output_dir /path/to/outputs
+# Stage 2: Adapter + SAM3 Decoder training
+python main.py train --config configs/stage2_decoder.yaml
 ```
+
+### Training Outputs
+
+After Stage 1:
+- `outputs/lora_weights/` — Qwen3-VL LoRA adapter
+- `data/seg_features/` — Auto-extracted `<SEG>` hidden states
+
+After Stage 2:
+- `outputs/adapter_checkpoint_best.pt` — Best adapter weights
+- `outputs/adapter_checkpoint_final.pt` — Final adapter weights
+- `outputs/sam3_checkpoint_best.pt` — Best SAM3 decoder weights (in original SAM3 format)
+- `outputs/sam3_checkpoint_final.pt` — Final SAM3 decoder weights
 
 ### Monitoring
 
-Training outputs are saved to:
-- `outputs/checkpoint_epoch_X.pt` - Per-epoch checkpoints
-- `outputs/checkpoint_best.pt` - Best validation loss checkpoint
-- `outputs/checkpoint_final.pt` - Final checkpoint
+Training outputs include per-epoch checkpoints, best validation loss checkpoint, and final checkpoint.
 
 ### Training with H-MVP or Incremental Memory
 
@@ -348,8 +374,6 @@ advanced:
 
 SAM-Q supports parameter-efficient fine-tuning of Qwen3-VL using **LoRA** combined with **SA2VA-style <SEG> token bridging**.
 
-📖 **完整指南**: [docs/FINETUNE_QWEN3VL.md](docs/FINETUNE_QWEN3VL.md)
-
 ### How <SEG> Tokens Work
 
 The `<SEG>` token is a special token added to Qwen3-VL's vocabulary. During forward pass:
@@ -366,27 +390,17 @@ SEG Projector → SAM3 Decoder → Placement Mask
 
 **Key insight**: The <SEG> token's hidden state varies based on input context — it learns *when* and *where* to trigger segmentation through joint training.
 
-### Multi-SEG Mode
+### Stage 1 Training with SFTTrainer
 
-For complex scenarios (multiple placements, spatial reasoning):
+Stage 1 uses HuggingFace's `SFTTrainer` for efficient fine-tuning:
 
-```python
-# Single SEG (most common)
-seg_hidden, _ = encoder.generate_with_seg(
-    object_image=obj_img,
-    text_prompt="放一把椅子",
-    force_only=True,
-    num_seg=1,  # output: [B, 4096]
-)
-
-# Multi SEG (advanced, SA2VA-style)
-seg_hidden, _ = encoder.generate_with_seg(
-    object_image=obj_img,
-    text_prompt="放一把椅子和一张桌子",
-    force_only=True,
-    num_seg=8,  # output: [B, 8, 4096]
-)
+```bash
+python main.py train --config configs/stage1_qwen_lora.yaml
 ```
+
+After Stage 1 completes:
+- LoRA weights saved to `outputs/lora_weights/`
+- `<SEG>` hidden states auto-extracted to `data/seg_features/`
 
 ### LoRA Configuration
 
@@ -416,39 +430,20 @@ encoder.enable_finetuning(
 | QLoRA 4-bit + Flash Attention 2 | ~10 GB | ✅ Training, batch=1 |
 | QLoRA 4-bit + gradient ckpt | ~8 GB | ✅ Training, comfortable |
 
-### Training Workflow
+### Stage 2 Training with Seg Features
 
-```python
-# 1. Prepare training data
-train_dataset = ObjectPlacementDataset(
-    data_dir=data_dir,
-    split="train",
-    ann_file=ann_file,
-    seg_feature_dir=seg_feature_dir,
-)
+Stage 2 uses pre-extracted `<SEG>` features, skipping Qwen3-VL (~16GB VRAM saved):
 
-train_loader = DataLoader(
-    train_dataset,
-    batch_size=batch_size,
-    shuffle=True,
-    num_workers=num_workers,
-    collate_fn=train_dataset._collate_fn if hasattr(train_dataset, '_collate_fn') else None,
-)
+```bash
+python main.py train --config configs/stage2_decoder.yaml
+```
 
-# 2. Forward pass (training mode returns logits + loss)
-output = encoder(
-    object_image=obj_img,
-    text_prompt=text,
-    labels=batch["labels"],
-)
-
-# 3. Backward + optimizer step (only LoRA params updated)
-loss = output["loss"]
-loss.backward()
-optimizer.step()
-
-# 4. Save LoRA adapter
-encoder.save_finetuned_model("./checkpoints/qwen3_vl_seg_lora")
+Config for Stage 2:
+```yaml
+data:
+  seg_feature_dir: "data/seg_features/"   # Pre-extracted features
+loss:
+  type: "placement"     # Dice + BCE + rotation + scale
 ```
 
 ---
@@ -460,26 +455,25 @@ encoder.save_finetuned_model("./checkpoints/qwen3_vl_seg_lora")
 ```bash
 # Process multiple samples
 python main.py predict \
-  --checkpoint checkpoints/checkpoint_best.pt \
-  --input data/test_samples/ \
-  --output results/batch_results/
+  --config configs/config.yaml \
+  --plane_image examples/room.png \
+  --object_image examples/chair.png \
+  --prompt "Place the chair near the table" \
+  --output results/
 ```
 
 ### Output Format
 
 Inference results are saved as:
-- **Visualization**: PNG with overlayed heatmap and bounding boxes
+- **Visualization**: PNG with overlayed heatmap and placement info
 - **JSON metadata**:
   ```json
   {
     "scene_id": "scene_001",
-    "num_placements": 3,
-    "placements": [
-      {
-        "box": [x1, y1, x2, y2],
-        "score": 0.95
-      }
-    ]
+    "rotation_deg": 45.0,
+    "scale_relative": 1.2,
+    "heatmap_shape": [64, 64],
+    "best_candidate": 0
   }
   ```
 

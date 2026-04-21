@@ -28,17 +28,17 @@ SAM-Q 训练集自动化生成器
         --aug_ratio 0.5
 """
 
+import cv2
 import json
 import random
+import trimesh
 import numpy as np
+from PIL import Image
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass
 
-import trimesh
 from scipy.spatial.transform import Rotation as R
-from PIL import Image
-import cv2
 
 # ========== 配置路径 ==========
 BASE_DIR = Path(r"d:/3D-Dataset")
@@ -349,7 +349,11 @@ class TrainingDataGenerator:
         # 高斯核
         y, x = np.ogrid[:image_size, :image_size]
         heatmap = np.exp(-((x - center_x)**2 + (y - center_y)**2) / (2 * sigma**2))
-        heatmap = heatmap / heatmap.max()  # 归一化到 [0, 1]
+        
+        # 归一化到 [0, 1]（避免除 0）
+        max_val = heatmap.max()
+        if max_val > 0:
+            heatmap = heatmap / max_val
 
         # 2. 碰撞检测：将碰撞区域置零
         collision_mask = self._compute_collision_mask(scene, image_size)
@@ -366,11 +370,20 @@ class TrainingDataGenerator:
         bounds: np.ndarray,
         image_size: int,
     ) -> Tuple[float, float]:
-        """世界坐标转图像坐标"""
-        x_min, y_min = bounds[0]
-        x_max, y_max = bounds[1]
-        x = (pos[0] - x_min) / (x_max - x_min) * image_size
-        y = (pos[1] - y_min) / (y_max - y_min) * image_size
+        """世界坐标转图像坐标（只使用 X, Y）"""
+        if bounds is None:
+            return image_size / 2, image_size / 2
+        # bounds: [[min_x, min_y, min_z], [max_x, max_y, max_z]]
+        x_min = bounds[0, 0]
+        y_min = bounds[0, 1]
+        x_max = bounds[1, 0]
+        y_max = bounds[1, 1]
+        x_range = x_max - x_min
+        y_range = y_max - y_min
+        if x_range == 0 or y_range == 0:
+            return image_size / 2, image_size / 2
+        x = (pos[0] - x_min) / x_range * image_size
+        y = (pos[1] - y_min) / y_range * image_size
         return x, y
 
     def _compute_collision_mask(
@@ -381,20 +394,48 @@ class TrainingDataGenerator:
         """计算碰撞掩码（占据区域为 True）"""
         mask = np.zeros((image_size, image_size), dtype=bool)
         bounds = scene.bounds
-        x_min, y_min = bounds[0]
-        x_max, y_max = bounds[1]
+        if bounds is None:
+            return mask
+        # bounds: [[min_x, min_y, min_z], [max_x, max_y, max_z]]
+        x_min = bounds[0, 0]
+        y_min = bounds[0, 1]
+        x_max = bounds[1, 0]
+        y_max = bounds[1, 1]
+        x_range = x_max - x_min
+        y_range = y_max - y_min
+        if x_range == 0 or y_range == 0:
+            return mask
 
-        # 简化碰撞检测：遍历场景中所有几何体的投影
+        # 碰撞检测：遍历场景中所有几何体的投影
+        # 排除地板、天花板、墙壁等基础几何体
+        ignore_names = {"floor", "ceiling", "wall"}
         for geom_name, geom in scene.geometry.items():
             if not isinstance(geom, trimesh.Trimesh):
                 continue
+            # 跳过基础几何体
+            if any(ignored in geom_name.lower() for ignored in ignore_names):
+                continue
+            # 使用顶点和面片生成更完整的投影
             vertices = geom.vertices
-            # 投影到 XY 平面
-            for v in vertices:
-                ix = int((v[0] - x_min) / (x_max - x_min) * image_size)
-                iy = int((v[1] - y_min) / (y_max - y_min) * image_size)
-                if 0 <= ix < image_size and 0 <= iy < image_size:
-                    mask[iy, ix] = True
+            # 对每个面片的顶点进行插值，填充投影区域
+            for face in geom.faces:
+                # 获取面片的三个顶点
+                v0, v1, v2 = vertices[face]
+                # 在面片内部进行采样（10x10 网格）
+                for i in range(10):
+                    for j in range(10 - i):
+                        # 重心坐标插值
+                        u = i / 9.0
+                        v = j / 9.0
+                        w = 1.0 - u - v
+                        if w < 0:
+                            continue
+                        px = u * v0[0] + v * v1[0] + w * v2[0]
+                        py = u * v0[1] + v * v1[1] + w * v2[1]
+                        ix = int((px - x_min) / x_range * image_size)
+                        iy = int((py - y_min) / y_range * image_size)
+                        if 0 <= ix < image_size and 0 <= iy < image_size:
+                            mask[iy, ix] = True
 
         return mask
 
@@ -431,11 +472,15 @@ class TrainingDataGenerator:
 
         # 3. 随机移动到新位置（不与其他物体碰撞）
         bounds = scene.bounds
+        if bounds is None:
+            return None, None
+        x_min, y_min, z_min = bounds[0]
+        x_max, y_max, z_max = bounds[1]
         for _ in range(100):  # 最多尝试 100 次
             new_pos = [
-                random.uniform(bounds[0][0], bounds[1][0]),
-                random.uniform(bounds[0][1], bounds[1][1]),
-                obj.pos[2] if obj.is_on_floor else obj.pos[2],  # 保持 Z 值
+                random.uniform(x_min, x_max),
+                random.uniform(y_min, y_max),
+                obj.pos[2],  # 保持 Z 值
             ]
             # 检查碰撞
             if not self._check_position_collision(scene, new_pos, obj.mesh, scale_aug):

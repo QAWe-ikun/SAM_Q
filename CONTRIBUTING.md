@@ -351,6 +351,17 @@ Brief description of changes
 4. Add to `src/data/__init__.py`
 5. Add example to docs
 
+### Auto-Generating Training Data
+
+If you have 3D scene data (e.g., SSR3D-FRONT):
+
+1. Use `src/pretreatment/generate_training_data.py`
+2. Configure scene/model paths and output parameters
+3. Run with `--augmentation` for data augmentation
+4. Outputs: `annotations.json`, `plane_images/`, `object_images/`, `masks/`
+
+See [docs/DATA_GENERATION.md](docs/DATA_GENERATION.md) for details.
+
 ### Fixing a Bug
 
 1. Write test that reproduces bug

@@ -175,7 +175,7 @@ SEG Projector → SAM3 Decoder → Placement Mask
 ```
 
 Key design decisions:
-- `[SEG0]`~`[SEG63]` are added to the vocabulary as special tokens
+- `<SEG>` is added to the vocabulary as a special token
 - `force_only=True` (training): directly append <SEG> and extract hidden state in one pass
 - `force_only=False` (inference): model may naturally generate <SEG>; fallback to force-append
 - Hidden states vary with input — the model learns *when* and *where* to trigger segmentation
@@ -326,8 +326,8 @@ Qwen3-VL → <SEG> hidden state [B, 4096]
 ```python
 {
     "heatmap": [B, num_candidates, H, W],   # SAM3 placement heatmap
-    "rotation_deg": [B],                     # -180 to 180 degrees
-    "scale_relative": [B],                   # 0.5x to 2.0x
+    "rotation_6d": [B, 6],                   # 6D rotation representation
+    "scale_relative": [B],                   # Relative scale (0.5x - 2.0x)
     "seg_hidden": [B, 4096],                # <SEG> token hidden state
 }
 ```
@@ -335,29 +335,34 @@ Qwen3-VL → <SEG> hidden state [B, 4096]
 **Output from `predict()`**:
 ```python
 {
-    "position_meters": [B, 2],               # Physical coordinates
-    "position_norm": [B, 2],                 # Normalized [0,1]
-    "rotation_deg": [B],                     # -180 to 180
+    "heatmap": [B, H, W],                    # 2D placement heatmap (best candidate)
+    "binary_heatmap": [B, H, W],             # Binary mask after threshold
+    "rotation_deg": [B],                     # -180 to 180 degrees
     "scale_relative": [B],                   # 0.5 to 2.0
-    "heatmap": [B, H, W],                    # Upsampled to original size
+    "qwen_response": str,                    # Generated Qwen response
+    "best_candidate_idx": int,               # Selected candidate index
 }
 ```
 
 **Usage**:
 ```python
 model = SAMQPlacementModel(
+    sam_checkpoint_path="./outputs/sam3_checkpoint_final.pt",
+    adapter_checkpoint_path="./outputs/adapter_checkpoint_final.pt",
     qwen_model_name="./models/qwen3_vl",
+    qwen_lora_path="./outputs/lora_weights",
     sam3_input_dim=256,
     qwen_hidden_dim=4096,
     adapter_hidden_dim=512,
     action_head_config={"heatmap_size": 64},
 )
+model.load_all(eval_mode=True)
 
 output = model.predict(
     plane_image=room_img,
     text_prompt="Place the chair near the table",
     images=[room_img, chair_img],
-    scene_size_meters=4.0,
+    threshold=0.5,
 )
 ```
 
@@ -378,31 +383,7 @@ Linear→[H*W]       Linear→Tanh    Linear→Sigmoid
 Heatmap         [-180, 180]°     [0.5, 2.0]x
 ```
 
-#### IncrementalHMVPMemory
-
-**Innovation**: Dynamic scene understanding that updates with each placement.
-
-**Workflow**:
-```
-Initial Scene -> Build H-MVP
-      |
-Place Object A
-      |
-Update H-MVP (incremental, not rebuild)
-      |
-Place Object B
-      |
-Update H-MVP
-      |
-...
-```
-
-**Key Methods**:
-- `initialize_from_scene()`: Build initial H-MVP
-- `update_with_new_object()`: Incremental update
-- `update_with_object_movement()`: Handle object movement
-
-**Implementation**: `src/models/collision/incremental_hmvp.py`
+**Implementation**: `src/models/vla/unified_scale_vla.py`
 
 ---
 
@@ -432,7 +413,7 @@ candidates = placer.extract(
 
 ## Data Flow
 
-### Training
+### Stage 1: Qwen3-VL LoRA Fine-Tuning
 
 ```
 annotations.json
@@ -440,32 +421,52 @@ annotations.json
 ObjectPlacementDataset + DataLoader
       |
 +----------------------------+
-| DataLoader (batch=4)       |
-|  - plane_images: Tensor[B, 3, H, W] |
-|  - object_images: Tensor[B, 3, H, W]|
-|  - text_prompts: List[str] |
-|  - masks: Tensor[B, 1, H, W]|
+| Qwen3VLEncoder.forward()   |
+|  1. Build messages with images|
+|  2. Apply chat template    |
+|  3. Forward through Qwen   |
+|  4. Compute LM loss on <SEG>|
 +------------|---------------+
              v
-SAMQPlacementModel.forward()
+SFTTrainer (HuggingFace)
              |
 +----------------------------+
+| - AdamW optimizer          |
+| - Cosine LR scheduler      |
+| - Save LoRA to lora_weights/|
+| - Auto-extract seg_features |
++----------------------------+
+```
+
+### Stage 2: Adapter + SAM3 Decoder Training
+
+```
+annotations.json + seg_features/
+      |
+ObjectPlacementDataset + DataLoader
+      |
++----------------------------+
 | For each sample in batch:  |
-|  1. plane_image -> SAM3 encoder  |
-|  2. object+text -> Qwen -> Adapter|
-|  3. Combined -> SAM3 detector    |
-|  4. Output: masks               |
+|  1. Read seg_hidden (skip Qwen) |
+|  2. seg_hidden -> Adapter -> SAM3 prompts|
+|  3. plane_image + prompts -> SAM3 decoder|
+|  4. seg_hidden -> SEGActionHead         |
+|  5. Output: heatmap + rotation + scale  |
 +------------|---------------+
              v
-PlacementLoss(masks, targets)
+PlacementLoss(heatmap, rotation, scale)
              |
 +----------------------------+
 | Loss Components:           |
 |  - Dice Loss (weight=1.0)  |
 |  - BCE Loss (weight=1.0)   |
+|  - Rotation L1 (weight=0.5)|
+|  - Scale L1 (weight=0.3)   |
 +------------|---------------+
              v
 backward() -> optimizer.step()
+             |
+Save: adapter_checkpoint_*.pt, sam3_checkpoint_*.pt
 ```
 
 ### Inference
@@ -473,17 +474,17 @@ backward() -> optimizer.step()
 ```
 plane_image + object_image + text
              |
-PlacementPredictor.predict()
+SAMQPlacementModel.predict()
              |
 +----------------------------+
-| 1. Resize images           |
-| 2. Model forward (no grad) |
-| 3. Apply threshold         |
-| 4. Extract boxes & scores  |
-| 5. Create heatmap visualization|
+| 1. Qwen3-VL -> <SEG> token|
+| 2. <SEG> -> Adapter -> SAM3|
+| 3. <SEG> -> SEGActionHead  |
+| 4. Best candidate selection|
+| 5. Qwen response generation|
 +------------|---------------+
              v
-Results: {mask, heatmap, boxes, scores}
+Results: {heatmap, binary_heatmap, rotation_deg, scale_relative, qwen_response}
 ```
 
 ---
@@ -586,11 +587,11 @@ class MyLoss(nn.Module):
 ```
 SAM-Q/
 |-- configs/                     # Configuration files
-|   |-- base.yaml               # Base configuration
-|   |-- hmvp.yaml               # H-MVP collision detection
-|   |-- incremental_vla.yaml    # Incremental VLA memory
-|   |-- seg_token.yaml          # Multi-SEG token mode
-|   +-- vla.yaml                # Parallel SAM3 + SEGActionHead
+|   |-- config.yaml             # Inference config
+|   |-- stage1_qwen_lora.yaml   # Stage 1 training config
+|   |-- stage2_decoder.yaml     # Stage 2 training config
+|   |-- test_stage1.yaml
+|   +-- test_stage2.yaml
 |
 |-- src/
 |   |-- models/                  # Model architectures
@@ -601,19 +602,21 @@ SAM-Q/
 |   |   |-- adapters/           # Adapter modules
 |   |   |   |-- base_adapter.py
 |   |   |   |-- cross_modal_adapter.py
+|   |   |   |-- seg_token_projector.py
 |   |   |   +-- presence_token_adapter.py
 |   |   |-- collision/          # Collision detection
-|   |   |   |-- hmvp_collision_detector.py
-|   |   |   +-- incremental_hmvp.py
+|   |   |   +-- hmvp_collision_detector.py
 |   |   |-- vla/                # VLA action output
 |   |   |   +-- unified_scale_vla.py  # SEGActionHead
 |   |   |-- sampling/           # Sampling strategies
+|   |   |   +-- heatmap_guided_placer.py
 |   |   +-- placement_model.py  # Main model (unified predict)
 |   |
+|   |-- pretreatment/            # Data generation
+|   |   +-- generate_training_data.py
+|   |
 |   |-- data/                    # Data pipeline
-|   |   |-- dataset.py
-|   |   |-- vla_dataset.py
-|   |   +-- transforms.py
+|   |   +-- dataset.py
 |   |
 |   |-- train/                   # Training framework
 |   |   |-- trainer.py
@@ -624,16 +627,21 @@ SAM-Q/
 |   |   |-- predictor.py
 |   |   +-- visualizer.py
 |   |
-|   +-- utils/                   # Utilities
-|       +-- config.py
+|   |-- utils/                   # Utilities
+|   |   +-- config.py
+|   |
+|   +-- sam3/                    # SAM3 model (submodule)
 |
 |-- scripts/                     # Helper scripts
 |   |-- download_models.py
-|   +-- download_data.sh
+|   |-- download_data.sh
+|   +-- test_data_generation.py
 |
 |-- main.py                      # CLI entry point
 |-- README.md                    # Documentation
-+-- ARCHITECTURE.md              # This file
+|-- ARCHITECTURE.md              # This file
+|-- CONTRIBUTING.md              # Contribution guide
++-- requirements.txt             # Dependencies
 ```
 
 ---

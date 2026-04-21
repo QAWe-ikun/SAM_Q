@@ -14,7 +14,7 @@ data/
 ├── object_images/                # 物体俯视图
 │   ├── chair_001.png
 │   └── ...
-├── masks/                        # GT 放置 mask（二值图）
+├── masks/                        # GT 放置热力图（概率图，0-255）
 │   ├── scene_001_mask.png
 │   └── ...
 └── seg_features/                 # <SEG> hidden states（Stage 1 训练后自动生成）
@@ -147,7 +147,7 @@ Stage 1 训练结束后**自动生成**，无需手动创建。
 |------|------|-----------|------|
 | plane_image | PNG/JPG, RGB | 1024×1024 | 房间或桌面的俯视图 |
 | object_image | PNG/JPG, RGB | 1024×1024 | 物体的俯视图，背景尽量干净 |
-| mask | PNG, 灰度 | 与 plane_image 一致 | 白色(255)=放置区域，黑色(0)=不可放置 |
+| mask | PNG, 灰度 | 与 plane_image 一致 | 概率图：0=不可放置，255=最佳位置 |
 
 **注意**：plane_image、object_image、mask 必须在数据生成时保持统一尺寸，Dataset 不做 resize。
 
