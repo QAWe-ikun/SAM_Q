@@ -6,29 +6,34 @@ SAM-Q 训练集自动化生成器
 流程:
 1. 加载场景 JSON，构建完整 3D 场景
 2. 渲染原始房间俯视图/侧视图
-3. VLM 识别所有物体及位置（可选）
-4. 随机选择一个目标物体
-5. 生成物体参考图（俯视图，正向朝上，缩放=1）
+3. 每次随机选择一个目标物体
+4. VLM 识别该物体及位置
+5. 生成物体参考图（俯视图，正向朝上，随机缩放）
 6. 剔除目标物体，渲染剔除后房间图
 7. 生成 GT 热力图（原位置最高概率，碰撞区域为 0）
 8. 保存样本（annotations.json + 图片）
 
 数据增强:
 - 随机移动物体到不重叠位置
-- 随机旋转 Z 轴，缩放随机变化
-- 预测移动后的位置 + 旋转/缩放的倒数
+- 随机旋转支撑轴
+- 预测移动后的位置 + 旋转的倒数
 
 使用方法:
-    python generate_training_data.py \\
-        --scene_dir d:/3D-Dataset/dataset-ssr3dfront/scenes \\
-        --model_dir d:/3D-Dataset/3D-FUTURE-model \\
-        --output_dir data/ \\
-        --num_samples 1000 \\
-        --augmentation \\
+    python src/pretreatment/generate_training_data.py \
+        --scene_dir /mnt/d/3D-Dataset/dataset-ssr3dfront/scenes \
+        --model_dir /mnt/d/3D-Dataset/3D-FUTURE-model \
+        --output_dir data/ \
+        --num_samples 1000 \
+        --augmentation \
         --aug_ratio 0.5
 """
 
-import cv2
+import os
+
+# WSL 无头环境下强制使用 EGL 渲染后端
+if not os.environ.get("PYOPENGL_PLATFORM"):
+    os.environ["PYOPENGL_PLATFORM"] = "egl"
+
 import json
 import random
 import trimesh
@@ -41,14 +46,14 @@ from dataclasses import dataclass
 from scipy.spatial.transform import Rotation as R
 
 # ========== 配置路径 ==========
-BASE_DIR = Path(r"d:/3D-Dataset")
+BASE_DIR = Path(r"/mnt/d/3D-Dataset")
 SCENE_DIR = BASE_DIR / "dataset-ssr3dfront" / "scenes"
 MODEL_DIR = BASE_DIR / "3D-FUTURE-model"
-OUTPUT_DIR = BASE_DIR / "dataset-ssr3dfront" / "output"
+OUTPUT_DIR = "data"
 # ==============================
 
 # 渲染相机配置
-TOP_VIEW_CAMERA_HEIGHT = 5.0  # 俯视图相机高度
+TOP_VIEW_CAMERA_HEIGHT = 8.0  # 俯视图相机高度
 SIDE_VIEW_CAMERA_DISTANCE = 5.0  # 侧视图相机距离
 IMAGE_SIZE = 1024
 FOV_DEGREES = 45
@@ -61,27 +66,12 @@ HEATMAP_MIN_PROB = 0.01  # 最小概率阈值
 AUG_ROTATION_RANGE = 180  # Z 轴旋转范围（度）
 AUG_SCALE_RANGE = (0.8, 1.5)  # 缩放范围
 
-# 物体类别到中文映射（示例）
-CATEGORY_ZH = {
-    "chair": "椅子",
-    "table": "桌子",
-    "sofa": "沙发",
-    "bed": "床",
-    "cabinet": "柜子",
-    "desk": "书桌",
-    "lamp": "台灯",
-    "plant": "盆栽",
-    "shelf": "架子",
-    "stool": "凳子",
-}
-
 
 @dataclass
 class ObjectInfo:
     """物体信息"""
     jid: str
     model_id: str
-    name: str
     pos: List[float]
     rot: List[float]
     size: List[float]
@@ -154,40 +144,65 @@ class TrainingDataGenerator:
         return model_id, sx, sy, sz
 
     def load_mesh(self, model_path: Path) -> Optional[trimesh.Trimesh]:
-        """加载并合并网格"""
+        """加载并合并网格，跳过没有视觉属性的模型"""
         try:
             loaded = trimesh.load(model_path, force='scene')
             if isinstance(loaded, trimesh.Scene):
-                meshes = [g for g in loaded.geometry.values() if isinstance(g, trimesh.Trimesh)]
+                # 过滤出有视觉属性的网格
+                meshes = []
+                for g in loaded.geometry.values():
+                    if not isinstance(g, trimesh.Trimesh):
+                        continue
+                    # 跳过没有视觉属性的网格
+                    if g.visual is None:
+                        print(f"[Info] Skipping mesh without visual: {g}")
+                        continue
+                    meshes.append(g)
+                
                 if not meshes:
                     return None
+                # 合并网格
                 return trimesh.util.concatenate(meshes)
-            return loaded
+            # 如果是单个网格，检查视觉属性
+            if isinstance(loaded, trimesh.Trimesh):
+                if loaded.visual is None:
+                    return None
+                return loaded
+            return None
         except Exception:
             return None
-
-    def get_object_name(self, model_id: str) -> str:
-        """获取物体类别中文名"""
-        for en, zh in CATEGORY_ZH.items():
-            if en in model_id.lower():
-                return zh
-        return "物品"
+    
+    def _triangulate_polygon(self, n: int, reverse: bool = False) -> np.ndarray:
+        """多边形三角化"""
+        faces = []
+        for i in range(1, n - 1):
+            if reverse:
+                # 反面：反转顶点顺序
+                faces.append([0, i + 1, i])
+            else:
+                faces.append([0, i, i + 1])
+        return np.array(faces)
 
     def build_scene(self, scene_data: Dict) -> Tuple[trimesh.Scene, List[ObjectInfo]]:
         """构建完整场景，返回场景和物体列表"""
         scene = trimesh.Scene()
 
-        # 添加地板、天花板、墙壁
+        # 添加地板
         bounds_top = scene_data.get('bounds_top', [])
         bounds_bottom = scene_data.get('bounds_bottom', [])
+        
         if bounds_top and bounds_bottom:
-            floor_v = np.array(bounds_bottom)
+            bounds_top = np.array(bounds_top)
+            bounds_bottom = np.array(bounds_bottom)
+            
+            # 添加地板
+            floor_v = bounds_bottom
             floor_f = self._triangulate_polygon(len(bounds_bottom))
             scene.add_geometry(
                 trimesh.Trimesh(vertices=floor_v, faces=floor_f, process=False),
                 geom_name="floor"
             )
-
+            
         # 加载所有家具
         objects = []
         for obj_data in scene_data.get('objects', []):
@@ -204,16 +219,12 @@ class TrainingDataGenerator:
             mesh = self.load_mesh(model_path)
             if mesh is None:
                 continue
+            
+            # 应用缩放
+            mesh.apply_scale([sx, sy, sz])
 
-            # 缩放到期望尺寸
-            extents = mesh.extents
-            if np.all(extents > 0):
-                scale = np.mean(np.array(size) / extents)
-                mesh.apply_scale(scale)
-                mesh.apply_scale([sx, sy, sz])
-
-            # 判断是否在地面上（Z 值接近 0）
-            is_on_floor = abs(pos[2]) < 0.05
+            # 判断是否在地面上
+            is_on_floor = abs(pos[1] - bounds_bottom[0][1]) < 0.01
 
             # 创建副本并应用变换
             mesh_transformed = mesh.copy()
@@ -231,7 +242,6 @@ class TrainingDataGenerator:
             objects.append(ObjectInfo(
                 jid=jid,
                 model_id=model_id,
-                name=self.get_object_name(model_id),
                 pos=pos,
                 rot=rot,
                 size=size,
@@ -243,54 +253,124 @@ class TrainingDataGenerator:
 
         return scene, objects
 
-    def _triangulate_polygon(self, n: int) -> np.ndarray:
-        """多边形三角化"""
-        faces = []
-        for i in range(1, n - 1):
-            faces.append([0, i, i + 1])
-        return np.array(faces)
-
     def render_scene(
         self,
         scene: trimesh.Scene,
         camera_position: List[float],
         camera_target: List[float],
         resolution: int = IMAGE_SIZE,
+        is_top_view: bool = False,
     ) -> np.ndarray:
-        """渲染场景为 RGB 图像"""
-        # 创建相机
-        camera = trimesh.scene.cameras.Camera(
-            fov=(FOV_DEGREES, FOV_DEGREES),
-            resolution=(resolution, resolution),
-            z_near=0.01,
-            z_far=100.0,
-        )
+        """渲染场景为 RGB 图像（使用 pyrender 离屏渲染）"""
+        
+        import pyrender
+            
+        try:
+            camera_position = np.array(camera_position, dtype=np.float64)
+            camera_target = np.array(camera_target, dtype=np.float64)
+            camera_position = camera_position[[0,2,1]]  # XYZ -> XZY
+            camera_target = camera_target[[0,2,1]]  # XYZ -> XZY
 
-        # 设置相机位置和朝向
-        scene.camera = camera
-        scene.camera_transform = trimesh.transformations.look_at(
-            camera_position, camera_target, [0, 0, 1]
-        )
+            # 计算相机方向
+            forward = camera_target - camera_position
+            forward = forward / np.linalg.norm(forward)
+            
+            # 使用 Z 轴作为世界坐标系的上方向（trimesh 坐标系：Z 向上）
+            world_up = np.array([0.0, 0.0, 1.0])
+            
+            # 计算右向量
+            right = np.cross(forward, world_up)
+            right = right / np.linalg.norm(right)
+            
+            # 重新计算真正的上方向（垂直于 forward 和 right）
+            up = np.cross(right, forward)
 
-        # 渲染
-        png = scene.save_image(
-            resolution=(resolution, resolution),
-            visible=True,
-        )
+            # 构建相机在世界坐标系中的变换矩阵
+            # pyrender 的 pose 是相机在世界空间中的位置和朝向
+            cam_transform = np.eye(4)
+            cam_transform[:3, 0] = right   # X 轴：右
+            cam_transform[:3, 1] = up      # Y 轴：上
+            cam_transform[:3, 2] = -forward  # Z 轴：前（相机朝向）
+            cam_transform[:3, 3] = camera_position
+            
+            # 创建 pyrender 场景
+            py_scene = pyrender.Scene()
+            
+            # 添加 trimesh 几何体
+            for geom_name, geom in scene.geometry.items():
+                if isinstance(geom, trimesh.Trimesh):
+                    try:
+                        # 深拷贝网格数据，清除可能的 ctypes 指针
+                        vertices = np.array(geom.vertices, dtype=np.float32)
+                        faces = np.array(geom.faces, dtype=np.int32)
+                        
+                        # 读取顶点颜色
+                        vertex_colors = None
+                        if geom.visual is not None:
+                            try:
+                                if hasattr(geom.visual, 'vertex_colors'):
+                                    # 直接使用顶点颜色
+                                    vertex_colors = np.array(geom.visual.vertex_colors, dtype=np.uint8)
+                                elif hasattr(geom.visual, 'to_color'):
+                                    # 如果是纹理模型，转换为顶点颜色
+                                    try:
+                                        color_visual = geom.visual.to_color()
+                                        vertex_colors = np.array(color_visual.vertex_colors, dtype=np.uint8)
+                                    except:
+                                        pass
+                            except:
+                                pass
+                        
+                        # 如果没有顶点颜色，使用默认白色
+                        if vertex_colors is None or len(vertex_colors) != len(vertices):
+                            vertex_colors = np.ones((len(vertices), 4), dtype=np.uint8) * 255
+                        
+                        clean_mesh = trimesh.Trimesh(
+                            vertices=vertices,
+                            faces=faces,
+                            vertex_colors=vertex_colors,
+                            process=False
+                        )
+                        mesh = pyrender.Mesh.from_trimesh(clean_mesh, smooth=False)
+                        py_scene.add(mesh, name=geom_name)
+                    except Exception as e:
+                        # 跳过有问题的几何体
+                        print(f"[Warning] Skipping mesh {geom_name}: {e}")
+                        continue
 
-        # 转换为 numpy 数组
-        img = np.frombuffer(png, dtype=np.uint8)
-        img = cv2.imdecode(img, cv2.IMREAD_COLOR)
-        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        return img
+            # 添加相机
+            aspect_ratio = 1.0
+            yfov = np.radians(FOV_DEGREES)
+            camera = pyrender.PerspectiveCamera(yfov=yfov, aspectRatio=aspect_ratio)
+            py_scene.add(camera, pose=cam_transform)
 
-    def render_top_view(self, scene: trimesh.Scene) -> np.ndarray:
-        """渲染俯视图"""
-        bounds = scene.bounds
-        center = bounds.mean(axis=0)
-        camera_pos = [center[0], center[1], bounds[1][2] + TOP_VIEW_CAMERA_HEIGHT]
-        camera_target = [center[0], center[1], 0]
-        return self.render_scene(scene, camera_pos, camera_target)
+            # 添加光源
+            light = pyrender.DirectionalLight(color=[1.0, 1.0, 1.0], intensity=3.0)
+            py_scene.add(light, pose=cam_transform)
+
+            # 离屏渲染
+            r = pyrender.OffscreenRenderer(viewport_width=resolution, viewport_height=resolution)
+            color, _ = r.render(py_scene)
+            r.delete()
+            
+            
+            return color
+            
+        except Exception as e:
+            # 回退到 2D 投影
+            raise RuntimeError("Pyrender 渲染失败，回退到 2D 投影 error: " + str(e))
+
+    def render_top_view(self, scene: trimesh.Scene, bounds_bottom: List[List[float]]) -> np.ndarray:
+        """渲染俯视图（从 Z 轴正方向往下看，投影到 XY 平面）"""
+        bounds_bottom = np.array(bounds_bottom)
+        min_x = bounds_bottom[:, 0].min()
+        min_y = bounds_bottom[:, 1].min()
+        max_x = bounds_bottom[:, 0].max()
+        max_y = bounds_bottom[:, 1].max()
+        center = [(min_x + max_x) / 2, (min_y + max_y) / 2, 0]
+        camera_pos = [center[0], center[1], TOP_VIEW_CAMERA_HEIGHT]
+        camera_target = [center[0], center[1], bounds_bottom[0][2]]
+        return self.render_scene(scene, camera_pos, camera_target, is_top_view=True)
 
     def render_side_view(
         self,
@@ -299,33 +379,41 @@ class TrainingDataGenerator:
     ) -> np.ndarray:
         """渲染侧视图（面向指定墙面）"""
         bounds = scene.bounds
+        if bounds is None:
+            return np.zeros((IMAGE_SIZE, IMAGE_SIZE, 3), dtype=np.uint8)
         center = bounds.mean(axis=0)
         # 面向墙面的相机位置
         camera_pos = [center[0] - SIDE_VIEW_CAMERA_DISTANCE, center[1], center[2]]
         camera_target = [center[0], center[1], center[2]]
-        return self.render_scene(scene, camera_pos, camera_target)
+        return self.render_scene(scene, camera_pos, camera_target, is_top_view=False)
 
     def render_object_reference(
         self,
         mesh: trimesh.Trimesh,
         resolution: int = IMAGE_SIZE,
     ) -> np.ndarray:
-        """渲染物体参考图（俯视图，正向朝上，缩放=1）"""
-        # 复制并重置旋转
+        """渲染物体参考图（俯视图，正向朝上，保持原始尺寸）"""
+        # 复制 mesh 并重置所有变换
         obj_mesh = mesh.copy()
-        # 确保正向朝上（绕 Z 轴旋转 0 度）
-        # 缩放到单位尺寸
-        extents = obj_mesh.extents
-        if np.all(extents > 0):
-            obj_mesh.apply_scale(1.0 / extents[0])
 
-        # 居中
+        # 将物体居中
         obj_mesh.apply_translation(-obj_mesh.centroid)
 
-        scene = trimesh.Scene([obj_mesh])
-        camera_pos = [0, 0, 2.0]
-        camera_target = [0, 0, 0]
-        return self.render_scene(scene, camera_pos, camera_target, resolution)
+        # 创建只包含该物体的场景
+        obj_scene = trimesh.Scene([obj_mesh])
+        
+        # 使用与 render_top_view 相同的相机配置
+        bounds = obj_scene.bounds
+        if bounds is None:
+            return np.zeros((resolution, resolution, 3), dtype=np.uint8)
+        
+        center = bounds.mean(axis=0)
+        # 相机位置：在物体正上方
+        camera_pos = [center[0], center[1], bounds[1][2] + TOP_VIEW_CAMERA_HEIGHT]
+        # 相机目标：物体中心
+        camera_target = [center[0], center[1], bounds[0][2]]
+        
+        return self.render_scene(obj_scene, camera_pos, camera_target, resolution, is_top_view=True)
 
     def generate_heatmap(
         self,
@@ -407,7 +495,7 @@ class TrainingDataGenerator:
             return mask
 
         # 碰撞检测：遍历场景中所有几何体的投影
-        # 排除地板、天花板、墙壁等基础几何体
+        # 排除地板、墙壁等基础几何体
         ignore_names = {"floor", "ceiling", "wall"}
         for geom_name, geom in scene.geometry.items():
             if not isinstance(geom, trimesh.Trimesh):
@@ -509,7 +597,6 @@ class TrainingDataGenerator:
         aug_obj = ObjectInfo(
             jid=obj.jid,
             model_id=obj.model_id,
-            name=obj.name,
             pos=new_pos,
             rot=rot_aug,
             size=obj.size,
@@ -528,19 +615,33 @@ class TrainingDataGenerator:
         mesh: trimesh.Trimesh,
         scale: float,
     ) -> bool:
-        """检查指定位置是否与其他物体碰撞"""
+        """检查指定位置是否与其他物体碰撞（使用 AABB 包围盒）"""
         test_mesh = mesh.copy()
         test_mesh.apply_scale(scale)
         T = np.eye(4)
         T[:3, 3] = pos
         test_mesh.apply_transform(T)
 
+        test_bounds = test_mesh.bounds
+
         for geom_name, geom in scene.geometry.items():
             if not isinstance(geom, trimesh.Trimesh):
                 continue
-            if geom_name.startswith("obj_"):
-                if trimesh.intersects.signed_distance(test_mesh, geom).min() < 0:
-                    return True
+            # 只检测其他家具物体，排除地板/墙壁
+            if any(skip in geom_name.lower() for skip in ["floor", "wall"]):
+                continue
+            
+            geom_bounds = geom.bounds
+            if geom_bounds is None:
+                continue
+                
+            # AABB 重叠检测
+            if (test_bounds[0, 0] < geom_bounds[1, 0] and 
+                test_bounds[1, 0] > geom_bounds[0, 0] and
+                test_bounds[0, 1] < geom_bounds[1, 1] and 
+                test_bounds[1, 1] > geom_bounds[0, 1]):
+                return True
+                
         return False
 
     def generate_text_prompt(self, obj_name: str, is_aug: bool = False) -> str:
@@ -629,9 +730,9 @@ class TrainingDataGenerator:
 
         # 1. 渲染原始房间图
         if target_obj.is_on_floor:
-            room_image = self.render_top_view(scene)
+            self.render_top_view(scene, scene_data.get('bounds_bottom', []))
         else:
-            room_image = self.render_side_view(scene)
+            self.render_side_view(scene)
 
         # 2. 渲染物体参考图（俯视图，正向，缩放=1）
         object_image = self.render_object_reference(target_obj.mesh)
@@ -640,8 +741,8 @@ class TrainingDataGenerator:
         heatmap = self.generate_heatmap(scene, target_obj.pos)
 
         # 4. 生成文本
-        text_prompt = self.generate_text_prompt(target_obj.name, is_aug=False)
-        response = self.generate_response(target_obj.name)
+        text_prompt = self.generate_text_prompt(target_obj.model_id, is_aug=False)
+        response = self.generate_response(target_obj.model_id)
 
         # 5. 计算旋转和缩放标签（倒数）
         # 原始旋转的倒数
@@ -658,7 +759,7 @@ class TrainingDataGenerator:
 
         # 6. 剔除物体，渲染剔除后房间图
         scene_without_obj = self.remove_object_from_scene(scene, target_obj)
-        plane_image = self.render_top_view(scene_without_obj)
+        plane_image = self.render_top_view(scene_without_obj, scene_data.get('bounds_bottom', []))
 
         # 7. 保存样本
         self.save_sample(
@@ -692,7 +793,8 @@ class TrainingDataGenerator:
 
                 # 渲染剔除后房间图
                 aug_plane_image = self.render_top_view(
-                    self.remove_object_from_scene(aug_scene, aug_obj)
+                    self.remove_object_from_scene(aug_scene, aug_obj),
+                    scene_data.get('bounds_bottom', [])
                 )
 
                 self.save_sample(
@@ -700,8 +802,8 @@ class TrainingDataGenerator:
                     object_image=aug_object_image,
                     heatmap=aug_heatmap,
                     obj=aug_obj,
-                    text_prompt=self.generate_text_prompt(aug_obj.name, is_aug=True),
-                    response=self.generate_response(aug_obj.name),
+                    text_prompt=self.generate_text_prompt(aug_obj.model_id, is_aug=True),
+                    response=self.generate_response(aug_obj.model_id),
                     rotation_6d=aug_rot_6d,
                     scale=aug_scale,
                     split=split,
@@ -745,21 +847,20 @@ class TrainingDataGenerator:
         print(f"\n生成完成! 总样本数: {self.sample_counter}")
         self.save_annotations()
 
-
 def main():
     import argparse
 
     parser = argparse.ArgumentParser(description="SAM-Q 训练数据生成器")
     parser.add_argument(
-        "--scene_dir", type=Path, default=SCENE_DIR,
+        "--scene_dir", type=str, default=None,
         help="SSR3D-FRONT 场景 JSON 目录"
     )
     parser.add_argument(
-        "--model_dir", type=Path, default=MODEL_DIR,
+        "--model_dir", type=str, default=None,
         help="3D-FUTURE 模型目录"
     )
     parser.add_argument(
-        "--output_dir", type=Path, default=OUTPUT_DIR,
+        "--output_dir", type=str, default=str(OUTPUT_DIR),
         help="输出数据目录"
     )
     parser.add_argument(
@@ -785,17 +886,22 @@ def main():
 
     args = parser.parse_args()
 
-    if not args.scene_dir.exists():
-        print(f"错误: 场景目录不存在: {args.scene_dir}")
+    # 自动转换 WSL 路径
+    scene_dir = Path(args.scene_dir if args.scene_dir else str(SCENE_DIR))
+    model_dir = Path(args.model_dir if args.model_dir else str(MODEL_DIR))
+    output_dir = Path(str(args.output_dir))
+
+    if not scene_dir.exists():
+        print(f"错误: 场景目录不存在: {scene_dir}")
         return
-    if not args.model_dir.exists():
-        print(f"错误: 模型目录不存在: {args.model_dir}")
+    if not model_dir.exists():
+        print(f"错误: 模型目录不存在: {model_dir}")
         return
 
     generator = TrainingDataGenerator(
-        scene_dir=args.scene_dir,
-        model_dir=args.model_dir,
-        output_dir=args.output_dir,
+        scene_dir=scene_dir,
+        model_dir=model_dir,
+        output_dir=output_dir,
         image_size=args.image_size,
         heatmap_sigma=args.heatmap_sigma,
         augmentation=args.augmentation,

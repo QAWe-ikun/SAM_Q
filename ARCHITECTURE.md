@@ -589,9 +589,7 @@ SAM-Q/
 |-- configs/                     # Configuration files
 |   |-- config.yaml             # Inference config
 |   |-- stage1_qwen_lora.yaml   # Stage 1 training config
-|   |-- stage2_decoder.yaml     # Stage 2 training config
-|   |-- test_stage1.yaml
-|   +-- test_stage2.yaml
+|   +-- stage2_decoder.yaml     # Stage 2 training config
 |
 |-- src/
 |   |-- models/                  # Model architectures
@@ -634,8 +632,7 @@ SAM-Q/
 |
 |-- scripts/                     # Helper scripts
 |   |-- download_models.py
-|   |-- download_data.sh
-|   +-- test_data_generation.py
+|   +-- download_data.sh
 |
 |-- main.py                      # CLI entry point
 |-- README.md                    # Documentation
