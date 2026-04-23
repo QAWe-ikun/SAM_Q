@@ -9,13 +9,13 @@ Usage:
     python main.py train --config configs/base.yaml
     python main.py predict --checkpoint checkpoints/best.pt --plane_image room.png --object_image chair.png
     python main.py visualize --results results.json --output output.png
+    python main.py pretreat --config configs/pretreatment.yaml
 """
 
-import argparse
 import sys
+import argparse
 import warnings
 from pathlib import Path
-from typing import Optional
 
 # 屏蔽无关警告
 warnings.filterwarnings("ignore", category=FutureWarning, module="timm")
@@ -33,6 +33,12 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
+  # Generate training data (use default config)
+  python main.py pretreat
+
+  # Use custom config
+  python main.py pretreat --config configs/my_pretreatment.yaml
+
   # Train a model
   python main.py train --config configs/base.yaml
 
@@ -144,6 +150,15 @@ Examples:
         default="configs/base.yaml",
         help="Configuration file",
     )
+
+    # Pretreat command (训练数据生成)
+    pretreat_parser = subparsers.add_parser("pretreat", help="Generate training data")
+    pretreat_parser.add_argument(
+        "--config",
+        type=str,
+        default="configs/pretreatment.yaml",
+        help="Path to pretreatment configuration file",
+    )
     
     args = parser.parse_args()
     
@@ -152,7 +167,9 @@ Examples:
         sys.exit(1)
     
     # Dispatch to appropriate handler
-    if args.command == "train":
+    if args.command == "pretreat":
+        run_pretreat(args)
+    elif args.command == "train":
         run_train(args)
     elif args.command == "predict":
         run_predict(args)
@@ -160,6 +177,59 @@ Examples:
         run_visualize(args)
     elif args.command == "demo":
         run_demo(args)
+
+
+def run_pretreat(args):
+    """Run training data generation."""
+    print("=" * 60)
+    print("SAM-Q Training Data Generation")
+    print("=" * 60)
+
+    from src.pretreatment.generate_training_data import TrainingDataGenerator
+    from src.utils.config import Config
+    from pathlib import Path
+
+    # 加载配置文件
+    config_path = Path(args.config)
+    if not config_path.exists():
+        print(f"错误: 配置文件不存在: {config_path}")
+        return
+
+    config = Config(config_path)
+    config_dict = config.to_dict()
+    print(f"\n配置文件: {config_path}")
+
+    # 从配置字典中提取参数
+    data_config = config_dict.get("data", {})
+    gen_config = config_dict.get("generation", {})
+    aug_config = config_dict.get("augmentation", {})
+    
+    scene_dir = Path(data_config.get("scene_dir"))
+    model_dir = Path(data_config.get("model_dir"))
+    output_dir = Path(data_config.get("output_dir", "data"))
+
+    # 验证目录存在
+    if not scene_dir.exists():
+        print(f"错误: 场景目录不存在: {scene_dir}")
+        return
+    if not model_dir.exists():
+        print(f"错误: 模型目录不存在: {model_dir}")
+        return
+
+    print(f"\n配置:")
+    print(f"  场景目录: {scene_dir}")
+    print(f"  模型目录: {model_dir}")
+    print(f"  输出目录: {output_dir}")
+    print(f"  样本数量: {gen_config.get('num_samples', 1000)}")
+    print(f"  图像分辨率: {gen_config.get('image_size', 1024)}")
+    print(f"  热力图 Sigma: {gen_config.get('heatmap_sigma', 15.0)}")
+    print(f"  数据增强: {'启用' if aug_config.get('enabled', False) else '禁用'}")
+    if aug_config.get('enabled', False):
+        print(f"  增强比例: {aug_config.get('aug_ratio', 0.5)}")
+    print()
+
+    generator = TrainingDataGenerator(config=config_dict)
+    generator.run()
 
 
 def run_train(args):

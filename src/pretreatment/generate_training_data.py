@@ -17,61 +17,66 @@ SAM-Q 训练集自动化生成器
 - 随机移动物体到不重叠位置
 - 随机旋转支撑轴
 - 预测移动后的位置 + 旋转的倒数
-
-使用方法:
-    python src/pretreatment/generate_training_data.py \
-        --scene_dir /mnt/d/3D-Dataset/dataset-ssr3dfront/scenes \
-        --model_dir /mnt/d/3D-Dataset/3D-FUTURE-model \
-        --output_dir data/ \
-        --num_samples 1000 \
-        --augmentation \
-        --aug_ratio 0.5
+- 生成新的样本
 """
 
 import os
+import tqdm
+import logging
+import warnings
+from pathlib import Path
+from datetime import datetime
+from typing import Any
 
-# WSL 无头环境下强制使用 EGL 渲染后端
+# WSL 无头环境下强制使用 OSMesa 渲染后端
 if not os.environ.get("PYOPENGL_PLATFORM"):
-    os.environ["PYOPENGL_PLATFORM"] = "egl"
+    os.environ["PYOPENGL_PLATFORM"] = "osmesa"
+
+# 抑制 trimesh 和 pyrender 的警告
+warnings.filterwarnings("ignore", category=UserWarning, module="trimesh")
+warnings.filterwarnings("ignore", category=UserWarning, module="pyrender")
+
+# 配置日志系统
+LOG_DIR = Path("logs")
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+log_file = LOG_DIR / f"generate_training_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+
+logger = logging.getLogger("TrainingDataGenerator")
+logger.setLevel(logging.DEBUG)
+
+# 文件处理器（记录所有级别的日志）
+file_handler = logging.FileHandler(log_file, encoding="utf-8")
+file_handler.setLevel(logging.DEBUG)
+file_formatter = logging.Formatter(
+    "%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S"
+)
+file_handler.setFormatter(file_formatter)
+logger.addHandler(file_handler)
+
+# 控制台处理器（只显示 WARNING 及以上级别）
+console_handler = logging.StreamHandler()
+console_handler.setLevel(logging.WARNING)
+console_formatter = logging.Formatter("[%(levelname)s] %(message)s")
+console_handler.setFormatter(console_formatter)
+logger.addHandler(console_handler)
 
 import json
 import random
 import trimesh
 import numpy as np
 from PIL import Image
-from pathlib import Path
-from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass
+from typing import Dict, List, Optional, Tuple
 
 from scipy.spatial.transform import Rotation as R
-
-# ========== 配置路径 ==========
-BASE_DIR = Path(r"/mnt/d/3D-Dataset")
-SCENE_DIR = BASE_DIR / "dataset-ssr3dfront" / "scenes"
-MODEL_DIR = BASE_DIR / "3D-FUTURE-model"
-OUTPUT_DIR = "data"
-# ==============================
-
-# 渲染相机配置
-TOP_VIEW_CAMERA_HEIGHT = 8.0  # 俯视图相机高度
-SIDE_VIEW_CAMERA_DISTANCE = 5.0  # 侧视图相机距离
-IMAGE_SIZE = 1024
-FOV_DEGREES = 45
-
-# 热力图配置
-HEATMAP_SIGMA = 15  # 高斯核标准差
-HEATMAP_MIN_PROB = 0.01  # 最小概率阈值
-
-# 数据增强配置
-AUG_ROTATION_RANGE = 180  # Z 轴旋转范围（度）
-AUG_SCALE_RANGE = (0.8, 1.5)  # 缩放范围
-
 
 @dataclass
 class ObjectInfo:
     """物体信息"""
     jid: str
     model_id: str
+    desc: str
     pos: List[float]
     rot: List[float]
     size: List[float]
@@ -86,31 +91,50 @@ class TrainingDataGenerator:
 
     def __init__(
         self,
-        scene_dir: Path,
-        model_dir: Path,
-        output_dir: Path,
-        image_size: int = IMAGE_SIZE,
-        heatmap_sigma: float = HEATMAP_SIGMA,
-        augmentation: bool = False,
-        aug_ratio: float = 0.5,
-        num_samples: int = 1000,
+        config: Dict[str, Any],
     ):
-        self.scene_dir = scene_dir
-        self.model_dir = model_dir
-        self.output_dir = output_dir
-        self.image_size = image_size
-        self.heatmap_sigma = heatmap_sigma
-        self.augmentation = augmentation
-        self.aug_ratio = aug_ratio
-        self.num_samples = num_samples
+        # 从配置字典中提取参数
+        data_config = config.get("data", {})
+        gen_config = config.get("generation", {})
+        aug_config = config.get("augmentation", {})
+        cam_config = config.get("camera", {})
+        heatmap_config = config.get("heatmap", {})
+
+        self.scene_dir = Path(data_config.get("scene_dir", ""))
+        self.model_dir = Path(data_config.get("model_dir", ""))
+        self.output_dir = Path(data_config.get("output_dir", ""))
+
+        self.image_size = gen_config.get("image_size", 1024)
+        self.heatmap_sigma = gen_config.get("heatmap_sigma", 15.0)
+        self.num_samples = gen_config.get("num_samples", 1000)
+        
+        self.augmentation = aug_config.get("enabled", False)
+        self.aug_ratio = aug_config.get("aug_ratio", 0.5)
+        
+        # 更新全局配置
+        self.aug_rotation_range = aug_config.get("rotation_range", 180)
+        scale_range = aug_config.get("scale_range", {})
+        self.aug_scale_range = (
+            scale_range.get("min", 0.8),
+            scale_range.get("max", 1.5)
+        )
+        
+
+        self.top_view_camera_height = cam_config.get("top_view_height", 8.0)
+        self.side_view_camera_distance = cam_config.get("side_view_distance", 5.0)
+        self.fov_degrees = cam_config.get("fov_degrees", 45)
+        
+        self.heatmap_min_prob = heatmap_config.get("min_prob", 0.01)
 
         # 输出子目录
-        self.plane_dir = output_dir / "plane_images"
-        self.object_dir = output_dir / "object_images"
-        self.mask_dir = output_dir / "masks"
+        self.plane_dir = self.output_dir / "plane_images"
+        self.object_dir = self.output_dir / "object_images"
+        self.mask_dir = self.output_dir / "masks"
+        self.original_image_dir = self.output_dir / "original_images"
         self.plane_dir.mkdir(parents=True, exist_ok=True)
         self.object_dir.mkdir(parents=True, exist_ok=True)
         self.mask_dir.mkdir(parents=True, exist_ok=True)
+        self.original_image_dir.mkdir(parents=True, exist_ok=True)
 
         self.annotations = []
         self.sample_counter = 0
@@ -144,31 +168,11 @@ class TrainingDataGenerator:
         return model_id, sx, sy, sz
 
     def load_mesh(self, model_path: Path) -> Optional[trimesh.Trimesh]:
-        """加载并合并网格，跳过没有视觉属性的模型"""
+        """加载网格（让 trimesh 自行处理所有内部数据）"""
         try:
-            loaded = trimesh.load(model_path, force='scene')
-            if isinstance(loaded, trimesh.Scene):
-                # 过滤出有视觉属性的网格
-                meshes = []
-                for g in loaded.geometry.values():
-                    if not isinstance(g, trimesh.Trimesh):
-                        continue
-                    # 跳过没有视觉属性的网格
-                    if g.visual is None:
-                        print(f"[Info] Skipping mesh without visual: {g}")
-                        continue
-                    meshes.append(g)
-                
-                if not meshes:
-                    return None
-                # 合并网格
-                return trimesh.util.concatenate(meshes)
-            # 如果是单个网格，检查视觉属性
-            if isinstance(loaded, trimesh.Trimesh):
-                if loaded.visual is None:
-                    return None
-                return loaded
-            return None
+            # 直接加载为单个 mesh，不做任何中间处理
+            loaded = trimesh.load(model_path, force='mesh')
+            return loaded
         except Exception:
             return None
     
@@ -206,6 +210,7 @@ class TrainingDataGenerator:
         # 加载所有家具
         objects = []
         for obj_data in scene_data.get('objects', []):
+            desc = obj_data.get('desc', '')
             jid = obj_data.get('jid', '')
             pos = obj_data.get('pos', [0, 0, 0])
             rot = obj_data.get('rot', [0, 0, 0, 1])
@@ -242,6 +247,7 @@ class TrainingDataGenerator:
             objects.append(ObjectInfo(
                 jid=jid,
                 model_id=model_id,
+                desc=desc,
                 pos=pos,
                 rot=rot,
                 size=size,
@@ -258,7 +264,6 @@ class TrainingDataGenerator:
         scene: trimesh.Scene,
         camera_position: List[float],
         camera_target: List[float],
-        resolution: int = IMAGE_SIZE,
         is_top_view: bool = False,
     ) -> np.ndarray:
         """渲染场景为 RGB 图像（使用 pyrender 离屏渲染）"""
@@ -296,51 +301,22 @@ class TrainingDataGenerator:
             # 创建 pyrender 场景
             py_scene = pyrender.Scene()
             
-            # 添加 trimesh 几何体
+            # 添加 trimesh 几何体（直接使用原始网格，不做任何中间处理）
             for geom_name, geom in scene.geometry.items():
                 if isinstance(geom, trimesh.Trimesh):
                     try:
-                        # 深拷贝网格数据，清除可能的 ctypes 指针
-                        vertices = np.array(geom.vertices, dtype=np.float32)
-                        faces = np.array(geom.faces, dtype=np.int32)
-                        
-                        # 读取顶点颜色
-                        vertex_colors = None
-                        if geom.visual is not None:
-                            try:
-                                if hasattr(geom.visual, 'vertex_colors'):
-                                    # 直接使用顶点颜色
-                                    vertex_colors = np.array(geom.visual.vertex_colors, dtype=np.uint8)
-                                elif hasattr(geom.visual, 'to_color'):
-                                    # 如果是纹理模型，转换为顶点颜色
-                                    try:
-                                        color_visual = geom.visual.to_color()
-                                        vertex_colors = np.array(color_visual.vertex_colors, dtype=np.uint8)
-                                    except:
-                                        pass
-                            except:
-                                pass
-                        
-                        # 如果没有顶点颜色，使用默认白色
-                        if vertex_colors is None or len(vertex_colors) != len(vertices):
-                            vertex_colors = np.ones((len(vertices), 4), dtype=np.uint8) * 255
-                        
-                        clean_mesh = trimesh.Trimesh(
-                            vertices=vertices,
-                            faces=faces,
-                            vertex_colors=vertex_colors,
-                            process=False
-                        )
-                        mesh = pyrender.Mesh.from_trimesh(clean_mesh, smooth=False)
+                        # 直接传给 pyrender，让 trimesh 自己处理内部数据
+                        mesh = pyrender.Mesh.from_trimesh(geom)
                         py_scene.add(mesh, name=geom_name)
                     except Exception as e:
-                        # 跳过有问题的几何体
-                        print(f"[Warning] Skipping mesh {geom_name}: {e}")
+                        # 记录到日志文件（跳过有问题的几何体，如2通道纹理）
+                        # 使用 DEBUG 级别，避免在控制台显示
+                        logger.debug(f"Skipping mesh {geom_name}: {e}")
                         continue
 
             # 添加相机
             aspect_ratio = 1.0
-            yfov = np.radians(FOV_DEGREES)
+            yfov = np.radians(self.fov_degrees)
             camera = pyrender.PerspectiveCamera(yfov=yfov, aspectRatio=aspect_ratio)
             py_scene.add(camera, pose=cam_transform)
 
@@ -349,16 +325,15 @@ class TrainingDataGenerator:
             py_scene.add(light, pose=cam_transform)
 
             # 离屏渲染
-            r = pyrender.OffscreenRenderer(viewport_width=resolution, viewport_height=resolution)
+            r = pyrender.OffscreenRenderer(viewport_width=self.image_size, viewport_height=self.image_size)
             color, _ = r.render(py_scene)
             r.delete()
-            
             
             return color
             
         except Exception as e:
             # 回退到 2D 投影
-            raise RuntimeError("Pyrender 渲染失败，回退到 2D 投影 error: " + str(e))
+            raise RuntimeError("Pyrender 渲染失败 error: " + str(e))
 
     def render_top_view(self, scene: trimesh.Scene, bounds_bottom: List[List[float]]) -> np.ndarray:
         """渲染俯视图（从 Z 轴正方向往下看，投影到 XY 平面）"""
@@ -368,7 +343,7 @@ class TrainingDataGenerator:
         max_x = bounds_bottom[:, 0].max()
         max_y = bounds_bottom[:, 1].max()
         center = [(min_x + max_x) / 2, (min_y + max_y) / 2, 0]
-        camera_pos = [center[0], center[1], TOP_VIEW_CAMERA_HEIGHT]
+        camera_pos = [center[0], center[1], self.top_view_camera_height]
         camera_target = [center[0], center[1], bounds_bottom[0][2]]
         return self.render_scene(scene, camera_pos, camera_target, is_top_view=True)
 
@@ -380,17 +355,16 @@ class TrainingDataGenerator:
         """渲染侧视图（面向指定墙面）"""
         bounds = scene.bounds
         if bounds is None:
-            return np.zeros((IMAGE_SIZE, IMAGE_SIZE, 3), dtype=np.uint8)
+            return np.zeros((self.image_size, self.image_size, 3), dtype=np.uint8)
         center = bounds.mean(axis=0)
         # 面向墙面的相机位置
-        camera_pos = [center[0] - SIDE_VIEW_CAMERA_DISTANCE, center[1], center[2]]
+        camera_pos = [center[0] - self.side_view_camera_distance, center[1], center[2]]
         camera_target = [center[0], center[1], center[2]]
         return self.render_scene(scene, camera_pos, camera_target, is_top_view=False)
 
     def render_object_reference(
         self,
         mesh: trimesh.Trimesh,
-        resolution: int = IMAGE_SIZE,
     ) -> np.ndarray:
         """渲染物体参考图（俯视图，正向朝上，保持原始尺寸）"""
         # 复制 mesh 并重置所有变换
@@ -405,22 +379,20 @@ class TrainingDataGenerator:
         # 使用与 render_top_view 相同的相机配置
         bounds = obj_scene.bounds
         if bounds is None:
-            return np.zeros((resolution, resolution, 3), dtype=np.uint8)
+            return np.zeros((self.image_size, self.image_size, 3), dtype=np.uint8)
         
         center = bounds.mean(axis=0)
         # 相机位置：在物体正上方
-        camera_pos = [center[0], center[1], bounds[1][2] + TOP_VIEW_CAMERA_HEIGHT]
+        camera_pos = [center[0], center[1], bounds[1][2] + self.top_view_camera_height]
         # 相机目标：物体中心
         camera_target = [center[0], center[1], bounds[0][2]]
         
-        return self.render_scene(obj_scene, camera_pos, camera_target, resolution, is_top_view=True)
+        return self.render_scene(obj_scene, camera_pos, camera_target, self.image_size, is_top_view=True)
 
     def generate_heatmap(
         self,
         scene: trimesh.Scene,
         target_pos: List[float],
-        image_size: int = IMAGE_SIZE,
-        sigma: float = HEATMAP_SIGMA,
     ) -> np.ndarray:
         """
         生成 GT 热力图。
@@ -431,12 +403,12 @@ class TrainingDataGenerator:
         3. 碰撞区域概率直接为 0
         """
         # 1. 生成高斯热力图
-        heatmap = np.zeros((image_size, image_size), dtype=np.float32)
-        center_x, center_y = self._world_to_image(target_pos, scene.bounds, image_size)
+        heatmap = np.zeros((self.image_size, self.image_size), dtype=np.float32)
+        center_x, center_y = self._world_to_image(target_pos, scene.bounds, self.image_size)
 
         # 高斯核
-        y, x = np.ogrid[:image_size, :image_size]
-        heatmap = np.exp(-((x - center_x)**2 + (y - center_y)**2) / (2 * sigma**2))
+        y, x = np.ogrid[:self.image_size, :self.image_size]
+        heatmap = np.exp(-((x - center_x)**2 + (y - center_y)**2) / (2 * self.heatmap_sigma**2))
         
         # 归一化到 [0, 1]（避免除 0）
         max_val = heatmap.max()
@@ -444,11 +416,11 @@ class TrainingDataGenerator:
             heatmap = heatmap / max_val
 
         # 2. 碰撞检测：将碰撞区域置零
-        collision_mask = self._compute_collision_mask(scene, image_size)
+        collision_mask = self._compute_collision_mask(scene, self.image_size)
         heatmap[collision_mask] = 0.0
 
         # 3. 阈值处理
-        heatmap[heatmap < HEATMAP_MIN_PROB] = 0.0
+        heatmap[heatmap < self.heatmap_min_prob] = 0.0
 
         return heatmap
 
@@ -552,11 +524,11 @@ class TrainingDataGenerator:
         返回: (增强后的物体信息, 新场景)
         """
         # 1. 随机旋转（Z 轴）
-        rot_z = random.uniform(-AUG_ROTATION_RANGE, AUG_ROTATION_RANGE)
+        rot_z = random.uniform(-self.aug_rotation_range, self.aug_rotation_range)
         rot_aug = R.from_euler('z', rot_z, degrees=True).as_quat().tolist()
 
         # 2. 随机缩放
-        scale_aug = random.uniform(*AUG_SCALE_RANGE)
+        scale_aug = random.uniform(*self.aug_scale_range)
 
         # 3. 随机移动到新位置（不与其他物体碰撞）
         bounds = scene.bounds
@@ -597,6 +569,7 @@ class TrainingDataGenerator:
         aug_obj = ObjectInfo(
             jid=obj.jid,
             model_id=obj.model_id,
+            desc=obj.desc,
             pos=new_pos,
             rot=rot_aug,
             size=obj.size,
@@ -668,8 +641,8 @@ class TrainingDataGenerator:
         self,
         plane_image: np.ndarray,
         object_image: np.ndarray,
+        original_image: np.ndarray,
         heatmap: np.ndarray,
-        obj: ObjectInfo,
         text_prompt: str,
         response: str,
         rotation_6d: List[float],
@@ -684,9 +657,11 @@ class TrainingDataGenerator:
         plane_path = self.plane_dir / f"{scene_id}.png"
         object_path = self.object_dir / f"{scene_id}.png"
         mask_path = self.mask_dir / f"{scene_id}.png"
+        original_image_path = self.original_image_dir / f"{scene_id}.png"
 
         Image.fromarray(plane_image).save(plane_path)
         Image.fromarray(object_image).save(object_path)
+        Image.fromarray(original_image).save(original_image_path)
 
         # 热力图转为伪彩色（可选）或灰度图
         heatmap_uint8 = (heatmap * 255).astype(np.uint8)
@@ -729,10 +704,7 @@ class TrainingDataGenerator:
         target_obj = random.choice(objects)
 
         # 1. 渲染原始房间图
-        if target_obj.is_on_floor:
-            self.render_top_view(scene, scene_data.get('bounds_bottom', []))
-        else:
-            self.render_side_view(scene)
+        original_image = self.render_top_view(scene, scene_data.get('bounds_bottom', []))
 
         # 2. 渲染物体参考图（俯视图，正向，缩放=1）
         object_image = self.render_object_reference(target_obj.mesh)
@@ -765,8 +737,8 @@ class TrainingDataGenerator:
         self.save_sample(
             plane_image=plane_image,
             object_image=object_image,
+            original_image=original_image,
             heatmap=heatmap,
-            obj=target_obj,
             text_prompt=text_prompt,
             response=response,
             rotation_6d=rotation_6d,
@@ -800,8 +772,8 @@ class TrainingDataGenerator:
                 self.save_sample(
                     plane_image=aug_plane_image,
                     object_image=aug_object_image,
+                    original_image=original_image,
                     heatmap=aug_heatmap,
-                    obj=aug_obj,
                     text_prompt=self.generate_text_prompt(aug_obj.model_id, is_aug=True),
                     response=self.generate_response(aug_obj.model_id),
                     rotation_6d=aug_rot_6d,
@@ -827,89 +799,19 @@ class TrainingDataGenerator:
         output_path = self.output_dir / "annotations.json"
         with open(output_path, 'w', encoding='utf-8') as f:
             json.dump(self.annotations, f, ensure_ascii=False, indent=2)
-        print(f"Annotations saved to {output_path} ({len(self.annotations)} samples)")
+        logger.info(f"Annotations saved to {output_path} ({len(self.annotations)} samples)")
 
     def run(self):
         """执行数据生成"""
-        print(f"扫描场景目录: {self.scene_dir}")
+        logger.info(f"扫描场景目录: {self.scene_dir}")
         json_files = sorted(self.scene_dir.glob("*.json"))
-        print(f"找到 {len(json_files)} 个场景文件")
+        logger.info(f"找到 {len(json_files)} 个场景文件")
 
-        for i, json_path in enumerate(json_files, 1):
-            print(f"[{i}/{len(json_files)}] 处理: {json_path.name}", end=" ... ")
+        for _, json_path in tqdm.tqdm(enumerate(json_files, 1), total=len(json_files)):
             self.process_scene(json_path)
-            print(f"成功，当前样本数: {self.sample_counter}")
 
             if self.sample_counter >= self.num_samples:
-                print(f"已达到目标样本数: {self.num_samples}")
                 break
 
-        print(f"\n生成完成! 总样本数: {self.sample_counter}")
+        logger.info(f"\n生成完成! 总样本数: {self.sample_counter}")
         self.save_annotations()
-
-def main():
-    import argparse
-
-    parser = argparse.ArgumentParser(description="SAM-Q 训练数据生成器")
-    parser.add_argument(
-        "--scene_dir", type=str, default=None,
-        help="SSR3D-FRONT 场景 JSON 目录"
-    )
-    parser.add_argument(
-        "--model_dir", type=str, default=None,
-        help="3D-FUTURE 模型目录"
-    )
-    parser.add_argument(
-        "--output_dir", type=str, default=str(OUTPUT_DIR),
-        help="输出数据目录"
-    )
-    parser.add_argument(
-        "--num_samples", type=int, default=1000,
-        help="目标样本数"
-    )
-    parser.add_argument(
-        "--augmentation", action="store_true",
-        help="启用数据增强"
-    )
-    parser.add_argument(
-        "--aug_ratio", type=float, default=0.5,
-        help="增强样本比例（预留参数）"
-    )
-    parser.add_argument(
-        "--image_size", type=int, default=IMAGE_SIZE,
-        help="输出图像分辨率"
-    )
-    parser.add_argument(
-        "--heatmap_sigma", type=float, default=HEATMAP_SIGMA,
-        help="热力图高斯核标准差"
-    )
-
-    args = parser.parse_args()
-
-    # 自动转换 WSL 路径
-    scene_dir = Path(args.scene_dir if args.scene_dir else str(SCENE_DIR))
-    model_dir = Path(args.model_dir if args.model_dir else str(MODEL_DIR))
-    output_dir = Path(str(args.output_dir))
-
-    if not scene_dir.exists():
-        print(f"错误: 场景目录不存在: {scene_dir}")
-        return
-    if not model_dir.exists():
-        print(f"错误: 模型目录不存在: {model_dir}")
-        return
-
-    generator = TrainingDataGenerator(
-        scene_dir=scene_dir,
-        model_dir=model_dir,
-        output_dir=output_dir,
-        image_size=args.image_size,
-        heatmap_sigma=args.heatmap_sigma,
-        augmentation=args.augmentation,
-        aug_ratio=args.aug_ratio,
-        num_samples=args.num_samples,
-    )
-    generator.run()
-
-
-if __name__ == "__main__":
-    main()
