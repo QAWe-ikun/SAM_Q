@@ -29,7 +29,6 @@ generation:
     val: 0.1
     test: 0.1
   step: "all"                # "render_only", "vlm_only", "all"
-  rendered_dir: "/mnt/f/data_rendered"  # Directory for rendered images (step 1 output)
 
 # ----------------------------------------------------------------------------
 # Data Augmentation

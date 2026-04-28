@@ -136,13 +136,6 @@ class TrainingDataGenerator:
 
         # 两步流程控制
         self.step = gen_config.get("step", "all")  # "render_only", "vlm_only", "all"
-        self.rendered_dir = Path(gen_config.get("rendered_dir", str(self.output_dir / "_rendered")))
-
-        # 创建渲染输出目录
-        if self.step in ["render_only", "all"]:
-            self.rendered_dir.mkdir(parents=True, exist_ok=True)
-            for split in ["train", "val", "test"]:
-                (self.rendered_dir / split).mkdir(parents=True, exist_ok=True)
 
     def rotation_6d_from_quat(self, quat: List[float]) -> List[float]:
         """四元数转 6D 旋转"""
@@ -324,9 +317,9 @@ class TrainingDataGenerator:
         if original_image is None:
             return 0
 
-        # 创建场景输出目录（渲染结果）
+        # 创建场景输出目录（渲染结果存到 output_dir）
         scene_name = json_path.stem
-        scene_rendered_dir = self.rendered_dir / split / scene_name
+        scene_rendered_dir = self.output_dir / split / scene_name
         scene_rendered_dir.mkdir(parents=True, exist_ok=True)
 
         if len(objects) <= 2:
@@ -490,7 +483,7 @@ class TrainingDataGenerator:
         """第一步：只渲染场景并保存为 npz + meta.json"""
         logger.info("=" * 60)
         logger.info("第一步：渲染场景并保存为 npz + meta.json")
-        logger.info(f"渲染结果保存目录: {self.rendered_dir}")
+        logger.info(f"输出目录: {self.output_dir}")
         logger.info("=" * 60)
 
         json_files = sorted(self.scene_dir.glob("*.json"))
@@ -514,8 +507,7 @@ class TrainingDataGenerator:
         """第二步：读取渲染结果做 VLM 推理"""
         logger.info("=" * 60)
         logger.info("第二步：读取渲染结果做 VLM 推理")
-        logger.info(f"渲染结果目录: {self.rendered_dir}")
-        logger.info(f"最终输出目录: {self.output_dir}")
+        logger.info(f"数据目录: {self.output_dir}")
         logger.info("=" * 60)
 
         if not self.vlm_client:
@@ -527,7 +519,7 @@ class TrainingDataGenerator:
         total_processed = 0
 
         for split in ["train", "val", "test"]:
-            split_dir = self.rendered_dir / split
+            split_dir = self.output_dir / split
             if not split_dir.exists():
                 continue
 
