@@ -6,6 +6,7 @@ SAM-Q 训练数据生成器主类
 
 import os
 import json
+import tqdm
 import random
 import logging
 import warnings
@@ -106,6 +107,7 @@ class TrainingDataGenerator:
 
         # VLM 批量处理大小
         self.vlm_batch_size = gen_config.get("vlm_batch_size", 4)
+        self.epoch_size = gen_config.get("epoch_size", 1000)
 
     def rotation_6d_from_quat(self, quat: List[float]) -> List[float]:
         """四元数转 6D 旋转"""
@@ -168,48 +170,42 @@ class TrainingDataGenerator:
             )
 
             if is_aug:
-                # 增强流程：直接处理并保存
-                aug_obj, aug_scene = self.augmentation.augmentation_object(
+                # 增强流程：收集到 collected 列表中，与其他样本一起批量处理
+                aug_obj, _ = self.augmentation.augmentation_object(
                     target_obj, scene
                 )
-                if aug_obj is not None:
-                    aug_object_image = self.renderer.render_object_reference(
-                        aug_obj.mesh, scene_data.get('bounds_bottom', [])
-                    )
-                    aug_heatmap = self.heatmap_generator.generate(
-                        aug_obj.pos, scene_data.get('bounds_bottom', [])
-                    )
-                    aug_rot_6d = self.rotation_6d_from_quat(aug_obj.rot)
+                if aug_obj is None:
+                    continue
 
-                    if aug_object_image is not None and aug_heatmap is not None:
-                        # 生成文本
-                        try:
-                            aug_text_prompt = (
-                                f"物体{aug_obj.desc}的参考图为：<image>\n"
-                                f"平面图为：<image>\n两者的尺寸相同。"
-                            )
-                            aug_response = self.vlm_client.generate_response(
-                                aug_text_prompt, aug_rot_6d, 1.0
-                            )
-                        except Exception:
-                            logger.warning("跳过增强样本：VLM 生成失败")
-                            continue
+                aug_object_image = self.renderer.render_object_reference(
+                    aug_obj.mesh, scene_data.get('bounds_bottom', [])
+                )
+                if aug_object_image is None:
+                    continue
 
-                        # 保存
-                        aug_meta = self.sample_saver.save_sample(
-                            scene_dir=scene_dir,
-                            obj_id=f"aug_{target_obj.jid}",
-                            plane_image=aug_object_image,
-                            object_image=aug_object_image,
-                            heatmap=aug_heatmap,
-                            text_prompt=aug_text_prompt,
-                            response=aug_response,
-                            rotation_6d=aug_rot_6d,
-                            scale=1.0,
-                            split=split,
-                        )
-                        if aug_meta is not None:
-                            collected.append({"is_aug": True})
+                aug_heatmap = self.heatmap_generator.generate(
+                    aug_obj.pos, scene_data.get('bounds_bottom', [])
+                )
+                if aug_heatmap is None:
+                    continue
+
+                aug_rot_6d = self.rotation_6d_from_quat(aug_obj.rot)
+
+                # 收集增强样本数据，稍后批量 VLM 处理
+                collected.append({
+                    "is_aug": False,  # 标记为 False 以便进入 VLM 批量处理
+                    "target_obj": aug_obj,
+                    "original_image": original_image,
+                    "plane_image": aug_object_image,
+                    "object_image": aug_object_image,
+                    "heatmap": aug_heatmap,
+                    "rotation_6d": aug_rot_6d,
+                    "scale": 1.0,
+                    "split": split,
+                    "scene_dir": scene_dir,
+                    "scene_name": scene_name,
+                    "is_augmentation": True,  # 标记这是增强样本
+                })
                 continue
 
             # 计算旋转和缩放标签
@@ -304,14 +300,13 @@ class TrainingDataGenerator:
             self.vlm_client.load_model()
 
         # 按 epoch 分批处理
-        epoch_size = 1000
-        n_epochs = (n + epoch_size - 1) // epoch_size
+        n_epochs = (n + self.epoch_size - 1) // self.epoch_size
 
         total_processed = 0
 
         for epoch in range(n_epochs):
-            start_idx = epoch * epoch_size
-            end_idx = min(start_idx + epoch_size, n)
+            start_idx = epoch * self.epoch_size
+            end_idx = min(start_idx + self.epoch_size, n)
 
             logger.info(f"\n{'='*60}")
             logger.info(f"Epoch {epoch+1}/{n_epochs} (场景 {start_idx+1}-{end_idx})")
@@ -320,7 +315,7 @@ class TrainingDataGenerator:
             # Phase 1: 收集所有场景的样本数据
             all_collected = []
 
-            for idx in range(start_idx, end_idx):
+            for idx in tqdm.tqdm(range(start_idx, end_idx)):
                 json_path = json_files[idx]
                 split = splits[idx]
                 logger.info(f"  [{idx+1}/{n}] 收集场景数据: {json_path.stem} ({split})")
@@ -354,7 +349,7 @@ class TrainingDataGenerator:
                 scale_list = []
                 valid_indices = []
 
-                for i, sample in enumerate(vlm_samples):
+                for i, sample in tqdm.tqdm(enumerate(vlm_samples)):
                     if placement_descs[i] is not None:
                         base_prompt = (
                             f"物体{sample['target_obj'].desc}的参考图为：<image>\n"
@@ -380,7 +375,7 @@ class TrainingDataGenerator:
                     responses = [None] * len(text_prompts)
 
                 # Phase 3: 保存所有样本
-                for i, sample_idx in enumerate(valid_indices):
+                for i, sample_idx in tqdm.tqdm(enumerate(valid_indices)):
                     sample = vlm_samples[sample_idx]
                     text_prompt = text_prompts[i]
                     response = responses[i] if i < len(responses) else None
@@ -388,9 +383,14 @@ class TrainingDataGenerator:
                     if response is None:
                         continue
 
+                    # 增强样本的 obj_id 需要特殊处理
+                    obj_id = sample["target_obj"].jid
+                    if sample.get("is_augmentation", False):
+                        obj_id = f"aug_{obj_id}"
+
                     sample_meta = self.sample_saver.save_sample(
                         scene_dir=sample["scene_dir"],
-                        obj_id=sample["target_obj"].jid,
+                        obj_id=obj_id,
                         plane_image=sample["plane_image"],
                         object_image=sample["object_image"],
                         heatmap=sample["heatmap"],

@@ -258,9 +258,6 @@ class VLMClient:
             f"旋转角度和缩放比例，并在句末加上<SEG>。"
         )
 
-        # 从 prompt 中提取图片占位符数量
-        image_count = prompt.count("<image>")
-
         sampling_params = SamplingParams(
             temperature=0.7,
             top_p=0.9,
