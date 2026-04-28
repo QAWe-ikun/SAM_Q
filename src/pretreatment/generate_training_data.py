@@ -124,8 +124,6 @@ class TrainingDataGenerator:
         self.side_view_camera_distance = cam_config.get("side_view_distance", 5.0)
         self.fov_degrees = cam_config.get("fov_degrees", 45)
         self.aspect_ratio = cam_config.get("aspect_ratio", 1.0)
-        
-        self.heatmap_min_prob = heatmap_config.get("min_prob", 0.01)
 
         # 输出子目录
         self.plane_dir = self.output_dir / "plane_images"
@@ -403,65 +401,76 @@ class TrainingDataGenerator:
         target_pos: List[float],
         bounds_bottom: List[List[float]]
     ) -> np.ndarray:
-        """
-        生成 GT 热力图（使用透视投影矩阵计算）。
-
-        参数:
-            target_pos: 目标物体位置 [x, y, z]
-            bounds_bottom: 场景底部边界
-        """
         bounds_bottom = np.array(bounds_bottom)
         min_x = bounds_bottom[:, 0].min()
         min_y = bounds_bottom[:, 2].min()
         max_x = bounds_bottom[:, 0].max()
         max_y = bounds_bottom[:, 2].max()
-        
-        # 场景中心
+
         scene_center_x = (min_x + max_x) / 2
         scene_center_y = (min_y + max_y) / 2
-        
-        # 相机参数
+
+        # 相机
         camera_pos = np.array([scene_center_x, self.top_view_camera_height, scene_center_y])
         camera_target = np.array([scene_center_x, bounds_bottom[0][1], scene_center_y])
 
-        # 计算相机方向
         forward = camera_target - camera_pos
-
         right, up, cam_z = self.build_camera_basis(forward)
 
-        # 计算目标相对于相机的位置
-        target_rel = target_pos - camera_pos
+        # ========== 核心修改：逐像素反向投影 ==========
 
-        # 投影到相机坐标系
-        target_cam_x = np.dot(target_rel, right)
-        target_cam_y = np.dot(target_rel, up)
-        target_cam_z = np.dot(target_rel, cam_z)  # cam_z = -forward
-        
-        # 透视投影
+        # 1. 生成图像像素网格（中心为原点）
+        px = np.arange(self.image_size) + 0.5  # 像素中心
+        py = np.arange(self.image_size) + 0.5
+        px, py = np.meshgrid(px, py)  # shape: (H, W)
+
+        # 2. 将像素坐标映射到 NDC（[-1, 1]），再映射到相机坐标系中的射线方向
+        # 注意：X 方向需要翻转，因为图像坐标系与相机坐标系 X 方向相反
+        ndc_x = -(px / self.image_size) * 2.0 + 1.0  # 翻转 X
+        ndc_y = (py / self.image_size) * 2.0 - 1.0
+
+        # 3. 计算在目标深度处的视口半宽/半高
+        target = np.array(target_pos)
+        target_rel = target - camera_pos
+        target_depth = np.dot(target_rel, cam_z)  # 目标中心深度
+
         fov_rad = np.radians(self.fov_degrees)
-        aspect_ratio = 1.0  # 图像是正方形
-        
-        # 在目标深度处的视口宽度和高度
-        viewport_height_at_depth = 2.0 * target_cam_z * np.tan(fov_rad / 2.0)
-        viewport_width_at_depth = viewport_height_at_depth * aspect_ratio
-        
-        # 将相机坐标映射到图像坐标
-        image_x = (0.5 - target_cam_x / viewport_width_at_depth) * self.image_size
-        image_y = (target_cam_y / viewport_height_at_depth + 0.5) * self.image_size
+        tan_half_fov = np.tan(fov_rad / 2.0)
 
-        # 生成高斯热力图
-        heatmap = np.zeros((self.image_size, self.image_size), dtype=np.float32)
-        y_coords, x_coords = np.ogrid[:self.image_size, :self.image_size]
-        heatmap = np.exp(-((x_coords - image_x)**2 + (y_coords - image_y)**2) / (2 * self.heatmap_sigma**2))
-        
-        # 归一化到 [0, 1]
+        viewport_height_half = target_depth * tan_half_fov
+        viewport_width_half = viewport_height_half * self.aspect_ratio
+
+        # 4. 像素对应的相机坐标系中的射线（在目标深度处）
+        # ray_cam = (x_cam, y_cam, z_cam) 其中 z_cam = target_depth
+        ray_x = ndc_x * viewport_width_half
+        ray_y = ndc_y * viewport_height_half
+        ray_z = np.full_like(ray_x, target_depth)
+
+        # 5. 将射线转换回世界坐标系
+        # P_world = camera_pos + x*right + y*up + z*cam_z
+        world_x = camera_pos[0] + ray_x * right[0] + ray_y * up[0] + ray_z * cam_z[0]
+        world_y = camera_pos[1] + ray_x * right[1] + ray_y * up[1] + ray_z * cam_z[1]
+        world_z = camera_pos[2] + ray_x * right[2] + ray_y * up[2] + ray_z * cam_z[2]
+
+        # 6. 在世界坐标系中，计算这些点相对于目标中心的偏移
+        # 平面在地面上（Y=0），所以用 X 和 Z 计算距离
+        dx = world_x - target_pos[0]
+        dy = world_y - target_pos[1]
+        dz = world_z - target_pos[2]
+
+        # 7. 采样 2D 高斯（在水平面上的距离）
+        sigma_3d = self.heatmap_sigma * 0.01  # 将像素单位的 sigma 转换为世界单位（米）
+        dist_sq = dx**2 + dz**2 + dy**2  # 计算点到目标中心的欧氏距离平方
+        heatmap = np.exp(-dist_sq / (2 * sigma_3d**2))
+
+        # 8. 处理边界和归一化
+        # 只保留在视锥体内的（通过 ndc 范围自然限制）
+        heatmap = heatmap.astype(np.float32)
+
         max_val = heatmap.max()
         if max_val > 0:
             heatmap = heatmap / max_val
-        
-        # 阈值处理
-        heatmap[heatmap < self.heatmap_min_prob] = 0.0
-        
+
         return heatmap
 
     def remove_object_from_scene(
