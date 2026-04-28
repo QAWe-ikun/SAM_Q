@@ -1275,17 +1275,45 @@ class TrainingDataGenerator:
 
         self._load_qwen_model()
 
-        for idx, json_path in enumerate(tqdm.tqdm(json_files, desc="Processing scenes")):
-            self.process_scene(json_path, split=splits[idx])
+        # 按 epoch 分批处理，防止内存过大
+        epoch_size = 1000
+        n_epochs = (n + epoch_size - 1) // epoch_size
 
-        # 保存每个 split 的合并 JSON 文件
-        for split_name in ["train", "val", "test"]:
-            split_samples = self.samples_by_split[split_name]
-            if split_samples:
-                split_dir = self.output_dir / split_name
-                output_path = split_dir / f"{split_name}.json"
-                with open(output_path, 'w', encoding='utf-8') as f:
-                    json.dump(split_samples, f, ensure_ascii=False, indent=2)
-                logger.info(f"保存 {split_name} 数据: {len(split_samples)} 个样本 -> {output_path}")
+        for epoch in range(n_epochs):
+            start_idx = epoch * epoch_size
+            end_idx = min(start_idx + epoch_size, n)
 
-        logger.info(f"\n生成完成! 总样本数: {self.sample_counter}")
+            logger.info(f"\n{'='*60}")
+            logger.info(f"Epoch {epoch+1}/{n_epochs} (场景 {start_idx+1}-{end_idx})")
+            logger.info(f"{'='*60}")
+
+            for idx in range(start_idx, end_idx):
+                json_path = json_files[idx]
+                tqdm.tqdm.write(f"Processing scene {idx+1}/{n}")
+                self.process_scene(json_path, split=splits[idx])
+
+            # 每个 epoch 结束后保存当前数据（追加模式）
+            for split_name in ["train", "val", "test"]:
+                split_samples = self.samples_by_split[split_name]
+                if split_samples:
+                    split_dir = self.output_dir / split_name
+                    output_path = split_dir / f"{split_name}.json"
+                    if output_path.exists():
+                        with open(output_path, 'r', encoding='utf-8') as f:
+                            existing = json.load(f)
+                        existing.extend(split_samples)
+                        total_count = len(existing)
+                        with open(output_path, 'w', encoding='utf-8') as f:
+                            json.dump(existing, f, ensure_ascii=False, indent=2)
+                    else:
+                        total_count = len(split_samples)
+                        with open(output_path, 'w', encoding='utf-8') as f:
+                            json.dump(split_samples, f, ensure_ascii=False, indent=2)
+                    logger.info(f"Epoch {epoch+1}: 保存 {split_name} 数据: {len(split_samples)} 个样本 (总计 {total_count})")
+
+            # 清空当前 epoch 的样本数据，释放内存
+            self.samples_by_split = {"train": [], "val": [], "test": []}
+
+        logger.info(f"\n{'='*60}")
+        logger.info(f"生成完成! 总样本数: {self.sample_counter}")
+        logger.info(f"{'='*60}")
