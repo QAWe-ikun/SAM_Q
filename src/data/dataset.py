@@ -24,6 +24,7 @@ class ObjectPlacementDataset(Dataset):
     Expected directory structure:
         data/
         ├── train/
+        |   ├── train.json
         │   ├── scene_001/
         │   │   ├── plane_images/
         │   │   ├── object_images/

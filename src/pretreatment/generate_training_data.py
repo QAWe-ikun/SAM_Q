@@ -933,20 +933,18 @@ class TrainingDataGenerator:
         if not objects:
             return
 
-        # 渲染原始房间图（用于调试叠加）
+        # 渲染原始房间图
         original_image = self.render_top_view(scene, scene_data.get('bounds_bottom', []))
         if original_image is None:
             return
 
-        # 创建场景输出目录（确认有有效数据后再创建）
+        # 创建场景输出目录
         scene_name = json_path.stem
         scene_dir = self.output_dir / split / scene_name
         scene_dir.mkdir(parents=True, exist_ok=True)
 
-        # 对场景中的每个物体生成一个样本（按 jid 去重，限制最大剔除比例）
         max_objects = min(len(objects), self.max_object_nums)
         objects_processed = 0
-        
         random.shuffle(objects)
 
         for target_obj in objects:

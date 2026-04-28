@@ -231,32 +231,9 @@ data:
 
 | 阶段 | 最少 | 推荐 | 关键 |
 |------|------|------|------|
-| Stage 1 | 100 | 500~1000 | response 质量 > 数量 |
-| Stage 2 | 500 | 1000~5000 | mask + rotation_6d + scale 精度 |
+| Stage 1 | 10000 | 5000~10000 | response 质量 > 数量 |
+| Stage 2 | 50000 | 10000~50000 | mask + rotation_6d + scale 精度 |
 
 推荐划分：训练 80% / 验证 10% / 测试 10%
 
 ---
-
-## 快速验证
-
-```python
-from src.data.dataset import ObjectPlacementDataset
-
-dataset = ObjectPlacementDataset(
-    data_dir="data/",
-    split_dir="train/",
-    seg_feature_dir="data/seg_features/",  # 可选
-)
-
-sample = dataset[0]
-print(f"样本数: {len(dataset)}")
-print(f"plane_image: {sample['plane_image'].shape}")     # [3, H, W] for SAM3
-print(f"images: {len(sample['images'])}")                # number of images for Qwen3-VL
-print(f"images[0]: {sample['images'][0].shape}")         # [3, H, W]
-print(f"mask: {sample['mask'].shape}")                   # [1, H, W]
-print(f"response: {sample['response']}")                 # 含 <SEG>
-print(f"rotation_6d: {sample['rotation_6d']}")           # [6] 或 None
-print(f"scale: {sample['scale']}")                       # [1] 或 None
-print(f"seg_hidden: {sample['seg_hidden'].shape if sample['seg_hidden'] is not None else None}")  # [4096] 或 None
-```
