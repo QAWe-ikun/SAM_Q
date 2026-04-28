@@ -11,7 +11,7 @@
 data:
   scene_dir: "/mnt/d/3D-Dataset/dataset-ssr3dfront/scenes"  # Scene JSON files directory
   model_dir: "/mnt/d/3D-Dataset/3D-FUTURE-model"           # 3D model files directory
-  output_dir: "data"                                       # Output directory for generated data
+  output_dir: "/mnt/f/data"                                       # Output directory for generated data
 
 # ----------------------------------------------------------------------------
 # Generation Settings
@@ -28,6 +28,8 @@ generation:
     train: 0.8
     val: 0.1
     test: 0.1
+  step: "all"                # "render_only", "vlm_only", "all"
+  rendered_dir: "/mnt/f/data_rendered"  # Directory for rendered images (step 1 output)
 
 # ----------------------------------------------------------------------------
 # Data Augmentation

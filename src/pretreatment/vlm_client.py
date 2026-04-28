@@ -12,6 +12,25 @@ from PIL import Image
 from typing import List
 from pathlib import Path
 
+import os
+import warnings
+
+# 1. 环境变量
+os.environ["VLLM_LOGGING_LEVEL"] = "ERROR"
+os.environ["PYTHONWARNINGS"] = "ignore"
+
+# 2. 屏蔽所有相关警告
+warnings.filterwarnings("ignore", category=UserWarning)
+warnings.filterwarnings("ignore", category=DeprecationWarning)
+warnings.filterwarnings("ignore", message=".*deprecated.*")
+warnings.filterwarnings("ignore", message=".*Fast.*")
+warnings.filterwarnings("ignore", message=".*use_fast.*")
+
+# 3. 日志级别
+import logging
+logging.getLogger("vllm").setLevel(logging.ERROR)
+logging.getLogger("transformers").setLevel(logging.ERROR)
+
 logger = logging.getLogger(__name__)
 
 
@@ -50,6 +69,14 @@ class VLMClient:
     def _load_vllm_engine(self, model_path: Path):
         """加载 vLLM 推理引擎"""
         try:
+            # WSL 环境需要设置 spawn 多进程启动方式
+            import os
+            import multiprocessing as mp
+            mp.set_start_method("spawn", force=True)
+            os.environ["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
+            # 禁用 flash_attn，避免 CUDA 符号冲突
+            os.environ["VLLM_ATTENTION_BACKEND"] = "TORCH_SDPA"
+            
             # 抑制 vLLM 内部的 INFO 日志
             import logging
             vllm_logger = logging.getLogger("vllm")
@@ -61,14 +88,21 @@ class VLMClient:
             self._vllm_engine = LLM(
                 model=str(model_path),
                 limit_mm_per_prompt={"image": 3},
-                gpu_memory_utilization=0.9,
-                max_model_len=8192,
+                gpu_memory_utilization=0.5,
+                max_model_len=4096,
+                swap_space=4,  # 启用 CPU 交换空间
                 trust_remote_code=True,
                 disable_log_stats=True,
+                enforce_eager=True,
+                disable_custom_all_reduce=True,
             )
             logger.info("vLLM 引擎加载成功")
         except ImportError:
             logger.warning("vLLM 未安装，回退到 transformers")
+            self.use_vllm = False
+            self._load_transformers_model(model_path)
+        except Exception as e:
+            logger.warning(f"vLLM 加载失败: {e}，回退到 transformers")
             self.use_vllm = False
             self._load_transformers_model(model_path)
 
