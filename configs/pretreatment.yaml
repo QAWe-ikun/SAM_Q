@@ -21,7 +21,9 @@ generation:
   heatmap_sigma: 15.0        # Gaussian kernel sigma for heatmap
   max_object_nums: 2          # Maximum nums of objects to remove per scene
   qwen_model_name: "./models/qwen3_vl"  # Qwen3-VL model path (local directory or Hugging Face name)
+  epoch_size: 1000           # Epoch size for each time
   vlm_batch_size: 4          # Batch size for Qwen3-VL inference (reduce if OOM)
+  use_vllm: true            # Use vLLM for faster batch inference (Linux only)
   split_ratio:               # Data split ratios (train/val/test)
     train: 0.8
     val: 0.1
