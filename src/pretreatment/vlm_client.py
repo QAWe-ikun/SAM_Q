@@ -224,24 +224,42 @@ class VLMClient:
         """
         生成回复，包含旋转和缩放信息。
 
-        text_prompt 中应已包含 <image> 占位符。
+        Args:
+            text_prompt: 放置指令（已包含 <image> 占位符）
+            rotation_6d: 6D 旋转表示
+            scale: 缩放比例
+
+        Returns:
+            包含旋转角度和缩放比例的回复，以 <SEG> 结尾
         """
         if self.use_vllm:
-            return self._vllm_generate_response(text_prompt)
+            return self._vllm_generate_response(text_prompt, rotation_6d, scale)
         else:
-            return self._transformers_generate_response(text_prompt)
+            return self._transformers_generate_response(text_prompt, rotation_6d, scale)
 
-    def _vllm_generate_response(self, text_prompt: str) -> str:
+    def _vllm_generate_response(
+        self,
+        text_prompt: str,
+        rotation_6d: List[float],
+        scale: float,
+    ) -> str:
         """vLLM 生成回复"""
         from vllm import SamplingParams  # type: ignore
 
-        # 从 prompt 中提取图片占位符数量
-        image_count = text_prompt.count("<image>")
-        image_tags = ""
-        for i in range(1, image_count + 1):
-            image_tags += f"<|image_{i}|>\n"
+        rot_y_deg = self.extract_rotation_y(rotation_6d)
 
-        full_prompt = image_tags + text_prompt
+        prompt = (
+            f"你是一个物体放置助手。用户给出了放置指令，"
+            f"请你用礼貌的语气回复，并在末尾加上<SEG>标记。"
+            f"\n指令：{text_prompt}"
+            f"\n旋转角度：{rot_y_deg:.1f}°（绕Y轴）"
+            f"\n缩放比例：{scale:.2f}"
+            f"\n请用'好的，我会...'开头回复，说明放置位置、"
+            f"旋转角度和缩放比例，并在句末加上<SEG>。"
+        )
+
+        # 从 prompt 中提取图片占位符数量
+        image_count = prompt.count("<image>")
 
         sampling_params = SamplingParams(
             temperature=0.7,
@@ -249,25 +267,43 @@ class VLMClient:
             max_tokens=512,
         )
 
-        vllm_input = {
-            "prompt": full_prompt,
-        }
-
-        outputs = self._vllm_engine.generate([vllm_input], sampling_params)
+        outputs = self._vllm_engine.generate(
+            [{"prompt": prompt}], sampling_params
+        )
         result = outputs[0].outputs[0].text.strip()
+
+        if "<SEG>" not in result:
+            result += "<SEG>"
+
         logger.debug(f"vLLM response: {result[:80]}...")
         return result
 
-    def _transformers_generate_response(self, text_prompt: str) -> str:
+    def _transformers_generate_response(
+        self,
+        text_prompt: str,
+        rotation_6d: List[float],
+        scale: float,
+    ) -> str:
         """transformers 生成回复"""
-        # 注意：此方法需要调用方提供已包含图像的 prompt
-        # 实际使用时，text_prompt 应已通过 apply_chat_template 处理
+        rot_y_deg = self.extract_rotation_y(rotation_6d)
+
         messages = [
             {
                 "role": "user",
                 "content": [
-                    {"type": "text", "text": text_prompt},
-                ],
+                    {
+                        "type": "text",
+                        "text": (
+                            f"你是一个物体放置助手。用户给出了放置指令，"
+                            f"请你用礼貌的语气回复，并在末尾加上<SEG>标记。"
+                            f"\n指令：{text_prompt}"
+                            f"\n旋转角度：{rot_y_deg:.1f}°（绕Y轴）"
+                            f"\n缩放比例：{scale:.2f}"
+                            f"\n请用'好的，我会...'开头回复，说明放置位置、"
+                            f"旋转角度和缩放比例，并在句末加上<SEG>。"
+                        )
+                    }
+                ]
             }
         ]
 
@@ -280,38 +316,23 @@ class VLMClient:
             return_tensors="pt",
         ).to(self._model.device)
 
+        from transformers import GenerationConfig  # type: ignore
         with torch.no_grad():
             output_ids = self._model.generate(
                 **inputs,
-                max_new_tokens=512,
-                temperature=0.7,
-                top_p=0.9,
-                do_sample=True,
+                generation_config=GenerationConfig(
+                    max_new_tokens=512,
+                    do_sample=False,
+                ),
             )
 
-        generated_ids = output_ids[:, inputs.input_ids.shape[1]:]
-        result = self._processor.batch_decode(
-            generated_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False
-        )[0].strip()
+        input_len = inputs["input_ids"].shape[1]
+        result = self._processor.decode(
+            output_ids[0, input_len:], skip_special_tokens=True
+        ).strip()
+
+        if "<SEG>" not in result:
+            result += "<SEG>"
 
         logger.debug(f"transformers response: {result[:80]}...")
         return result
-
-    @staticmethod
-    def extract_rotation_y(rotation_6d: List[float]) -> float:
-        """
-        从 6D 旋转表示中提取 Y 轴旋转角度（弧度）。
-
-        6D 旋转格式: [r00, r10, r20, r01, r11, r21]
-        即旋转矩阵的前两列。
-        """
-        r00, r10, r20, r01, r11, r21 = rotation_6d
-
-        # 构建完整的旋转矩阵第三列（叉积）
-        r22 = r00 * r11 - r10 * r01
-
-        # Y 轴旋转角度: atan2(-r20, r22)
-        import math
-        rotation_y = math.atan2(-r20, r22)
-
-        return rotation_y
