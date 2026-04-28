@@ -8,13 +8,13 @@ Handles loading and preprocessing of:
     - Ground truth placement masks
 """
 
+import json
 import torch
-from torch.utils.data import Dataset
+import numpy as np
 from PIL import Image
 from pathlib import Path
-from typing import Optional, List, Dict, Any, Tuple
-import json
-import numpy as np
+from torch.utils.data import Dataset
+from typing import Optional, List, Dict, Any
 
 
 class ObjectPlacementDataset(Dataset):

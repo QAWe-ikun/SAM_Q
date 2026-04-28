@@ -7,75 +7,94 @@ Stage 1 训练结束后自动提取 `<SEG>` hidden states 到 `data/seg_features
 
 ```
 data/
-├── annotations.json              # 统一标注文件
-├── plane_images/                 # 房间/平面俯视图（SAM3 输入）
-│   ├── scene_001.png
+├── train/                          # 训练集
+│   ├── scene_001/                  # 一个原始场景对应一个文件夹
+│   │   ├── plane_images/           # 剔除不同物体后的房间俯视图
+│   │   │   ├── obj_chair_01.png    # 剔除椅子后的房间图
+│   │   │   ├── obj_table_02.png    # 剔除桌子后的房间图
+│   │   │   └── ...
+│   │   ├── object_images/          # 被剔除物体的参考图
+│   │   │   ├── obj_chair_01.png    # 椅子参考图
+│   │   │   ├── obj_table_02.png    # 桌子参考图
+│   │   │   └── ...
+│   │   ├── masks/                  # GT 放置热力图
+│   │   │   ├── obj_chair_01_mask.png
+│   │   │   ├── obj_table_02_mask.png
+│   │   │   └── ...
+│   │   └── samples.json            # 该场景所有样本的元数据
+│   ├── scene_002/
+│   │   ├── plane_images/
+│   │   ├── object_images/
+│   │   ├── masks/
+│   │   └── samples.json
 │   └── ...
-├── object_images/                # 物体俯视图
-│   ├── chair_001.png
-│   └── ...
-├── masks/                        # GT 放置热力图（概率图，0-255）
-│   ├── scene_001_mask.png
-│   └── ...
-└── seg_features/                 # <SEG> hidden states（Stage 1 训练后自动生成）
-    ├── scene_001.pt
+├── val/                            # 验证集（结构同 train/）
+├── test/                           # 测试集（结构同 train/）
+└── seg_features/                   # <SEG> hidden states（Stage 1 训练后自动生成）
+    ├── scene_001_obj_chair_01.pt
     └── ...
 ```
 
----
-
-## annotations.json 格式
-
-所有样本在一个 JSON 数组中，通过 `split` 字段区分训练/验证/测试。
+每个 `samples.json` 包含该场景生成的多个样本（每剔除一个物体生成一个样本）：
 
 ```json
 [
   {
-    "scene_id": "scene_001",
-    "split": "train",
-    "plane_image_path": "plane_images/scene_001.png",
-    "images_path": [
-      "plane_images/scene_001.png",
-      "object_images/chair_001.png"
-    ],
-    "mask_path": "masks/scene_001_mask.png",
-    "text_prompt": "<image>\n<image>\n把椅子放在桌子旁边",
-    "response": "好的，我会在桌子旁边放置椅子。<SEG>",
+    "sample_id": "scene_001_obj_chair_01",
+    "plane_image_path": "plane_images/obj_chair_01.png",
+    "object_image_path": "object_images/obj_chair_01.png",
+    "mask_path": "masks/obj_chair_01_mask.png",
+    "text_prompt": "<image>\n<image>\n把椅子放回原来的位置",
+    "response": "好的，我会把椅子放回原来的位置。<SEG>",
     "rotation_6d": [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
-    "scale": 1.0
+    "scale": 1.0,
+    "split": "train"
+  },
+  {
+    "sample_id": "scene_001_obj_table_02",
+    "plane_image_path": "plane_images/obj_table_02.png",
+    "object_image_path": "object_images/obj_table_02.png",
+    "mask_path": "masks/obj_table_02_mask.png",
+    "text_prompt": "<image>\n<image>\n把桌子放回原来的位置",
+    "response": "好的，我会把桌子放回原来的位置。<SEG>",
+    "rotation_6d": [0.707, 0.707, 0.0, -0.707, 0.707, 0.0],
+    "scale": 0.8,
+    "split": "train"
   }
 ]
 ```
+
+---
 
 ## 字段说明
 
 | 字段 | 类型 | Stage 1 | Stage 2 | 说明 |
 |------|------|---------|---------|------|
-| `plane_image_path` | str | 必须 | 必须 | SAM3 输入（房间/平面俯视图） |
-| `images_path` | list[str] | 必须 | 必须 | Qwen3-VL 输入的图片列表，**顺序必须与 `<image>` 占位符一致**，第一项通常为 `plane_image_path` |
-| `mask_path` | str | 必须 | 必须 | 二值 mask 图，白色 = 放置区域 |
+| `sample_id` | str | 必须 | 必须 | 样本唯一标识符，格式 `{scene_id}_obj_{obj_type}_{idx}` |
+| `plane_image_path` | str | 必须 | 必须 | SAM3 输入（房间/平面俯视图），相对于 scene 文件夹 |
+| `object_image_path` | str | 必须 | 必须 | 物体参考图，相对于 scene 文件夹 |
+| `mask_path` | str | 必须 | 必须 | 二值 mask 图，白色 = 放置区域，相对于 scene 文件夹 |
 | `text_prompt` | str | 必须 | 必须 | 放置指令，支持 `<image>` 占位符 |
 | `response` | str | **必须** | 不需要 | Qwen3-VL 的目标回复，末尾包含 `<SEG>` |
 | `rotation_6d` | list[6] | 不需要 | **必须** | 6D 旋转表示（旋转矩阵前两列） |
 | `scale` | float | 不需要 | **必须** | 缩放比例，1.0 = 原始大小 |
 | `split` | str | 可选 | 可选 | `"train"` / `"val"` / `"test"` |
-| `scene_id` | str | 可选 | 可选 | 场景标识，用于 seg_features 文件名 |
 
 ### images_path 设计原则
 
 ```json
 {
-  "plane_image_path": "plane_images/scene_001.png",       // SAM3 专用
-  "images_path": [                                         // Qwen3-VL 多模态输入
-    "plane_images/scene_001.png",                           // 第1张 → 第1个 <image>
-    "object_images/chair_001.png"                           // 第2张 → 第2个 <image>
+  "plane_image_path": "plane_images/obj_chair_01.png",       // SAM3 专用
+  "images_path": [                                            // Qwen3-VL 多模态输入
+    "plane_images/obj_chair_01.png",                           // 第1张 → 第1个 <image>
+    "object_images/obj_chair_01.png"                           // 第2张 → 第2个 <image>
   ]
 }
 ```
 
 - `plane_image_path` 单独列出，因为 SAM3 只处理房间/平面俯视图
 - `images_path` 包含所有要传给 Qwen3-VL 的图片，**顺序必须与 `text_prompt` 中 `<image>` 的出现顺序一致**
-- 通常 `images_path[0] == plane_image_path`
+- 通常 `images_path[0] == plane_image_path`，`images_path[1] == object_image_path`
 
 ---
 
@@ -133,11 +152,11 @@ Stage 1 训练结束后**自动生成**，无需手动创建。
 ```python
 {
     "seg_hidden": torch.Tensor,  # [4096]  Qwen3-VL 在 <SEG> 位置的 hidden state
-    "sample_id": str,            # 对应 annotations.json 中的 scene_id
+    "sample_id": str,            # 对应 samples.json 中的 sample_id
 }
 ```
 
-文件名格式：`{scene_id}.pt`（与 annotations.json 的 `scene_id` 对应）
+文件名格式：`{sample_id}.pt`（与 samples.json 的 `sample_id` 对应）
 
 ---
 
@@ -211,8 +230,7 @@ from src.data.dataset import ObjectPlacementDataset
 
 dataset = ObjectPlacementDataset(
     data_dir="data/",
-    ann_file="annotations.json",
-    split="train",
+    split_dir="train/",
     seg_feature_dir="data/seg_features/",  # 可选
 )
 

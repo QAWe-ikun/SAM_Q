@@ -125,17 +125,11 @@ class TrainingDataGenerator:
         self.fov_degrees = cam_config.get("fov_degrees", 45)
         self.aspect_ratio = cam_config.get("aspect_ratio", 1.0)
 
-        # 输出子目录
-        self.plane_dir = self.output_dir / "plane_images"
-        self.object_dir = self.output_dir / "object_images"
-        self.mask_dir = self.output_dir / "masks"
-        self.original_image_dir = self.output_dir / "original_images"
-        self.plane_dir.mkdir(parents=True, exist_ok=True)
-        self.object_dir.mkdir(parents=True, exist_ok=True)
-        self.mask_dir.mkdir(parents=True, exist_ok=True)
-        self.original_image_dir.mkdir(parents=True, exist_ok=True)
+        # 输出目录结构：data/train/, data/val/, data/test/
+        # 每个场景一个文件夹：data/train/scene_001/
+        self.output_dir.mkdir(parents=True, exist_ok=True)
 
-        self.annotations = []
+        # 全局样本计数
         self.sample_counter = 0
 
     def find_model_path(self, model_id: str) -> Optional[Path]:
@@ -508,9 +502,9 @@ class TrainingDataGenerator:
         bounds = scene.bounds
         if bounds is None:
             return None, None
-        x_min, y_min, z_min = bounds[0]
-        x_max, y_max, z_max = bounds[1]
-        for _ in range(100):  # 最多尝试 100 次
+        x_min, y_min, _ = bounds[0]
+        x_max, y_max, _ = bounds[1]
+        for _ in range(100):
             new_pos = [
                 random.uniform(x_min, x_max),
                 random.uniform(y_min, y_max),
@@ -612,6 +606,8 @@ class TrainingDataGenerator:
 
     def save_sample(
         self,
+        scene_dir: Path,
+        obj_id: str,
         plane_image: np.ndarray,
         object_image: np.ndarray,
         original_image: np.ndarray,
@@ -621,47 +617,52 @@ class TrainingDataGenerator:
         rotation_6d: List[float],
         scale: float,
         split: str = "train",
-    ):
-        """保存单个样本"""
+    ) -> Optional[dict]:
+        """保存单个样本到场景目录中"""
         self.sample_counter += 1
-        scene_id = f"scene_{self.sample_counter:06d}"
+        sample_id = f"obj_{obj_id}_{self.sample_counter:06d}"
+
+        # 创建子目录
+        plane_dir = scene_dir / "plane_images"
+        object_dir = scene_dir / "object_images"
+        mask_dir = scene_dir / "masks"
+        plane_dir.mkdir(exist_ok=True)
+        object_dir.mkdir(exist_ok=True)
+        mask_dir.mkdir(exist_ok=True)
 
         # 保存图片
-        plane_path = self.plane_dir / f"{scene_id}.png"
-        object_path = self.object_dir / f"{scene_id}.png"
-        mask_path = self.mask_dir / f"{scene_id}.png"
-        original_image_path = self.original_image_dir / f"{scene_id}.png"
+        plane_path = plane_dir / f"{sample_id}.png"
+        object_path = object_dir / f"{sample_id}.png"
+        mask_path = mask_dir / f"{sample_id}_mask.png"
+        original_image_path = scene_dir / f"{sample_id}_original.png"
 
         Image.fromarray(plane_image).save(plane_path)
         Image.fromarray(object_image).save(object_path)
         Image.fromarray(original_image).save(original_image_path)
 
-        # 热力图转为伪彩色（可选）或灰度图
+        # 热力图转为灰度图
         heatmap_uint8 = (heatmap * 255).astype(np.uint8)
         Image.fromarray(heatmap_uint8).save(mask_path)
 
-        # 添加到 annotations
-        self.annotations.append({
-            "scene_id": scene_id,
+        # 返回样本元数据
+        return {
+            "sample_id": sample_id,
             "split": split,
-            "plane_image_path": f"plane_images/{scene_id}.png",
-            "images_path": [
-                f"plane_images/{scene_id}.png",
-                f"object_images/{scene_id}.png",
-            ],
-            "mask_path": f"masks/{scene_id}.png",
+            "plane_image_path": f"plane_images/{sample_id}.png",
+            "object_image_path": f"object_images/{sample_id}.png",
+            "mask_path": f"masks/{sample_id}_mask.png",
             "text_prompt": text_prompt,
             "response": response,
             "rotation_6d": rotation_6d,
             "scale": scale,
-        })
+        }
 
     def process_scene(
         self,
         json_path: Path,
         split: str = "train",
     ):
-        """处理单个场景 JSON，生成样本"""
+        """处理单个场景 JSON, 生成样本"""
         try:
             with open(json_path, 'r', encoding='utf-8') as f:
                 scene_data = json.load(f)
@@ -673,118 +674,176 @@ class TrainingDataGenerator:
         if not objects:
             return
 
-        # 随机选择目标物体
-        target_obj = random.choice(objects)
+        # 创建场景输出目录
+        scene_name = json_path.stem
+        scene_dir = self.output_dir / split / scene_name
+        scene_dir.mkdir(parents=True, exist_ok=True)
 
-        # 1. 渲染原始房间图
+        # 收集该场景的所有样本
+        samples = []
+
+        # 渲染原始房间图（用于调试叠加）
         original_image = self.render_top_view(scene, scene_data.get('bounds_bottom', []))
         if original_image is None:
             return
 
-        # 2. 渲染物体参考图（俯视图，正向，缩放=1）
-        object_image = self.render_object_reference(target_obj.mesh)
-        if object_image is None:
-            return
+        # 对场景中的每个物体生成一个样本
+        for target_obj in objects:
+            # 1. 渲染物体参考图
+            object_image = self.render_object_reference(target_obj.mesh)
+            if object_image is None:
+                continue
 
-        # 3. 生成 GT 热力图
-        heatmap = self.generate_heatmap(
-            target_pos=target_obj.pos,
-            bounds_bottom=scene_data.get('bounds_bottom', [])
-        )
-        if heatmap is None:
-            return
+            # 2. 生成 GT 热力图
+            heatmap = self.generate_heatmap(
+                target_pos=target_obj.pos,
+                bounds_bottom=scene_data.get('bounds_bottom', [])
+            )
+            if heatmap is None:
+                continue
 
-        # 4. 生成文本
-        text_prompt = self.generate_text_prompt(target_obj.model_id, is_aug=False)
-        response = self.generate_response(target_obj.model_id)
+            # 3. 生成文本
+            text_prompt = self.generate_text_prompt(target_obj.model_id, is_aug=False)
+            response = self.generate_response(target_obj.model_id)
 
-        # 5. 计算旋转和缩放标签（倒数）
-        # 原始旋转的倒数
-        orig_rot = target_obj.rot
-        if len(orig_rot) == 4 and not np.allclose(orig_rot, [0, 0, 0, 1]):
-            inv_rot = R.from_quat(orig_rot).inv().as_quat().tolist()
-        else:
-            inv_rot = [0, 0, 0, 1]
-        rotation_6d = self.rotation_6d_from_quat(inv_rot)
+            # 4. 计算旋转和缩放标签（倒数）
+            orig_rot = target_obj.rot
+            if len(orig_rot) == 4 and not np.allclose(orig_rot, [0, 0, 0, 1]):
+                inv_rot = R.from_quat(orig_rot).inv().as_quat().tolist()
+            else:
+                inv_rot = [0, 0, 0, 1]
+            rotation_6d = self.rotation_6d_from_quat(inv_rot)
 
-        # 原始缩放的倒数
-        orig_scale = np.mean(target_obj.scale_jid)
-        scale = 1.0 / orig_scale if orig_scale > 0 else 1.0
+            orig_scale = np.mean(target_obj.scale_jid)
+            scale = 1.0 / orig_scale if orig_scale > 0 else 1.0
 
-        # 6. 剔除物体，渲染剔除后房间图
-        scene_without_obj = self.remove_object_from_scene(scene, target_obj)
-        plane_image = self.render_top_view(scene_without_obj, scene_data.get('bounds_bottom', []))
+            # 5. 剔除物体，渲染剔除后房间图
+            scene_without_obj = self.remove_object_from_scene(scene, target_obj)
+            plane_image = self.render_top_view(scene_without_obj, scene_data.get('bounds_bottom', []))
+            if plane_image is None:
+                continue
 
-        # 7. 保存样本
-        self.save_sample(
-            plane_image=plane_image,
-            object_image=object_image,
-            original_image=original_image,
-            heatmap=heatmap,
-            text_prompt=text_prompt,
-            response=response,
-            rotation_6d=rotation_6d,
-            scale=scale,
-            split=split,
-        )
+            # 6. 保存样本
+            sample_meta = self.save_sample(
+                scene_dir=scene_dir,
+                obj_id=target_obj.jid,
+                plane_image=plane_image,
+                object_image=object_image,
+                original_image=original_image,
+                heatmap=heatmap,
+                text_prompt=text_prompt,
+                response=response,
+                rotation_6d=rotation_6d,
+                scale=scale,
+                split=split,
+            )
+            if sample_meta is not None:
+                samples.append(sample_meta)
+
+            # 7. 保存调试图片（original + heatmap 叠加）
+            self._save_debug_image(
+                scene_dir=scene_dir,
+                sample_id=f"obj_{target_obj.jid}_{self.sample_counter:06d}",
+                original_image=original_image,
+                heatmap=heatmap,
+                object_image=object_image,
+            )
+
+        # 保存该场景的 samples.json
+        if samples:
+            samples_json_path = scene_dir / "samples.json"
+            with open(samples_json_path, 'w', encoding='utf-8') as f:
+                json.dump(samples, f, ensure_ascii=False, indent=2)
+            logger.info(f"场景 {scene_name}: 生成 {len(samples)} 个样本")
 
         # 8. 数据增强（如果启用）
         if self.augmentation:
-            aug_obj, aug_scene = self.augmentation_object(target_obj, scene)
-            if aug_obj is not None:
-                # 渲染增强后物体参考图（仍然正向，缩放=1）
-                aug_object_image = self.render_object_reference(aug_obj.mesh)
+            self._process_augmentation(scene, scene_data, scene_dir, original_image, split)
 
-                # 生成 GT 热力图（基于移动后位置）
-                aug_heatmap = self.generate_heatmap(
-                    target_pos=aug_obj.pos,
-                    bounds_bottom=scene_data.get('bounds_bottom', [])
-                )
+    def _process_augmentation(
+        self,
+        scene: trimesh.Scene,
+        scene_data: dict,
+        scene_dir: Path,
+        original_image: np.ndarray,
+        split: str,
+    ):
+        """数据增强流程"""
+        # 随机选择一个物体进行增强
+        _, objects = self.build_scene(scene_data)
+        if not objects:
+            return
 
-                # 计算旋转和缩放标签
-                # 数据增强：旋转为随机生成的旋转的倒数，缩放为 1
-                aug_rot_6d = self.rotation_6d_from_quat(
-                    R.from_quat(aug_obj.rot).inv().as_quat().tolist()
-                )
-                aug_scale = 1.0  # 物体参考图缩放为 1
+        target_obj = random.choice(objects)
 
-                # 渲染剔除后房间图
-                aug_plane_image = self.render_top_view(
-                    self.remove_object_from_scene(aug_scene, aug_obj),
-                    scene_data.get('bounds_bottom', [])
-                )
+        aug_obj, aug_scene = self.augmentation_object(target_obj, scene)
+        if aug_obj is not None:
+            # 渲染增强后物体参考图
+            aug_object_image = self.render_object_reference(aug_obj.mesh)
 
-                self.save_sample(
-                    plane_image=aug_plane_image,
-                    object_image=aug_object_image,
-                    original_image=original_image,
-                    heatmap=aug_heatmap,
-                    text_prompt=self.generate_text_prompt(aug_obj.model_id, is_aug=True),
-                    response=self.generate_response(aug_obj.model_id),
-                    rotation_6d=aug_rot_6d,
-                    scale=aug_scale,
-                    split=split,
-                )
+            # 生成 GT 热力图（基于移动后位置）
+            aug_heatmap = self.generate_heatmap(
+                target_pos=aug_obj.pos,
+                bounds_bottom=scene_data.get('bounds_bottom', [])
+            )
 
-    def save_annotations(self):
-        """保存 annotations.json 并按 split 划分"""
-        # 简单划分：80% train, 10% val, 10% test
-        random.shuffle(self.annotations)
-        n = len(self.annotations)
-        n_train = int(n * 0.8)
-        n_val = int(n * 0.1)
+            # 计算旋转和缩放标签
+            aug_rot_6d = self.rotation_6d_from_quat(
+                R.from_quat(aug_obj.rot).inv().as_quat().tolist()
+            )
+            aug_scale = 1.0
 
-        for ann in self.annotations[:n_train]:
-            ann["split"] = "train"
-        for ann in self.annotations[n_train:n_train + n_val]:
-            ann["split"] = "val"
-        for ann in self.annotations[n_train + n_val:]:
-            ann["split"] = "test"
+            # 渲染剔除后房间图
+            aug_plane_image = self.render_top_view(
+                self.remove_object_from_scene(aug_scene, aug_obj),
+                scene_data.get('bounds_bottom', [])
+            )
 
-        output_path = self.output_dir / "annotations.json"
-        with open(output_path, 'w', encoding='utf-8') as f:
-            json.dump(self.annotations, f, ensure_ascii=False, indent=2)
-        logger.info(f"Annotations saved to {output_path} ({len(self.annotations)} samples)")
+            sample_meta = self.save_sample(
+                scene_dir=scene_dir,
+                obj_id=f"aug_{target_obj.jid}",
+                plane_image=aug_plane_image,
+                object_image=aug_object_image,
+                original_image=original_image,
+                heatmap=aug_heatmap,
+                text_prompt=self.generate_text_prompt(aug_obj.model_id, is_aug=True),
+                response=self.generate_response(aug_obj.model_id),
+                rotation_6d=aug_rot_6d,
+                scale=aug_scale,
+                split=split,
+            )
+
+            # 更新 samples.json
+            if sample_meta is not None:
+                samples_json_path = scene_dir / "samples.json"
+                if samples_json_path.exists():
+                    with open(samples_json_path, 'r', encoding='utf-8') as f:
+                        existing_samples = json.load(f)
+                    existing_samples.append(sample_meta)
+                    with open(samples_json_path, 'w', encoding='utf-8') as f:
+                        json.dump(existing_samples, f, ensure_ascii=False, indent=2)
+
+    def _save_debug_image(
+        self,
+        scene_dir: Path,
+        sample_id: str,
+        original_image: np.ndarray,
+        heatmap: np.ndarray,
+        object_image: np.ndarray,
+    ):
+        """保存调试图片（original + heatmap 叠加）"""
+        temp_dir = scene_dir / "debug"
+        temp_dir.mkdir(exist_ok=True)
+
+        heatmap_color = cv2.applyColorMap(
+            (heatmap * 255).astype(np.uint8), cv2.COLORMAP_JET
+        )
+        overlay = cv2.addWeighted(original_image, 0.6, heatmap_color, 0.4, 0)
+
+        cv2.imwrite(str(temp_dir / f"{sample_id}_original.jpg"), original_image)
+        cv2.imwrite(str(temp_dir / f"{sample_id}_object.jpg"), object_image)
+        cv2.imwrite(str(temp_dir / f"{sample_id}_mask.jpg"), heatmap_color)
+        cv2.imwrite(str(temp_dir / f"{sample_id}_overlay.jpg"), overlay)
 
     def run(self):
         """执行数据生成"""
@@ -799,4 +858,3 @@ class TrainingDataGenerator:
                 break
 
         logger.info(f"\n生成完成! 总样本数: {self.sample_counter}")
-        self.save_annotations()

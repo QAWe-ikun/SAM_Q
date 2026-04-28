@@ -36,29 +36,33 @@ SSR3D-FRONT 场景 JSON
 
 ```
 data/
-├── annotations.json
-├── plane_images/          # 剔除物体后的房间俯视图
-├── object_images/         # 物体参考图（俯视图，正向朝上，缩放=1）
-└── masks/                 # GT 热力图（概率分布图，0-255）
+├── train/                          # 训练集
+│   ├── scene_001/
+│   │   ├── plane_images/
+│   │   ├── object_images/
+│   │   ├── masks/
+│   │   └── samples.json
+│   ├── scene_002/
+│   │   └── ...
+│   └── ...
+├── val/                            # 验证集
+└── test/                           # 测试集
 ```
 
-### annotations.json 样本
+### samples.json 样本
 
 ```json
 [
   {
-    "scene_id": "scene_000001",
-    "split": "train",
-    "plane_image_path": "plane_images/scene_000001.png",
-    "images_path": [
-      "plane_images/scene_000001.png",
-      "object_images/scene_000001.png"
-    ],
-    "mask_path": "masks/scene_000001.png",
-    "text_prompt": "<image>\n<image>\n请把椅子放回原来的位置",
+    "sample_id": "scene_001_obj_chair_01",
+    "plane_image_path": "plane_images/obj_chair_01.png",
+    "object_image_path": "object_images/obj_chair_01.png",
+    "mask_path": "masks/obj_chair_01_mask.png",
+    "text_prompt": "<image>\n<image>\n把椅子放回原来的位置",
     "response": "好的，我会把椅子放回原来的位置。<SEG>",
     "rotation_6d": [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
-    "scale": 0.5
+    "scale": 1.0,
+    "split": "train"
   }
 ]
 ```
@@ -197,8 +201,7 @@ from src.data.dataset import ObjectPlacementDataset
 
 dataset = ObjectPlacementDataset(
     data_dir="data/",
-    ann_file="annotations.json",
-    split="train",
+    split_dir="train/",
 )
 
 sample = dataset[0]
