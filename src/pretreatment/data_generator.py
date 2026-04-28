@@ -7,12 +7,10 @@ SAM-Q 训练数据生成器主类
 import os
 import json
 import random
-import torch
 import logging
 import warnings
 from pathlib import Path
-from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 # WSL 无头环境下强制使用 OSMesa 渲染后端
 if not os.environ.get("PYOPENGL_PLATFORM"):
@@ -78,6 +76,13 @@ class TrainingDataGenerator:
         ) if aug_config.get("enabled", True) else None
 
         self.aug_ratio = aug_config.get("aug_ratio", 0.2)
+        
+        # 保存 scale_range 以便在非增强模式下使用
+        scale_range = aug_config.get("scale_range", {})
+        self.scale_range = (
+            scale_range.get("min", 0.8),
+            scale_range.get("max", 1.25),
+        )
 
         self.sample_saver = SampleSaver(self.output_dir)
 
@@ -212,7 +217,7 @@ class TrainingDataGenerator:
                 inv_rot = [0, 0, 0, 1]
             rotation_6d = self.rotation_6d_from_quat(inv_rot)
 
-            orig_scale = random.uniform(*self.augmentation.scale_range)
+            orig_scale = random.uniform(*self.scale_range)
             scale = 1.0 / orig_scale
 
             target_obj.mesh.apply_scale(orig_scale)
