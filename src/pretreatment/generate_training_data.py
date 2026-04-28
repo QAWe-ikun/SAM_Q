@@ -842,15 +842,6 @@ class TrainingDataGenerator:
     ) -> List[str]:
         """
         批量生成摆放位置描述。
-
-        Args:
-            original_images: 原始房间图列表
-            plane_images: 剔除后房间图列表
-            object_images: 物体参考图列表
-            descs: 物体描述列表
-
-        Returns:
-            placement_descriptions: 生成的位置描述列表
         """
         if self._qwen_model is None:
             raise RuntimeError("Qwen3-VL 模型未加载")
@@ -859,13 +850,18 @@ class TrainingDataGenerator:
         n = len(descs)
 
         for j in range(n):
+            # Ensure images are clean PIL images (no negative strides)
+            orig_img = Image.fromarray(np.array(original_images[j]).copy()).convert("RGB")
+            plane_img = Image.fromarray(np.array(plane_images[j]).copy()).convert("RGB")
+            obj_img = Image.fromarray(np.array(object_images[j]).copy()).convert("RGB")
+
             messages = [
                 {
                     "role": "user",
                     "content": [
-                        {"type": "image", "image": original_images[j]},
-                        {"type": "image", "image": plane_images[j]},
-                        {"type": "image", "image": object_images[j]},
+                        {"type": "image", "image": orig_img},
+                        {"type": "image", "image": plane_img},
+                        {"type": "image", "image": obj_img},
                         {
                             "type": "text",
                             "text": "第一张图是包含所有物体的原始房间图，第二张图是移除了某个物体后的房间图，第三张图是被移除的物体的参考图。"
@@ -882,7 +878,7 @@ class TrainingDataGenerator:
 
             inputs = self._qwen_processor(
                 text=[text],
-                images=[original_images[j], plane_images[j], object_images[j]],
+                images=[orig_img, plane_img, obj_img],
                 return_tensors="pt",
             ).to(self._qwen_model.device)
 
