@@ -1027,27 +1027,34 @@ class TrainingDataGenerator:
         self.samples_by_split[split].append(metadata)
         return metadata
 
-    def process_scene(
+    def _collect_scene_samples(
         self,
         json_path: Path,
-        split: str = "train",
-    ):
-        """处理单个场景 JSON, 生成样本"""
+        split: str,
+    ) -> List[dict]:
+        """
+        收集单个场景的所有样本数据（仅渲染，不调用 VLM）。
+
+        Returns:
+            样本数据列表，每个元素包含：
+            - target_obj, original_image, plane_image, object_image,
+              heatmap, rotation_6d, scale, split, scene_dir, scene_name
+        """
         try:
             with open(json_path, 'r', encoding='utf-8') as f:
                 scene_data = json.load(f)
         except Exception:
-            return
+            return []
 
         # 构建场景
         scene, objects = self.build_scene(scene_data)
         if not objects:
-            return
+            return []
 
         # 渲染原始房间图
         original_image = self.render_top_view(scene, scene_data.get('bounds_bottom', []))
         if original_image is None:
-            return
+            return []
 
         # 创建场景输出目录
         scene_name = json_path.stem
@@ -1055,29 +1062,28 @@ class TrainingDataGenerator:
         scene_dir.mkdir(parents=True, exist_ok=True)
 
         max_objects = min(len(objects), self.max_object_nums)
-        objects_processed = 0
         random.shuffle(objects)
 
-        # ========== Phase 1: 收集阶段 - 渲染所有数据，收集 VLM 输入 ==========
-        valid_samples = []  # 存储所有有效样本的数据
+        collected = []
 
         for target_obj in objects:
-            if objects_processed >= max_objects:
+            if len(collected) >= max_objects:
                 break
 
             if not target_obj.is_on_floor:
                 continue
 
-            # 数据增强判断
+            # 数据增强（仅在 train 阶段，按 aug_ratio 比例决定）
             is_aug = split == "train" and self.augmentation and random.random() < self.aug_ratio
 
             if is_aug:
-                # 增强流程（保持原有逻辑）
+                # 增强流程：直接处理并保存（不走批量 VLM）
                 aug_meta = self._process_augmentation(
                     scene, scene_data, scene_dir, split, target_obj
                 )
                 if aug_meta is not None:
-                    objects_processed += 1
+                    # 增强样本已直接保存，这里只需标记已处理
+                    collected.append({"is_aug": True})
                 continue
 
             # 计算旋转和缩放标签
@@ -1113,7 +1119,8 @@ class TrainingDataGenerator:
                 continue
 
             # 收集样本数据
-            valid_samples.append({
+            collected.append({
+                "is_aug": False,
                 "target_obj": target_obj,
                 "original_image": original_image,
                 "plane_image": plane_image,
@@ -1121,74 +1128,12 @@ class TrainingDataGenerator:
                 "heatmap": heatmap,
                 "rotation_6d": rotation_6d,
                 "scale": scale,
+                "split": split,
+                "scene_dir": scene_dir,
+                "scene_name": scene_name,
             })
 
-        # ========== Phase 2: 批量 VLM 推理 ==========
-        if valid_samples:
-            # 批量生成 placement description
-            try:
-                placement_descs = self._batch_generate_placement_descriptions(
-                    original_images=[s["original_image"] for s in valid_samples],
-                    plane_images=[s["plane_image"] for s in valid_samples],
-                    object_images=[s["object_image"] for s in valid_samples],
-                    descs=[s["target_obj"].desc for s in valid_samples],
-                )
-            except Exception as e:
-                logger.warning(f"批量生成 placement description 失败: {e}")
-                placement_descs = [None] * len(valid_samples)
-
-            # 构建 text prompts 并批量生成 responses
-            text_prompts = []
-            rotation_6d_list = []
-            scale_list = []
-
-            for i, sample in enumerate(valid_samples):
-                if placement_descs[i] is not None:
-                    base_prompt = f"物体{sample['target_obj'].desc}的参考图为：<image>\n平面图为：<image>\n两者的尺寸相同，"
-                    text_prompts.append(base_prompt + placement_descs[i])
-                    rotation_6d_list.append(sample["rotation_6d"])
-                    scale_list.append(sample["scale"])
-
-            try:
-                responses = self._batch_generate_responses(
-                    text_prompts=text_prompts,
-                    rotation_6d_list=rotation_6d_list,
-                    scale_list=scale_list,
-                )
-            except Exception as e:
-                logger.warning(f"批量生成 responses 失败: {e}")
-                responses = [None] * len(text_prompts)
-
-            # ========== Phase 3: 保存阶段 ==========
-            resp_idx = 0
-            for i, sample in enumerate(valid_samples):
-                if placement_descs[i] is None:
-                    continue
-
-                text_prompt = text_prompts[resp_idx] if resp_idx < len(text_prompts) else None
-                response = responses[resp_idx] if resp_idx < len(responses) else None
-                resp_idx += 1
-
-                if text_prompt is None or response is None:
-                    continue
-
-                # 保存样本
-                sample_meta = self.save_sample(
-                    scene_dir=scene_dir,
-                    obj_id=sample["target_obj"].jid,
-                    plane_image=sample["plane_image"],
-                    object_image=sample["object_image"],
-                    heatmap=sample["heatmap"],
-                    text_prompt=text_prompt,
-                    response=response,
-                    rotation_6d=sample["rotation_6d"],
-                    scale=sample["scale"],
-                    split=split,
-                )
-                if sample_meta is not None:
-                    objects_processed += 1
-
-        logger.info(f"场景 {scene_name}: 生成 {objects_processed} 个样本")
+        return collected
 
     def _process_augmentation(
         self,
@@ -1279,6 +1224,8 @@ class TrainingDataGenerator:
         epoch_size = 1000
         n_epochs = (n + epoch_size - 1) // epoch_size
 
+        total_processed = 0
+
         for epoch in range(n_epochs):
             start_idx = epoch * epoch_size
             end_idx = min(start_idx + epoch_size, n)
@@ -1287,12 +1234,84 @@ class TrainingDataGenerator:
             logger.info(f"Epoch {epoch+1}/{n_epochs} (场景 {start_idx+1}-{end_idx})")
             logger.info(f"{'='*60}")
 
+            # ========== Phase 1: 收集所有场景的样本数据 ==========
+            all_collected = []  # 存储所有需要 VLM 处理的样本
+
             for idx in range(start_idx, end_idx):
                 json_path = json_files[idx]
-                tqdm.tqdm.write(f"Processing scene {idx+1}/{n}")
-                self.process_scene(json_path, split=splits[idx])
+                split = splits[idx]
+                logger.info(f"  [{idx+1}/{n}] 收集场景数据: {json_path.stem} ({split})")
+                scene_samples = self._collect_scene_samples(json_path, split)
+                all_collected.extend(scene_samples)
 
-            # 每个 epoch 结束后保存当前数据（追加模式）
+            # 过滤出需要 VLM 处理的样本
+            vlm_samples = [s for s in all_collected if not s.get("is_aug", False)]
+            logger.info(f"\n  Phase 1 完成: 收集 {len(vlm_samples)} 个样本需 VLM 处理")
+
+            # ========== Phase 2: 批量 VLM 推理 ==========
+            if vlm_samples:
+                # 批量生成 placement description
+                try:
+                    placement_descs = self._batch_generate_placement_descriptions(
+                        original_images=[s["original_image"] for s in vlm_samples],
+                        plane_images=[s["plane_image"] for s in vlm_samples],
+                        object_images=[s["object_image"] for s in vlm_samples],
+                        descs=[s["target_obj"].desc for s in vlm_samples],
+                    )
+                except Exception as e:
+                    logger.error(f"  批量生成 placement description 失败: {e}")
+                    placement_descs = [None] * len(vlm_samples)
+
+                # 构建 text prompts 并批量生成 responses
+                text_prompts = []
+                rotation_6d_list = []
+                scale_list = []
+                valid_indices = []
+
+                for i, sample in enumerate(vlm_samples):
+                    if placement_descs[i] is not None:
+                        base_prompt = f"物体{sample['target_obj'].desc}的参考图为：<image>\n平面图为：<image>\n两者的尺寸相同，"
+                        text_prompts.append(base_prompt + placement_descs[i])
+                        rotation_6d_list.append(sample["rotation_6d"])
+                        scale_list.append(sample["scale"])
+                        valid_indices.append(i)
+
+                try:
+                    responses = self._batch_generate_responses(
+                        text_prompts=text_prompts,
+                        rotation_6d_list=rotation_6d_list,
+                        scale_list=scale_list,
+                    )
+                except Exception as e:
+                    logger.error(f"  批量生成 responses 失败: {e}")
+                    responses = [None] * len(text_prompts)
+
+                # ========== Phase 3: 保存所有样本 ==========
+                for i, sample_idx in enumerate(valid_indices):
+                    sample = vlm_samples[sample_idx]
+                    text_prompt = text_prompts[i]
+                    response = responses[i] if i < len(responses) else None
+
+                    if response is None:
+                        continue
+
+                    # 保存图片并生成样本元数据
+                    sample_meta = self.save_sample(
+                        scene_dir=sample["scene_dir"],
+                        obj_id=sample["target_obj"].jid,
+                        plane_image=sample["plane_image"],
+                        object_image=sample["object_image"],
+                        heatmap=sample["heatmap"],
+                        text_prompt=text_prompt,
+                        response=response,
+                        rotation_6d=sample["rotation_6d"],
+                        scale=sample["scale"],
+                        split=sample["split"],
+                    )
+                    if sample_meta is not None:
+                        total_processed += 1
+
+            # 每个 epoch 结束后保存当前数据
             for split_name in ["train", "val", "test"]:
                 split_samples = self.samples_by_split[split_name]
                 if split_samples:
@@ -1315,5 +1334,5 @@ class TrainingDataGenerator:
             self.samples_by_split = {"train": [], "val": [], "test": []}
 
         logger.info(f"\n{'='*60}")
-        logger.info(f"生成完成! 总样本数: {self.sample_counter}")
+        logger.info(f"生成完成! 总样本数: {self.sample_counter} (VLM 处理: {total_processed})")
         logger.info(f"{'='*60}")
