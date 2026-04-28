@@ -12,6 +12,7 @@ import logging
 import warnings
 import numpy as np
 from pathlib import Path
+from datetime import datetime
 from typing import Any, Dict, List
 
 # WSL 无头环境下强制使用 OSMesa 渲染后端
@@ -22,14 +23,37 @@ if not os.environ.get("PYOPENGL_PLATFORM"):
 warnings.filterwarnings("ignore", category=UserWarning, module="trimesh")
 warnings.filterwarnings("ignore", category=UserWarning, module="pyrender")
 
+# 配置日志系统
+LOG_DIR = Path("logs")
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+log_file = LOG_DIR / f"generate_training_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+
+logger = logging.getLogger("TrainingDataGenerator")
+logger.setLevel(logging.DEBUG)
+
+# 文件处理器（记录所有级别的日志）
+file_handler = logging.FileHandler(log_file, encoding="utf-8")
+file_handler.setLevel(logging.DEBUG)
+file_formatter = logging.Formatter(
+    "%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S"
+)
+file_handler.setFormatter(file_formatter)
+logger.addHandler(file_handler)
+
+# 控制台处理器（只显示 WARNING 及以上级别）
+console_handler = logging.StreamHandler()
+console_handler.setLevel(logging.WARNING)
+console_formatter = logging.Formatter("[%(levelname)s] %(message)s")
+console_handler.setFormatter(console_formatter)
+logger.addHandler(console_handler)
+
 from .vlm_client import VLMClient
 from .renderer import SceneRenderer
 from .sample_saver import SampleSaver
 from .scene_builder import SceneBuilder
 from .heatmap_generator import HeatmapGenerator
 from .augmentation import AugmentationProcessor
-
-logger = logging.getLogger(__name__)
 
 
 class TrainingDataGenerator:
@@ -151,13 +175,15 @@ class TrainingDataGenerator:
         scene_dir = self.output_dir / split / scene_name
         scene_dir.mkdir(parents=True, exist_ok=True)
 
-        max_objects = min(len(objects), self.max_object_nums)
+        if len(objects) <= 2:
+            return []
+        
         random.shuffle(objects)
 
         collected = []
 
         for target_obj in objects:
-            if len(collected) >= max_objects:
+            if len(collected) >= self.max_object_nums:
                 break
 
             if not target_obj.is_on_floor:
@@ -341,12 +367,12 @@ class TrainingDataGenerator:
                     continue
 
                 # 构建 text prompts
-                text_prompts = []
-                rotation_6d_list = []
                 scale_list = []
+                text_prompts = []
                 valid_indices = []
+                rotation_6d_list = []
 
-                for i, sample in enumerate(tqdm.tqdm(vlm_samples)):
+                for i, sample in enumerate(vlm_samples):
                     if placement_descs[i] is not None:
                         base_prompt = (
                             f"物体{sample['target_obj'].desc}的参考图为：<image>\n"
@@ -359,14 +385,11 @@ class TrainingDataGenerator:
 
                 # 批量生成 responses
                 try:
-                    responses = []
-                    for j in range(len(text_prompts)):
-                        response = self.vlm_client.generate_response(
-                            text_prompts[j],
-                            rotation_6d_list[j],
-                            scale_list[j],
-                        )
-                        responses.append(response)
+                    responses = self.vlm_client.generate_responses_batch(
+                        text_prompts,
+                        rotation_6d_list,
+                        scale_list,
+                    )
                 except Exception as e:
                     logger.error(f"批量生成 responses 失败: {e}")
                     responses = [None] * len(text_prompts)

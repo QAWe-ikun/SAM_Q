@@ -123,11 +123,7 @@ class VLMClient:
         """vLLM 生成 placement description"""
         from vllm import SamplingParams  # type: ignore
 
-        original_pil = Image.fromarray(original_image)
-        plane_pil = Image.fromarray(plane_image)
-        obj_pil = Image.fromarray(object_image)
-
-        prompt_text = (
+        prompt = (
             "第一张图是包含所有物体的原始房间图，"
             "第二张图是移除了某个物体后的房间图，"
             "第三张图是被移除的物体的参考图。"
@@ -136,11 +132,14 @@ class VLMClient:
             "以 '请你将[物体名称]摆放在' 开头。"
         )
 
-        # vLLM 多模态输入格式
         vllm_input = {
-            "prompt": f"<|image_1|>\n<|image_2|>\n<|image_3|>\n{prompt_text}",
+            "prompt": prompt,
             "multi_modal_data": {
-                "image": [original_pil, plane_pil, obj_pil],
+                "image": [
+                    Image.fromarray(original_image),
+                    Image.fromarray(plane_image),
+                    Image.fromarray(object_image),
+                ]
             },
         }
 
@@ -167,15 +166,6 @@ class VLMClient:
         plane_pil = Image.fromarray(plane_image)
         obj_pil = Image.fromarray(object_image)
 
-        prompt_text = (
-            "第一张图是包含所有物体的原始房间图，"
-            "第二张图是移除了某个物体后的房间图，"
-            "第三张图是被移除的物体的参考图。"
-            f"请对比这三张图，用简短的中文描述被移除的物体{desc}"
-            "原来放在什么位置，以及周围参照物的关系。"
-            "以 '请你将[物体名称]摆放在' 开头。"
-        )
-
         messages = [
             {
                 "role": "user",
@@ -183,8 +173,18 @@ class VLMClient:
                     {"type": "image", "image": original_pil},
                     {"type": "image", "image": plane_pil},
                     {"type": "image", "image": obj_pil},
-                    {"type": "text", "text": prompt_text},
-                ],
+                    {
+                        "type": "text",
+                        "text": (
+                            "第一张图是包含所有物体的原始房间图，"
+                            "第二张图是移除了某个物体后的房间图，"
+                            "第三张图是被移除的物体的参考图。"
+                            f"请对比这三张图，用简短的中文描述被移除的物体{desc}"
+                            "原来放在什么位置，以及周围参照物的关系。"
+                            "以 '请你将[物体名称]摆放在' 开头。"
+                        )
+                    }
+                ]
             }
         ]
 
@@ -198,19 +198,20 @@ class VLMClient:
             return_tensors="pt",
         ).to(self._model.device)
 
+        from transformers import GenerationConfig  # type: ignore
         with torch.no_grad():
             output_ids = self._model.generate(
                 **inputs,
-                max_new_tokens=256,
-                temperature=0.7,
-                top_p=0.9,
-                do_sample=True,
+                generation_config=GenerationConfig(
+                    max_new_tokens=256,
+                    do_sample=False,
+                ),
             )
 
-        generated_ids = output_ids[:, inputs.input_ids.shape[1]:]
-        result = self._processor.batch_decode(
-            generated_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False
-        )[0].strip()
+        input_len = inputs["input_ids"].shape[1]
+        result = self._processor.decode(
+            output_ids[0, input_len:], skip_special_tokens=True
+        ).strip()
 
         logger.info(f"transformers placement description: {result[:80]}...")
         return result
@@ -244,20 +245,96 @@ class VLMClient:
         scale: float,
     ) -> str:
         """
-        生成回复，包含旋转和缩放信息。
-
-        Args:
-            text_prompt: 放置指令（已包含 <image> 占位符）
-            rotation_6d: 6D 旋转表示
-            scale: 缩放比例
-
-        Returns:
-            包含旋转角度和缩放比例的回复，以 <SEG> 结尾
+        生成单个回复。
         """
         if self.use_vllm:
             return self._vllm_generate_response(text_prompt, rotation_6d, scale)
         else:
             return self._transformers_generate_response(text_prompt, rotation_6d, scale)
+
+    def generate_responses_batch(
+        self,
+        text_prompts: List[str],
+        rotation_6d_list: List[List[float]],
+        scale_list: List[float],
+    ) -> List[str]:
+        """
+        批量生成回复。
+
+        Args:
+            text_prompts: 放置指令列表
+            rotation_6d_list: 6D 旋转表示列表
+            scale_list: 缩放比例列表
+
+        Returns:
+            回复列表
+        """
+        if self.use_vllm:
+            return self._vllm_generate_responses_batch(
+                text_prompts, rotation_6d_list, scale_list
+            )
+        else:
+            return self._transformers_generate_responses_batch(
+                text_prompts, rotation_6d_list, scale_list
+            )
+
+    def _vllm_generate_responses_batch(
+        self,
+        text_prompts: List[str],
+        rotation_6d_list: List[List[float]],
+        scale_list: List[float],
+    ) -> List[str]:
+        """vLLM 批量生成回复"""
+        from vllm import SamplingParams  # type: ignore
+
+        prompts = []
+        for text_prompt, rotation_6d, scale in zip(
+            text_prompts, rotation_6d_list, scale_list
+        ):
+            rot_y_deg = self.extract_rotation_y(rotation_6d)
+            prompt = (
+                f"你是一个物体放置助手。用户给出了放置指令，"
+                f"请你用礼貌的语气回复，并在末尾加上<SEG>标记。"
+                f"\n指令：{text_prompt}"
+                f"\n旋转角度：{rot_y_deg:.1f}°（绕Y轴）"
+                f"\n缩放比例：{scale:.2f}"
+                f"\n请用'好的，我会...'开头回复，说明放置位置、"
+                f"旋转角度和缩放比例，并在句末加上<SEG>。"
+            )
+            prompts.append(prompt)
+
+        sampling_params = SamplingParams(
+            temperature=0.7,
+            top_p=0.9,
+            max_tokens=512,
+        )
+
+        outputs = self._vllm_engine.generate(prompts, sampling_params)
+        results = [out.outputs[0].text.strip() for out in outputs]
+
+        # 确保 <SEG> 结尾
+        for i, result in enumerate(results):
+            if "<SEG>" not in result:
+                results[i] = result + "<SEG>"
+
+        return results
+
+    def _transformers_generate_responses_batch(
+        self,
+        text_prompts: List[str],
+        rotation_6d_list: List[List[float]],
+        scale_list: List[float],
+    ) -> List[str]:
+        """transformers 批量生成回复（逐个生成）"""
+        results = []
+        for text_prompt, rotation_6d, scale in zip(
+            text_prompts, rotation_6d_list, scale_list
+        ):
+            result = self._transformers_generate_response(
+                text_prompt, rotation_6d, scale
+            )
+            results.append(result)
+        return results
 
     def _vllm_generate_response(
         self,
@@ -265,7 +342,7 @@ class VLMClient:
         rotation_6d: List[float],
         scale: float,
     ) -> str:
-        """vLLM 生成回复"""
+        """vLLM 生成单个回复"""
         from vllm import SamplingParams  # type: ignore
 
         rot_y_deg = self.extract_rotation_y(rotation_6d)
@@ -286,15 +363,12 @@ class VLMClient:
             max_tokens=512,
         )
 
-        outputs = self._vllm_engine.generate(
-            [{"prompt": prompt}], sampling_params
-        )
+        outputs = self._vllm_engine.generate([{"prompt": prompt}], sampling_params)
         result = outputs[0].outputs[0].text.strip()
 
         if "<SEG>" not in result:
             result += "<SEG>"
 
-        logger.debug(f"vLLM response: {result[:80]}...")
         return result
 
     def _transformers_generate_response(
@@ -353,5 +427,4 @@ class VLMClient:
         if "<SEG>" not in result:
             result += "<SEG>"
 
-        logger.debug(f"transformers response: {result[:80]}...")
         return result
