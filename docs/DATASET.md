@@ -47,29 +47,31 @@ data/
 [
   {
     "sample_id": "scene_001_obj_chair_01",
+    "scene_dir": "scene_001",
     "plane_image_path": "plane_images/obj_chair_01.png",
     "images_paths": [
-      "plane_images/obj_chair_01.png",
-      "object_images/obj_chair_01.png"
+      "object_images/obj_chair_01.png",
+      "plane_images/obj_chair_01.png"
     ],
     "mask_path": "masks/obj_chair_01_mask.png",
     "text_prompt": "<image>\n<image>\n把椅子放回原来的位置",
-    "response": "好的，我会把椅子放回原来的位置。<SEG>",
+    "response": "好的，我会把椅子放回原来的位置，旋转0.0°，缩放1.00倍。<SEG>",
     "rotation_6d": [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
     "scale": 1.0,
     "split": "train"
   },
   {
     "sample_id": "scene_001_obj_table_02",
+    "scene_dir": "scene_001",
     "plane_image_path": "plane_images/obj_table_02.png",
     "images_paths": [
-      "plane_images/obj_table_02.png",
-      "object_images/obj_table_02.png"
+      "object_images/obj_table_02.png",
+      "plane_images/obj_table_02.png"
     ],
     "mask_path": "masks/obj_table_02_mask.png",
     "text_prompt": "<image>\n<image>\n把桌子放回原来的位置",
-    "response": "好的，我会把桌子放回原来的位置。<SEG>",
-    "rotation_6d": [0.707, 0.707, 0.0, -0.707, 0.707, 0.0],
+    "response": "好的，我会把桌子放回原来的位置，旋转90.0°，缩放0.80倍。<SEG>",
+    "rotation_6d": [0.0, 0.0, 1.0, -1.0, 0.0, 0.0],
     "scale": 0.8,
     "split": "train"
   }
@@ -83,30 +85,31 @@ data/
 | 字段 | 类型 | Stage 1 | Stage 2 | 说明 |
 |------|------|---------|---------|------|
 | `sample_id` | str | 必须 | 必须 | 样本唯一标识符，格式 `{scene_id}_obj_{obj_type}_{idx}` |
+| `scene_dir` | str | 必须 | 必须 | 场景文件夹名称（相对于 split 目录） |
 | `plane_image_path` | str | 必须 | 必须 | SAM3 输入（房间/平面俯视图），相对于 scene 文件夹 |
-| `images_path` | list[str] | 必须 | 必须 | 所有输入图片列表（通常为 plane + object），相对于 scene 文件夹 |
+| `images_paths` | list[str] | 必须 | 必须 | 所有输入图片列表（通常为 plane + object），相对于 scene 文件夹 |
 | `mask_path` | str | 必须 | 必须 | 二值 mask 图，白色 = 放置区域，相对于 scene 文件夹 |
 | `text_prompt` | str | 必须 | 必须 | 放置指令，支持 `<image>` 占位符 |
-| `response` | str | **必须** | 不需要 | Qwen3-VL 的目标回复，末尾包含 `<SEG>` |
+| `response` | str | **必须** | 不需要 | Qwen3-VL 的目标回复，末尾包含 `<SEG>`，硬编码了旋转角度和缩放 |
 | `rotation_6d` | list[6] | 不需要 | **必须** | 6D 旋转表示（旋转矩阵前两列） |
 | `scale` | float | 不需要 | **必须** | 缩放比例，1.0 = 原始大小 |
 | `split` | str | 可选 | 可选 | `"train"` / `"val"` / `"test"` |
 
-### images_path 设计原则
+### images_paths 设计原则
 
 ```json
 {
   "plane_image_path": "plane_images/obj_chair_01.png",       // SAM3 专用
-  "images_path": [                                            // Qwen3-VL 多模态输入
-    "plane_images/obj_chair_01.png",                           // 第1张 → 第1个 <image>
-    "object_images/obj_chair_01.png"                           // 第2张 → 第2个 <image>
+  "images_paths": [                                           // Qwen3-VL 多模态输入
+    "object_images/obj_chair_01.png"                           // 第1张 → 第1个 <image>
+    "plane_images/obj_chair_01.png",                           // 第2张 → 第2个 <image>
   ]
 }
 ```
 
 - `plane_image_path` 单独列出，因为 SAM3 只处理房间/平面俯视图
-- `images_path` 包含所有要传给 Qwen3-VL 的图片，**顺序必须与 `text_prompt` 中 `<image>` 的出现顺序一致**
-- 通常 `images_path[0] == plane_image_path`，`images_path[1] == object_image_path`
+- `images_paths` 包含所有要传给 Qwen3-VL 的图片，**顺序必须与 `text_prompt` 中 `<image>` 的出现顺序一致**
+- 通常 `images_paths[0] == plane_image_path`，`images_paths[1] == object_image_path`
 
 ---
 
@@ -152,7 +155,7 @@ data/
 - **0.5** = 缩小到 50%
 - **2.0** = 放大到 200%
 
-建议范围：`0.5 ~ 2.0`
+建议范围：`0.8 ~ 1.25`
 
 ---
 

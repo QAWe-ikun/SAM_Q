@@ -34,44 +34,6 @@ SSR3D-FRONT 场景 JSON
 
 生成的数据与 `DATASET.md` 格式完全一致：
 
-```
-data/
-├── train/                          # 训练集
-│   ├── scene_001/
-│   │   ├── plane_images/
-│   │   ├── object_images/
-│   │   ├── original_images/        # 原始房间图
-│   │   ├── masks/
-│   │   ├── debug/
-│   │   └── samples.json
-│   ├── scene_002/
-│   │   └── ...
-│   └── ...
-├── val/                            # 验证集
-└── test/                           # 测试集
-```
-
-### samples.json 样本
-
-```json
-[
-  {
-    "sample_id": "scene_001_obj_chair_01",
-    "plane_image_path": "plane_images/obj_chair_01.png",
-    "images_paths": [
-      "plane_images/obj_chair_01.png",
-      "object_images/obj_chair_01.png"
-    ],
-    "mask_path": "masks/obj_chair_01_mask.png",
-    "text_prompt": "<image>\n<image>\n把椅子放回原来的位置",
-    "response": "好的，我会把椅子放回原来的位置。<SEG>",
-    "rotation_6d": [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
-    "scale": 1.0,
-    "split": "train"
-  }
-]
-```
-
 ---
 
 ## 核心设计
@@ -142,21 +104,8 @@ heatmap[heatmap < 0.01] = 0.0  # 阈值处理
 ## 使用方法
 
 ```bash
-# 基础生成（从原始场景剔除物体）
-python src/pretreatment/generate_training_data.py \
-  --scene_dir d:/3D-Dataset/dataset-ssr3dfront/scenes \
-  --model_dir d:/3D-Dataset/3D-FUTURE-model \
-  --output_dir data/ \
-  --num_samples 1000
-
-# 带数据增强
-python src/pretreatment/generate_training_data.py \
-  --scene_dir d:/3D-Dataset/dataset-ssr3dfront/scenes \
-  --model_dir d:/3D-Dataset/3D-FUTURE-model \
-  --output_dir data/ \
-  --num_samples 1000 \
-  --augmentation \
-  --aug_ratio 0.5
+# 基础生成
+python main.py pretreat
 ```
 
 ### 参数说明
