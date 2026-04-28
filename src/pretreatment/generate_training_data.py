@@ -22,6 +22,7 @@ SAM-Q 训练集自动化生成器
 
 import os
 import tqdm
+import torch
 import logging
 import warnings
 from pathlib import Path
@@ -65,7 +66,6 @@ import json
 import random
 import trimesh
 import numpy as np
-import cv2
 from PIL import Image
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
@@ -119,7 +119,7 @@ class TrainingDataGenerator:
         )
         
 
-        self.top_view_camera_height = cam_config.get("top_view_height", 8.0)
+        self.top_view_camera_height = cam_config.get("top_view_height", 1.0)
         self.side_view_camera_distance = cam_config.get("side_view_distance", 5.0)
         self.fov_degrees = cam_config.get("fov_degrees", 45)
         self.aspect_ratio = cam_config.get("aspect_ratio", 1.0)
@@ -133,6 +133,11 @@ class TrainingDataGenerator:
 
         # 全局样本计数
         self.sample_counter = 0
+
+        # Qwen3-VL 模型（懒加载，参考 qwen3vl_encoder.py 的机制）
+        self._qwen_model_name = gen_config.get("qwen_model_name", None)
+        self._qwen_model = None
+        self._qwen_processor = None
 
     def find_model_path(self, model_id: str) -> Optional[Path]:
         """查找模型文件"""
@@ -354,14 +359,28 @@ class TrainingDataGenerator:
             raise RuntimeError("Pyrender 渲染失败 error: " + str(e))
 
     def render_top_view(self, scene: trimesh.Scene, bounds_bottom: List[List[float]]) -> np.ndarray:
-        """渲染俯视图（从 Z 轴正方向往下看，投影到 XY 平面）"""
+        """渲染俯视图（从 Y 轴正方向往下看，投影到 XZ 平面）"""
         bounds_bottom = np.array(bounds_bottom)
         min_x = bounds_bottom[:, 0].min()
         min_y = bounds_bottom[:, 2].min()
         max_x = bounds_bottom[:, 0].max()
         max_y = bounds_bottom[:, 2].max()
+
+        # 计算场景对角线
+        scene_width = max_x - min_x
+        scene_depth = max_y - min_y
+        diag = np.sqrt(scene_width**2 + scene_depth**2)
+
+        # 根据 FOV 自适应计算相机高度，确保完整覆盖场景
+        fov_rad = np.radians(self.fov_degrees)
+        # 图像是正方形 (aspect_ratio=1.0)，视口对角线覆盖场景对角线
+        required_height = (diag / 2.0) / np.tan(fov_rad / 2.0)
+
+        # 使用计算的高度与配置高度的最大值，并增加一点余量
+        adaptive_height = self.top_view_camera_height + required_height
+
         center = [(min_x + max_x) / 2, (min_y + max_y) / 2, 0]
-        camera_pos = np.array([center[0], self.top_view_camera_height, center[1]])
+        camera_pos = np.array([center[0], adaptive_height, center[1]])
         camera_target = np.array([center[0], bounds_bottom[0][1], center[1]])
         return self.render_scene(scene, camera_pos, camera_target)
 
@@ -383,10 +402,19 @@ class TrainingDataGenerator:
         bounds = obj_scene.bounds
         if bounds is None:
             return np.zeros((self.image_size, self.image_size, 3), dtype=np.uint8)
-        
+
         center = bounds.mean(axis=0)
+
+        # 自适应计算相机高度
+        obj_width = bounds[1][0] - bounds[0][0]
+        obj_depth = bounds[1][2] - bounds[0][2]
+        obj_diag = np.sqrt(obj_width**2 + obj_depth**2)
+        fov_rad = np.radians(self.fov_degrees)
+        required_height = (obj_diag / 2.0) / np.tan(fov_rad / 2.0)
+        adaptive_height = max(required_height, 2.0) + 0.5
+
         # 相机位置：在物体正上方
-        camera_pos = np.array([center[0], bounds[1][2] + self.top_view_camera_height, center[1]])
+        camera_pos = np.array([center[0], bounds[1][2] + adaptive_height, center[1]])
         # 相机目标：物体中心
         camera_target = np.array([center[0], bounds[0][2], center[1]])
         
@@ -406,8 +434,16 @@ class TrainingDataGenerator:
         scene_center_x = (min_x + max_x) / 2
         scene_center_y = (min_y + max_y) / 2
 
+        # 自适应计算相机高度（与 render_top_view 保持一致）
+        scene_width = max_x - min_x
+        scene_depth = max_y - min_y
+        diag = np.sqrt(scene_width**2 + scene_depth**2)
+        fov_rad = np.radians(self.fov_degrees)
+        required_height = (diag / 2.0) / np.tan(fov_rad / 2.0)
+        adaptive_height = max(self.top_view_camera_height, required_height) + 0.5
+
         # 相机
-        camera_pos = np.array([scene_center_x, self.top_view_camera_height, scene_center_y])
+        camera_pos = np.array([scene_center_x, adaptive_height, scene_center_y])
         camera_target = np.array([scene_center_x, bounds_bottom[0][1], scene_center_y])
 
         forward = camera_target - camera_pos
@@ -586,15 +622,180 @@ class TrainingDataGenerator:
                 
         return False
 
-    def generate_text_prompt(self, obj_name: str, is_aug: bool = False) -> str:
-        """生成 text_prompt"""
-        if is_aug:
-            return f"<image>\n<image>\n请把{obj_name}放回原来的位置"
-        return f"<image>\n<image>\n请把{obj_name}放回原来的位置"
+    def generate_text_prompt(self, original_image: np.ndarray, plane_image: np.ndarray, is_aug: bool = False) -> str:
+        """
+        生成 text_prompt：使用 Qwen3-VL 对比 original 和 plane 图像，
+        自动生成摆放位置描述（如"放在桌子左边"、"整齐摆放在墙角"等）。
+        """
+        base_prompt = f"物体图为：<image>\n平面图为：<image>\n"
 
-    def generate_response(self, obj_name: str) -> str:
-        """生成 response"""
-        return f"好的，我会把{obj_name}放回原来的位置。<SEG>"
+        try:
+            # 将 numpy 数组转为 PIL Image
+            original_pil = Image.fromarray(original_image)
+            plane_pil = Image.fromarray(plane_image)
+
+            # 让 Qwen3-VL 对比两张图，描述物体应该摆放的位置
+            vlm_prompt = self._query_placement_description(original_pil, plane_pil)
+        except Exception as e:
+            raise RuntimeError(f"Qwen3-VL 生成位置描述失败: {e}")
+
+        prompt = base_prompt + vlm_prompt
+        return prompt
+
+    def _load_qwen_model(self):
+        """
+        懒加载 Qwen3-VL 模型（仅从本地 models/ 目录加载）。
+        """
+        if self._qwen_model is not None:
+            return
+
+        from transformers import Qwen3VLForConditionalGeneration, AutoProcessor
+
+        # 检查配置是否存在
+        if not self._qwen_model_name:
+            raise RuntimeError(
+                f"Qwen3-VL 模型路径未配置，请在 pretreatment.yaml 中设置 generation.qwen_model_name"
+            )
+
+        model_path = Path(self._qwen_model_name)
+        if not model_path.exists() or not (model_path / "config.json").exists():
+            raise RuntimeError(
+                f"Qwen3-VL 本地模型未找到: {model_path}"
+            )
+
+        # 加载 processor
+        self._qwen_processor = AutoProcessor.from_pretrained(
+            model_path,
+            use_cache=True,
+        )
+
+        attn_impl = "eager"
+        if torch.cuda.is_available():
+            try:
+                import flash_attn
+                attn_impl = "flash_attention_2"
+            except ImportError:
+                attn_impl = "sdpa"
+
+        # 加载模型
+        self._qwen_model = Qwen3VLForConditionalGeneration.from_pretrained(
+            model_path,
+            torch_dtype=torch.float16,
+            device_map="auto",
+            attn_implementation=attn_impl,
+        )
+        self._qwen_model.config.use_cache = True
+        self._qwen_model.eval()
+
+    def _query_placement_description(self, original_pil: Image.Image, plane_pil: Image.Image) -> str:
+        """
+        使用 Qwen3-VL 对比原始房间图和剔除后房间图，生成摆放位置描述。
+        返回类似"放在桌子左侧"、"整齐摆放在墙角"等自然语言描述。
+        """
+        self._load_qwen_model()
+
+        # 构建对话
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": original_pil,
+                    },
+                    {
+                        "type": "image",
+                        "image": plane_pil,
+                    },
+                    {
+                        "type": "text",
+                        "text": "第一张图是包含所有物体的原始房间图，第二张图是移除了某个物体后的房间图。"
+                              "请对比两张图，用简短的中文描述被移除的物体原来放在什么位置，"
+                              "以及周围参照物的关系。例如：'放在桌子左侧'、'整齐摆放在墙角'、'靠在书架旁边'等。"
+                              "只需输出位置描述，不要说'我会在...'或'好的'等多余内容。"
+                    }
+                ]
+            }
+        ]
+
+        # 生成回复
+        text = self._qwen_processor.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True
+        )
+
+        inputs = self._qwen_processor(
+            text=[text],
+            images=[original_pil, plane_pil],
+            return_tensors="pt",
+        ).to(self._qwen_model.device)
+
+        with torch.no_grad():
+            outputs = self._qwen_model.generate(
+                **inputs
+            )
+
+        input_len = inputs["input_ids"].shape[1]
+        response = self._qwen_processor.decode(outputs[0, input_len:], skip_special_tokens=True).strip()
+
+        # 清理回复，去掉多余的前缀
+        for prefix in ["位置描述：", "位置：", "摆放位置："]:
+            if response.startswith(prefix):
+                response = response[len(prefix):]
+
+        return response
+
+    def generate_response(self, text_prompt: str) -> str:
+        """
+        生成 response：使用 Qwen3-VL 根据 text_prompt 生成自然回复。
+        例如输入："物体图为：<image>\n平面图为：<image>\n请将该物体放在桌子左侧"
+        期望输出："好的，我会将该物体放在桌子左侧。<SEG>"
+        """
+        try:
+            if self._qwen_model is None:
+                # 如果模型未加载，使用默认回复
+                raise RuntimeError("Qwen3-VL 模型未加载")
+
+            messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": f"你是一个物体放置助手。用户给出了放置指令，请你用礼貌的语气回复，"
+                                   f"并在末尾加上<SEG>标记。"
+                                   f"\n指令：{text_prompt}"
+                                   f"\n请用'好的，我会...'开头回复，并在句末加上<SEG>。"
+                        }
+                    ]
+                }
+            ]
+
+            text = self._qwen_processor.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True
+            )
+
+            inputs = self._qwen_processor(
+                text=[text],
+                return_tensors="pt",
+            ).to(self._qwen_model.device)
+
+            with torch.no_grad():
+                outputs = self._qwen_model.generate(
+                    **inputs,
+                    max_new_tokens=64,
+                    do_sample=False,
+                )
+
+            input_len = inputs["input_ids"].shape[1]
+            response = self._qwen_processor.decode(outputs[0, input_len:], skip_special_tokens=True).strip()
+
+            # 确保以 <SEG> 结尾
+            if "<SEG>" not in response:
+                response = response.rstrip("。.!！") + "。<SEG>"
+
+            return response
+        except Exception as e:
+            raise RuntimeError(f"Qwen3-VL 生成 response 失败: {e}")
 
     def rotation_6d_from_quat(self, quat: List[float]) -> List[float]:
         """四元数转 6D 旋转"""
@@ -715,11 +916,7 @@ class TrainingDataGenerator:
             if heatmap is None:
                 continue
 
-            # 3. 生成文本
-            text_prompt = self.generate_text_prompt(target_obj.model_id, is_aug=False)
-            response = self.generate_response(target_obj.model_id)
-
-            # 4. 计算旋转和缩放标签（倒数）
+            # 3. 计算旋转和缩放标签（倒数）
             orig_rot = target_obj.rot
             if len(orig_rot) == 4 and not np.allclose(orig_rot, [0, 0, 0, 1]):
                 inv_rot = R.from_quat(orig_rot).inv().as_quat().tolist()
@@ -730,10 +927,20 @@ class TrainingDataGenerator:
             orig_scale = np.mean(target_obj.scale_jid)
             scale = 1.0 / orig_scale if orig_scale > 0 else 1.0
 
-            # 5. 剔除物体，渲染剔除后房间图
+            # 4. 剔除物体，渲染剔除后房间图
             scene_without_obj = self.remove_object_from_scene(scene, target_obj)
             plane_image = self.render_top_view(scene_without_obj, scene_data.get('bounds_bottom', []))
             if plane_image is None:
+                continue
+            
+            # 5. 生成文本（失败则跳过该样本）
+            try:
+                text_prompt = self.generate_text_prompt(
+                    original_image, plane_image, is_aug=False
+                )
+                response = self.generate_response(text_prompt)
+            except RuntimeError:
+                logger.warning(f"跳过样本：Qwen3-VL 文本生成失败 (obj: {target_obj.jid})")
                 continue
 
             # 6. 保存样本
@@ -810,6 +1017,14 @@ class TrainingDataGenerator:
                 scene_data.get('bounds_bottom', [])
             )
 
+            # 生成增强文本（失败则跳过）
+            try:
+                aug_text_prompt = self.generate_text_prompt(original_image, aug_plane_image, is_aug=True)
+                aug_response = self.generate_response(aug_text_prompt)
+            except RuntimeError:
+                logger.warning(f"跳过增强样本：Qwen3-VL 文本生成失败")
+                return
+
             sample_meta = self.save_sample(
                 scene_dir=scene_dir,
                 obj_id=f"aug_{target_obj.jid}",
@@ -817,8 +1032,8 @@ class TrainingDataGenerator:
                 object_image=aug_object_image,
                 original_image=original_image,
                 heatmap=aug_heatmap,
-                text_prompt=self.generate_text_prompt(aug_obj.model_id, is_aug=True),
-                response=self.generate_response(aug_obj.model_id),
+                text_prompt=aug_text_prompt,
+                response=aug_response,
                 rotation_6d=aug_rot_6d,
                 scale=aug_scale,
                 split=split,
