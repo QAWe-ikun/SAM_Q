@@ -185,7 +185,7 @@ def run_pretreat(args):
     print("SAM-Q Training Data Generation")
     print("=" * 60)
 
-    from src.pretreatment.generate_training_data import TrainingDataGenerator
+    from src.pretreatment.data_generator import TrainingDataGenerator
     from src.utils.config import Config
     from pathlib import Path
 

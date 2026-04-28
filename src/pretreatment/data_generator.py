@@ -90,7 +90,10 @@ class TrainingDataGenerator:
         self.use_vllm = gen_config.get("use_vllm", False)
         self.vlm_client = None
         if gen_config.get("qwen_model_name"):
-            self.vlm_client = VLMClient(gen_config["qwen_model_name"])
+            self.vlm_client = VLMClient(
+                model_path=gen_config["qwen_model_name"],
+                use_vllm=self.use_vllm,
+            )
 
         # 数据划分
         split_ratio = gen_config.get("split_ratio", {"train": 0.8, "val": 0.1, "test": 0.1})
