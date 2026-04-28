@@ -65,6 +65,7 @@ import json
 import random
 import trimesh
 import numpy as np
+import cv2
 from PIL import Image
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
@@ -122,6 +123,7 @@ class TrainingDataGenerator:
         self.top_view_camera_height = cam_config.get("top_view_height", 8.0)
         self.side_view_camera_distance = cam_config.get("side_view_distance", 5.0)
         self.fov_degrees = cam_config.get("fov_degrees", 45)
+        self.aspect_ratio = cam_config.get("aspect_ratio", 1.0)
         
         self.heatmap_min_prob = heatmap_config.get("min_prob", 0.01)
 
@@ -257,43 +259,67 @@ class TrainingDataGenerator:
 
         return scene, objects
 
+    @staticmethod
+    def build_camera_basis(forward, world_up=None):
+        """
+        构建相机坐标系的 right, up, -forward（右手系）。
+        处理 forward 与 world_up 平行的退化情况。
+        """
+        forward = forward / np.linalg.norm(forward)
+        if world_up is None:
+            world_up = np.array([0.0, 1.0, 0.0])
+        world_up = world_up / np.linalg.norm(world_up)
+        
+        # 计算 right = forward × world_up
+        right = np.cross(forward, world_up)
+        right_norm = np.linalg.norm(right)
+        
+        if right_norm < 1e-6:
+            # 退化：forward 与 world_up 平行
+            # 选择一个与 forward 垂直的任意向量
+            candidates = [
+                np.array([1.0, 0.0, 0.0]),
+                np.array([0.0, 0.0, 1.0]),
+                np.array([0.0, 1.0, 0.0]),
+            ]
+            
+            for candidate in candidates:
+                if abs(np.dot(candidate, forward)) < 0.99:
+                    right = np.cross(forward, candidate)
+                    right = right / np.linalg.norm(right)
+                    break
+        else:
+            right = right / right_norm
+        
+        # 重新计算 up，确保严格正交
+        up = np.cross(right, forward)
+        up = up / np.linalg.norm(up)
+        
+        return right, up, -forward  # OpenGL 相机 z 轴指向远离场景
+
     def render_scene(
         self,
         scene: trimesh.Scene,
-        camera_position: List[float],
-        camera_target: List[float],
+        camera_position: np.ndarray,
+        camera_target: np.ndarray,
         use_light: bool = True,
-    ) -> np.ndarray:
+    ) -> Optional[np.ndarray]:
         """渲染场景为 RGB 图像（使用 pyrender 离屏渲染）"""
 
         import pyrender
 
         try:
-            camera_position = np.array(camera_position, dtype=np.float64)
-            camera_target = np.array(camera_target, dtype=np.float64)
-            camera_position = camera_position[[0,2,1]]  # XYZ -> XZY
-            camera_target = camera_target[[0,2,1]]  # XYZ -> XZY
-
             # 计算相机方向
             forward = camera_target - camera_position
-            forward = forward / np.linalg.norm(forward)
 
-            # 使用 Z 轴作为世界坐标系的上方向（trimesh 坐标系：Z 向上）
-            world_up = np.array([0.0, 0.0, 1.0])
-
-            # 计算右向量
-            right = np.cross(forward, world_up)
-            right = right / np.linalg.norm(right)
-
-            # 重新计算真正的上方向（垂直于 forward 和 right）
-            up = np.cross(right, forward)
+            right, up, cam_z = self.build_camera_basis(forward)
 
             # 构建相机在世界坐标系中的变换矩阵
             # pyrender 的 pose 是相机在世界空间中的位置和朝向
             cam_transform = np.eye(4)
             cam_transform[:3, 0] = right   # X 轴：右
             cam_transform[:3, 1] = up      # Y 轴：上
-            cam_transform[:3, 2] = -forward  # Z 轴：前（相机朝向）
+            cam_transform[:3, 2] = cam_z   # Z 轴：相机前向（-forward）
             cam_transform[:3, 3] = camera_position
 
             # 创建 pyrender 场景
@@ -310,10 +336,10 @@ class TrainingDataGenerator:
                         # 记录到日志文件（跳过有问题的几何体，如2通道纹理）
                         # 使用 DEBUG 级别，避免在控制台显示
                         logger.debug(f"Skipping mesh {geom_name}: {e}")
-                        continue
+                        return None
 
             # 添加相机
-            aspect_ratio = 1.0
+            aspect_ratio = self.aspect_ratio
             yfov = np.radians(self.fov_degrees)
             camera = pyrender.PerspectiveCamera(yfov=yfov, aspectRatio=aspect_ratio)
             py_scene.add(camera, pose=cam_transform)
@@ -331,19 +357,18 @@ class TrainingDataGenerator:
             return color
             
         except Exception as e:
-            # 回退到 2D 投影
             raise RuntimeError("Pyrender 渲染失败 error: " + str(e))
 
     def render_top_view(self, scene: trimesh.Scene, bounds_bottom: List[List[float]]) -> np.ndarray:
         """渲染俯视图（从 Z 轴正方向往下看，投影到 XY 平面）"""
         bounds_bottom = np.array(bounds_bottom)
         min_x = bounds_bottom[:, 0].min()
-        min_y = bounds_bottom[:, 1].min()
+        min_y = bounds_bottom[:, 2].min()
         max_x = bounds_bottom[:, 0].max()
-        max_y = bounds_bottom[:, 1].max()
+        max_y = bounds_bottom[:, 2].max()
         center = [(min_x + max_x) / 2, (min_y + max_y) / 2, 0]
-        camera_pos = [center[0], center[1], self.top_view_camera_height]
-        camera_target = [center[0], center[1], bounds_bottom[0][2]]
+        camera_pos = np.array([center[0], self.top_view_camera_height, center[1]])
+        camera_target = np.array([center[0], bounds_bottom[0][1], center[1]])
         return self.render_scene(scene, camera_pos, camera_target)
 
     def render_object_reference(
@@ -367,9 +392,9 @@ class TrainingDataGenerator:
         
         center = bounds.mean(axis=0)
         # 相机位置：在物体正上方
-        camera_pos = [center[0], center[1], bounds[1][2] + self.top_view_camera_height]
+        camera_pos = np.array([center[0], bounds[1][2] + self.top_view_camera_height, center[1]])
         # 相机目标：物体中心
-        camera_target = [center[0], center[1], bounds[0][2]]
+        camera_target = np.array([center[0], bounds[0][2], center[1]])
         
         return self.render_scene(obj_scene, camera_pos, camera_target)
 
@@ -379,7 +404,7 @@ class TrainingDataGenerator:
         bounds_bottom: List[List[float]]
     ) -> np.ndarray:
         """
-        生成 GT 热力图（通过渲染高斯颜色平面实现）。
+        生成 GT 热力图（使用透视投影矩阵计算）。
 
         参数:
             target_pos: 目标物体位置 [x, y, z]
@@ -387,65 +412,56 @@ class TrainingDataGenerator:
         """
         bounds_bottom = np.array(bounds_bottom)
         min_x = bounds_bottom[:, 0].min()
-        min_y = bounds_bottom[:, 1].min()
+        min_y = bounds_bottom[:, 2].min()
         max_x = bounds_bottom[:, 0].max()
-        max_y = bounds_bottom[:, 1].max()
+        max_y = bounds_bottom[:, 2].max()
         
-        # 在目标位置创建一个小正方形平面
-        square_size = 0.5  # 正方形边长
-        cx, cy = target_pos[0], target_pos[2]
-        cz = target_pos[1]
-
-        # 创建正方形的四个顶点（在 XY 平面）
-        vertices = np.array([
-            [cx - square_size/2, cz, cy + square_size/2],  # 左上
-            [cx + square_size/2, cz, cy + square_size/2],  # 右上
-            [cx + square_size/2, cz, cy - square_size/2],  # 右下
-            [cx - square_size/2, cz, cy - square_size/2],  # 左下
-        ])
-
-        # 创建两个三角形面片
-        faces = self._triangulate_polygon(len(vertices))
-
-        # 创建平面 mesh
-        heatmap_mesh = trimesh.Trimesh(vertices=vertices, faces=faces, process=False)
+        # 场景中心
+        scene_center_x = (min_x + max_x) / 2
+        scene_center_y = (min_y + max_y) / 2
         
-        heatmap_mesh.fix_normals()   # 确保法向量朝外
+        # 相机参数
+        camera_pos = np.array([scene_center_x, self.top_view_camera_height, scene_center_y])
+        camera_target = np.array([scene_center_x, bounds_bottom[0][1], scene_center_y])
+
+        # 计算相机方向
+        forward = camera_target - camera_pos
+
+        right, up, cam_z = self.build_camera_basis(forward)
+
+        # 计算目标相对于相机的位置
+        target_rel = target_pos - camera_pos
+
+        # 投影到相机坐标系
+        target_cam_x = np.dot(target_rel, right)
+        target_cam_y = np.dot(target_rel, up)
+        target_cam_z = np.dot(target_rel, cam_z)  # cam_z = -forward
         
-        # 创建面颜色（使用红色测试）
-        # 使用 trimesh.visual.color 设置面颜色（RGBA）
-        n_vertices = len(heatmap_mesh.vertices)
-        heatmap_mesh.visual.vertex_colors = np.tile(
-            [255, 0, 0, 255], 
-            (n_vertices, 1)
-        ).astype(np.uint8)
-
-        # 确认 visual.kind
-        assert heatmap_mesh.visual.kind == 'vertex', f"Expected 'vertex', got {heatmap_mesh.visual.kind}"
+        # 透视投影
+        fov_rad = np.radians(self.fov_degrees)
+        aspect_ratio = 1.0  # 图像是正方形
         
-        # 创建只包含热力图平面的场景
-        heatmap_scene = trimesh.Scene([heatmap_mesh])
+        # 在目标深度处的视口宽度和高度
+        viewport_height_at_depth = 2.0 * target_cam_z * np.tan(fov_rad / 2.0)
+        viewport_width_at_depth = viewport_height_at_depth * aspect_ratio
         
-        # 使用与 render_top_view 相同的相机参数渲染
-        center = [(min_x + max_x) / 2, (min_y + max_y) / 2, 0]
-        camera_pos = [center[0], center[1], self.top_view_camera_height]
-        camera_target = [center[0], center[1], bounds_bottom[0][2]]
+        # 将相机坐标映射到图像坐标
+        image_x = (0.5 - target_cam_x / viewport_width_at_depth) * self.image_size
+        image_y = (target_cam_y / viewport_height_at_depth + 0.5) * self.image_size
 
-        # 调试信息
-        logger.debug(f"热力图平面 - 中心位置: ({cx}, {cy}, {cz})")
-        logger.debug(f"相机位置: {camera_pos}, 目标位置: {camera_target}")
-
-        rendered = self.render_scene(heatmap_scene, camera_pos, camera_target)
-
-        # 调试信息
-        logger.debug(f"渲染结果范围: {rendered.min()} - {rendered.max()}")
-        logger.debug(f"渲染结果 R 通道范围: {rendered[:, :, 0].min()} - {rendered[:, :, 0].max()}")
-
-        # 提取单通道（灰度图，R 通道即可）
-        heatmap = rendered[:, :, 0].astype(np.float32) / 255.0
-
-        logger.debug(f"最终热力图范围: {heatmap.min():.3f} - {heatmap.max():.3f}")
-
+        # 生成高斯热力图
+        heatmap = np.zeros((self.image_size, self.image_size), dtype=np.float32)
+        y_coords, x_coords = np.ogrid[:self.image_size, :self.image_size]
+        heatmap = np.exp(-((x_coords - image_x)**2 + (y_coords - image_y)**2) / (2 * self.heatmap_sigma**2))
+        
+        # 归一化到 [0, 1]
+        max_val = heatmap.max()
+        if max_val > 0:
+            heatmap = heatmap / max_val
+        
+        # 阈值处理
+        heatmap[heatmap < self.heatmap_min_prob] = 0.0
+        
         return heatmap
 
     def remove_object_from_scene(
@@ -653,15 +669,21 @@ class TrainingDataGenerator:
 
         # 1. 渲染原始房间图
         original_image = self.render_top_view(scene, scene_data.get('bounds_bottom', []))
+        if original_image is None:
+            return
 
         # 2. 渲染物体参考图（俯视图，正向，缩放=1）
         object_image = self.render_object_reference(target_obj.mesh)
+        if object_image is None:
+            return
 
         # 3. 生成 GT 热力图
         heatmap = self.generate_heatmap(
             target_pos=target_obj.pos,
             bounds_bottom=scene_data.get('bounds_bottom', [])
         )
+        if heatmap is None:
+            return
 
         # 4. 生成文本
         text_prompt = self.generate_text_prompt(target_obj.model_id, is_aug=False)

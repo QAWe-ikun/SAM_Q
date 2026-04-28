@@ -39,6 +39,7 @@ camera:
   top_view_height: 8.0       # Top view camera height
   side_view_distance: 5.0    # Side view camera distance
   fov_degrees: 45            # Field of view in degrees
+  aspect_ratio: 1.0          # Aspect ratio (width/height)
 
 # ----------------------------------------------------------------------------
 # Heatmap Settings
