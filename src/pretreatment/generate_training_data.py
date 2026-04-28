@@ -22,7 +22,7 @@ SAM-Q 训练集自动化生成器
 
 import os
 import tqdm
-import torch
+import torch # type: ignore
 import logging
 import warnings
 from pathlib import Path
@@ -142,6 +142,9 @@ class TrainingDataGenerator:
 
         # 全局样本计数
         self.sample_counter = 0
+
+        # 按 split 收集样本元数据
+        self.samples_by_split = {"train": [], "val": [], "test": []}
 
         # Qwen3-VL 模型（懒加载，参考 qwen3vl_encoder.py 的机制）
         self._qwen_model_name = gen_config.get("qwen_model_name", None)
@@ -314,7 +317,7 @@ class TrainingDataGenerator:
     ) -> Optional[np.ndarray]:
         """渲染场景为 RGB 图像（使用 pyrender 离屏渲染）"""
 
-        import pyrender
+        import pyrender # type: ignore
 
         try:
             # 计算相机方向
@@ -658,7 +661,7 @@ class TrainingDataGenerator:
         if self._qwen_model is not None:
             return
 
-        from transformers import Qwen3VLForConditionalGeneration, AutoProcessor
+        from transformers import Qwen3VLForConditionalGeneration, AutoProcessor # type: ignore
 
         # 检查配置是否存在
         if not self._qwen_model_name:
@@ -681,7 +684,7 @@ class TrainingDataGenerator:
         attn_impl = "eager"
         if torch.cuda.is_available():
             try:
-                import flash_attn
+                import flash_attn # type: ignore
                 attn_impl = "flash_attention_2"
             except ImportError:
                 attn_impl = "sdpa"
@@ -739,7 +742,7 @@ class TrainingDataGenerator:
             return_tensors="pt",
         ).to(self._qwen_model.device)
 
-        from transformers import GenerationConfig
+        from transformers import GenerationConfig # type: ignore
         with torch.no_grad():
             outputs = self._qwen_model.generate(
                 **inputs,
@@ -792,7 +795,7 @@ class TrainingDataGenerator:
                 return_tensors="pt",
             ).to(self._qwen_model.device)
 
-            from transformers import GenerationConfig
+            from transformers import GenerationConfig # type: ignore
             with torch.no_grad():
                 outputs = self._qwen_model.generate(
                     **inputs,
@@ -894,9 +897,10 @@ class TrainingDataGenerator:
         Image.fromarray(heatmap_uint8).save(mask_path)
 
         # 返回样本元数据
-        return {
+        metadata = {
             "sample_id": sample_id,
             "split": split,
+            "scene_dir": str(scene_dir.relative_to(self.output_dir)),
             "plane_image_path": f"plane_images/{sample_id}.png",
             "images_paths": [
                 f"object_images/{sample_id}.png",
@@ -908,6 +912,9 @@ class TrainingDataGenerator:
             "rotation_6d": rotation_6d,
             "scale": scale,
         }
+        # 收集到全局列表
+        self.samples_by_split[split].append(metadata)
+        return metadata
 
     def process_scene(
         self,
@@ -930,9 +937,6 @@ class TrainingDataGenerator:
         original_image = self.render_top_view(scene, scene_data.get('bounds_bottom', []))
         if original_image is None:
             return
-
-        # 收集该场景的所有样本
-        samples = []
 
         # 创建场景输出目录（确认有有效数据后再创建）
         scene_name = json_path.stem
@@ -963,7 +967,6 @@ class TrainingDataGenerator:
                     scene, scene_data, scene_dir, split, target_obj
                 )
                 if aug_meta is not None:
-                    samples.append(aug_meta)
                     objects_processed += 1
                 continue
             
@@ -1024,21 +1027,9 @@ class TrainingDataGenerator:
                 split=split,
             )
             if sample_meta is not None:
-                samples.append(sample_meta)
                 objects_processed += 1
 
-        # 保存该场景的 samples.json
-        if samples:
-            samples_json_path = scene_dir / "samples.json"
-            with open(samples_json_path, 'w', encoding='utf-8') as f:
-                json.dump(samples, f, ensure_ascii=False, indent=2)
-            logger.info(f"场景 {scene_name}: 生成 {len(samples)} 个样本")
-        else:
-            # 没有有效样本，删除空目录
-            import shutil
-            if scene_dir.exists():
-                shutil.rmtree(scene_dir)
-            logger.warning(f"场景 {scene_name}: 无有效样本，跳过")
+        logger.info(f"场景 {scene_name}: 生成 {objects_processed} 个样本")
 
     def _process_augmentation(
         self,
@@ -1128,5 +1119,15 @@ class TrainingDataGenerator:
 
         for idx, json_path in enumerate(tqdm.tqdm(json_files, desc="Processing scenes")):
             self.process_scene(json_path, split=splits[idx])
+
+        # 保存每个 split 的合并 JSON 文件
+        for split_name in ["train", "val", "test"]:
+            split_samples = self.samples_by_split[split_name]
+            if split_samples:
+                split_dir = self.output_dir / split_name
+                output_path = split_dir / f"{split_name}.json"
+                with open(output_path, 'w', encoding='utf-8') as f:
+                    json.dump(split_samples, f, ensure_ascii=False, indent=2)
+                logger.info(f"保存 {split_name} 数据: {len(split_samples)} 个样本 -> {output_path}")
 
         logger.info(f"\n生成完成! 总样本数: {self.sample_counter}")

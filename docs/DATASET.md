@@ -8,6 +8,7 @@ Stage 1 训练结束后自动提取 `<SEG>` hidden states 到 `data/seg_features
 ```
 data/
 ├── train/                          # 训练集
+│   ├── train.json                  # 所有训练样本的元数据（合并）
 │   ├── scene_001/                  # 一个原始场景对应一个文件夹
 │   │   ├── plane_images/           # 剔除不同物体后的房间俯视图
 │   │   │   ├── obj_chair_01.png    # 剔除椅子后的房间图
@@ -21,29 +22,26 @@ data/
 │   │   │   ├── obj_chair_01.png    # 原始房间图（含椅子）
 │   │   │   ├── obj_table_02.png    # 原始房间图（含桌子）
 │   │   │   └── ...
-│   │   ├── masks/                  # GT 放置热力图
-│   │   │   ├── obj_chair_01_mask.png
-│   │   │   ├── obj_table_02_mask.png
-│   │   │   └── ...
-│   │   ├── debug/                  # 调试图片（original + heatmap 叠加）
-│   │   │   └── ...
-│   │   └── samples.json            # 该场景所有样本的元数据
+│   │   └── masks/                  # GT 放置热力图
+│   │       ├── obj_chair_01_mask.png
+│   │       ├── obj_table_02_mask.png
+│   │       └── ...
 │   ├── scene_002/
 │   │   ├── plane_images/
 │   │   ├── object_images/
 │   │   ├── original_images/
-│   │   ├── masks/
-│   │   ├── debug/
-│   │   └── samples.json
+│   │   └── masks/
 │   └── ...
 ├── val/                            # 验证集（结构同 train/）
+│   └── val.json
 ├── test/                           # 测试集（结构同 train/）
+│   └── test.json
 └── seg_features/                   # <SEG> hidden states（Stage 1 训练后自动生成）
     ├── scene_001_obj_chair_01.pt
     └── ...
 ```
 
-每个 `samples.json` 包含该场景生成的多个样本（每剔除一个物体生成一个样本）：
+每个 `{split}.json` 包含该 split 下所有场景的样本元数据：
 
 ```json
 [

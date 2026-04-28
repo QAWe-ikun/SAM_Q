@@ -9,11 +9,11 @@ Handles loading and preprocessing of:
 """
 
 import json
-import torch
+import torch # type: ignore
 import numpy as np
 from PIL import Image
 from pathlib import Path
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset # type: ignore
 from typing import Optional, List, Dict, Any
 
 
@@ -27,8 +27,7 @@ class ObjectPlacementDataset(Dataset):
         │   ├── scene_001/
         │   │   ├── plane_images/
         │   │   ├── object_images/
-        │   │   ├── masks/
-        │   │   └── samples.json
+        │   │   └── masks/
         │   └── scene_002/
         │       └── ...
         ├── val/
@@ -60,7 +59,7 @@ class ObjectPlacementDataset(Dataset):
         self.samples = self._load_samples()
 
     def _load_samples(self) -> List[Dict]:
-        """Load samples from all scene folders."""
+        """Load samples from split JSON file."""
         split_dir = self.data_dir / self.split
         if not split_dir.exists():
             import logging
@@ -69,21 +68,17 @@ class ObjectPlacementDataset(Dataset):
             )
             return []
 
-        all_samples = []
-        for scene_dir in sorted(split_dir.iterdir()):
-            if not scene_dir.is_dir():
-                continue
-            samples_file = scene_dir / "samples.json"
-            if not samples_file.exists():
-                continue
+        samples_file = split_dir / f"{self.split}.json"
+        if not samples_file.exists():
+            return []
 
-            with open(samples_file, "r", encoding="utf-8") as f:
-                scene_samples = json.load(f)
+        with open(samples_file, "r", encoding="utf-8") as f:
+            all_samples = json.load(f)
 
-            # Add scene_dir path to each sample for resolving relative paths
-            for sample in scene_samples:
-                sample["_scene_dir"] = scene_dir
-                all_samples.append(sample)
+        # Add data_dir path to each sample for resolving relative paths
+        for sample in all_samples:
+            scene_dir = self.data_dir / self.split / sample["scene_dir"]
+            sample["_scene_dir"] = scene_dir
 
         return all_samples
 
