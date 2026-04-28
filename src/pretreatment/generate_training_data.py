@@ -83,7 +83,6 @@ class ObjectInfo:
     scale_jid: Tuple[float, float, float]
     mesh: trimesh.Trimesh
     is_on_floor: bool  # 是否在地面上
-    is_on_wall: bool   # 是否在墙面上
 
 
 class TrainingDataGenerator:
@@ -254,7 +253,6 @@ class TrainingDataGenerator:
                 scale_jid=(sx, sy, sz),
                 mesh=mesh,  # 原始 mesh（未变换）
                 is_on_floor=is_on_floor,
-                is_on_wall=False,  # TODO: 判断是否在墙面
             ))
 
         return scene, objects
@@ -264,12 +262,12 @@ class TrainingDataGenerator:
         scene: trimesh.Scene,
         camera_position: List[float],
         camera_target: List[float],
-        is_top_view: bool = False,
+        use_light: bool = True,
     ) -> np.ndarray:
         """渲染场景为 RGB 图像（使用 pyrender 离屏渲染）"""
-        
+
         import pyrender
-            
+
         try:
             camera_position = np.array(camera_position, dtype=np.float64)
             camera_target = np.array(camera_target, dtype=np.float64)
@@ -279,14 +277,14 @@ class TrainingDataGenerator:
             # 计算相机方向
             forward = camera_target - camera_position
             forward = forward / np.linalg.norm(forward)
-            
+
             # 使用 Z 轴作为世界坐标系的上方向（trimesh 坐标系：Z 向上）
             world_up = np.array([0.0, 0.0, 1.0])
-            
+
             # 计算右向量
             right = np.cross(forward, world_up)
             right = right / np.linalg.norm(right)
-            
+
             # 重新计算真正的上方向（垂直于 forward 和 right）
             up = np.cross(right, forward)
 
@@ -297,10 +295,10 @@ class TrainingDataGenerator:
             cam_transform[:3, 1] = up      # Y 轴：上
             cam_transform[:3, 2] = -forward  # Z 轴：前（相机朝向）
             cam_transform[:3, 3] = camera_position
-            
+
             # 创建 pyrender 场景
             py_scene = pyrender.Scene()
-            
+
             # 添加 trimesh 几何体（直接使用原始网格，不做任何中间处理）
             for geom_name, geom in scene.geometry.items():
                 if isinstance(geom, trimesh.Trimesh):
@@ -320,9 +318,10 @@ class TrainingDataGenerator:
             camera = pyrender.PerspectiveCamera(yfov=yfov, aspectRatio=aspect_ratio)
             py_scene.add(camera, pose=cam_transform)
 
-            # 添加光源
-            light = pyrender.DirectionalLight(color=[1.0, 1.0, 1.0], intensity=3.0)
-            py_scene.add(light, pose=cam_transform)
+            # 添加光源（可选）
+            if use_light:
+                light = pyrender.DirectionalLight(color=[1.0, 1.0, 1.0], intensity=3.0)
+                py_scene.add(light, pose=cam_transform)
 
             # 离屏渲染
             r = pyrender.OffscreenRenderer(viewport_width=self.image_size, viewport_height=self.image_size)
@@ -345,22 +344,7 @@ class TrainingDataGenerator:
         center = [(min_x + max_x) / 2, (min_y + max_y) / 2, 0]
         camera_pos = [center[0], center[1], self.top_view_camera_height]
         camera_target = [center[0], center[1], bounds_bottom[0][2]]
-        return self.render_scene(scene, camera_pos, camera_target, is_top_view=True)
-
-    def render_side_view(
-        self,
-        scene: trimesh.Scene,
-        wall_index: int = 0,
-    ) -> np.ndarray:
-        """渲染侧视图（面向指定墙面）"""
-        bounds = scene.bounds
-        if bounds is None:
-            return np.zeros((self.image_size, self.image_size, 3), dtype=np.uint8)
-        center = bounds.mean(axis=0)
-        # 面向墙面的相机位置
-        camera_pos = [center[0] - self.side_view_camera_distance, center[1], center[2]]
-        camera_target = [center[0], center[1], center[2]]
-        return self.render_scene(scene, camera_pos, camera_target, is_top_view=False)
+        return self.render_scene(scene, camera_pos, camera_target)
 
     def render_object_reference(
         self,
@@ -387,117 +371,82 @@ class TrainingDataGenerator:
         # 相机目标：物体中心
         camera_target = [center[0], center[1], bounds[0][2]]
         
-        return self.render_scene(obj_scene, camera_pos, camera_target, self.image_size, is_top_view=True)
+        return self.render_scene(obj_scene, camera_pos, camera_target)
 
     def generate_heatmap(
         self,
-        scene: trimesh.Scene,
         target_pos: List[float],
+        bounds_bottom: List[List[float]]
     ) -> np.ndarray:
         """
-        生成 GT 热力图。
+        生成 GT 热力图（通过渲染高斯颜色平面实现）。
 
-        规则:
-        1. 中心点（target_pos）概率最高
-        2. 四周高斯衰减
-        3. 碰撞区域概率直接为 0
+        参数:
+            target_pos: 目标物体位置 [x, y, z]
+            bounds_bottom: 场景底部边界
         """
-        # 1. 生成高斯热力图
-        heatmap = np.zeros((self.image_size, self.image_size), dtype=np.float32)
-        center_x, center_y = self._world_to_image(target_pos, scene.bounds, self.image_size)
-
-        # 高斯核
-        y, x = np.ogrid[:self.image_size, :self.image_size]
-        heatmap = np.exp(-((x - center_x)**2 + (y - center_y)**2) / (2 * self.heatmap_sigma**2))
+        bounds_bottom = np.array(bounds_bottom)
+        min_x = bounds_bottom[:, 0].min()
+        min_y = bounds_bottom[:, 1].min()
+        max_x = bounds_bottom[:, 0].max()
+        max_y = bounds_bottom[:, 1].max()
         
-        # 归一化到 [0, 1]（避免除 0）
-        max_val = heatmap.max()
-        if max_val > 0:
-            heatmap = heatmap / max_val
+        # 在目标位置创建一个小正方形平面
+        square_size = 0.5  # 正方形边长
+        cx, cy = target_pos[0], target_pos[2]
+        cz = target_pos[1]
 
-        # 2. 碰撞检测：将碰撞区域置零
-        collision_mask = self._compute_collision_mask(scene, self.image_size)
-        heatmap[collision_mask] = 0.0
+        # 创建正方形的四个顶点（在 XY 平面）
+        vertices = np.array([
+            [cx - square_size/2, cz, cy + square_size/2],  # 左上
+            [cx + square_size/2, cz, cy + square_size/2],  # 右上
+            [cx + square_size/2, cz, cy - square_size/2],  # 右下
+            [cx - square_size/2, cz, cy - square_size/2],  # 左下
+        ])
 
-        # 3. 阈值处理
-        heatmap[heatmap < self.heatmap_min_prob] = 0.0
+        # 创建两个三角形面片
+        faces = self._triangulate_polygon(len(vertices))
+
+        # 创建平面 mesh
+        heatmap_mesh = trimesh.Trimesh(vertices=vertices, faces=faces, process=False)
+        
+        heatmap_mesh.fix_normals()   # 确保法向量朝外
+        
+        # 创建面颜色（使用红色测试）
+        # 使用 trimesh.visual.color 设置面颜色（RGBA）
+        n_vertices = len(heatmap_mesh.vertices)
+        heatmap_mesh.visual.vertex_colors = np.tile(
+            [255, 0, 0, 255], 
+            (n_vertices, 1)
+        ).astype(np.uint8)
+
+        # 确认 visual.kind
+        assert heatmap_mesh.visual.kind == 'vertex', f"Expected 'vertex', got {heatmap_mesh.visual.kind}"
+        
+        # 创建只包含热力图平面的场景
+        heatmap_scene = trimesh.Scene([heatmap_mesh])
+        
+        # 使用与 render_top_view 相同的相机参数渲染
+        center = [(min_x + max_x) / 2, (min_y + max_y) / 2, 0]
+        camera_pos = [center[0], center[1], self.top_view_camera_height]
+        camera_target = [center[0], center[1], bounds_bottom[0][2]]
+
+        # 调试信息
+        logger.debug(f"热力图平面 - 中心位置: ({cx}, {cy}, {cz})")
+        logger.debug(f"相机位置: {camera_pos}, 目标位置: {camera_target}")
+
+        rendered = self.render_scene(heatmap_scene, camera_pos, camera_target)
+
+        # 调试信息
+        logger.debug(f"渲染结果范围: {rendered.min()} - {rendered.max()}")
+        logger.debug(f"渲染结果 R 通道范围: {rendered[:, :, 0].min()} - {rendered[:, :, 0].max()}")
+
+        # 提取单通道（灰度图，R 通道即可）
+        heatmap = rendered[:, :, 0].astype(np.float32) / 255.0
+
+        logger.debug(f"最终热力图范围: {heatmap.min():.3f} - {heatmap.max():.3f}")
 
         return heatmap
-
-    def _world_to_image(
-        self,
-        pos: List[float],
-        bounds: np.ndarray,
-        image_size: int,
-    ) -> Tuple[float, float]:
-        """世界坐标转图像坐标（只使用 X, Y）"""
-        if bounds is None:
-            return image_size / 2, image_size / 2
-        # bounds: [[min_x, min_y, min_z], [max_x, max_y, max_z]]
-        x_min = bounds[0, 0]
-        y_min = bounds[0, 1]
-        x_max = bounds[1, 0]
-        y_max = bounds[1, 1]
-        x_range = x_max - x_min
-        y_range = y_max - y_min
-        if x_range == 0 or y_range == 0:
-            return image_size / 2, image_size / 2
-        x = (pos[0] - x_min) / x_range * image_size
-        y = (pos[1] - y_min) / y_range * image_size
-        return x, y
-
-    def _compute_collision_mask(
-        self,
-        scene: trimesh.Scene,
-        image_size: int,
-    ) -> np.ndarray:
-        """计算碰撞掩码（占据区域为 True）"""
-        mask = np.zeros((image_size, image_size), dtype=bool)
-        bounds = scene.bounds
-        if bounds is None:
-            return mask
-        # bounds: [[min_x, min_y, min_z], [max_x, max_y, max_z]]
-        x_min = bounds[0, 0]
-        y_min = bounds[0, 1]
-        x_max = bounds[1, 0]
-        y_max = bounds[1, 1]
-        x_range = x_max - x_min
-        y_range = y_max - y_min
-        if x_range == 0 or y_range == 0:
-            return mask
-
-        # 碰撞检测：遍历场景中所有几何体的投影
-        # 排除地板、墙壁等基础几何体
-        ignore_names = {"floor", "ceiling", "wall"}
-        for geom_name, geom in scene.geometry.items():
-            if not isinstance(geom, trimesh.Trimesh):
-                continue
-            # 跳过基础几何体
-            if any(ignored in geom_name.lower() for ignored in ignore_names):
-                continue
-            # 使用顶点和面片生成更完整的投影
-            vertices = geom.vertices
-            # 对每个面片的顶点进行插值，填充投影区域
-            for face in geom.faces:
-                # 获取面片的三个顶点
-                v0, v1, v2 = vertices[face]
-                # 在面片内部进行采样（10x10 网格）
-                for i in range(10):
-                    for j in range(10 - i):
-                        # 重心坐标插值
-                        u = i / 9.0
-                        v = j / 9.0
-                        w = 1.0 - u - v
-                        if w < 0:
-                            continue
-                        px = u * v0[0] + v * v1[0] + w * v2[0]
-                        py = u * v0[1] + v * v1[1] + w * v2[1]
-                        ix = int((px - x_min) / x_range * image_size)
-                        iy = int((py - y_min) / y_range * image_size)
-                        if 0 <= ix < image_size and 0 <= iy < image_size:
-                            mask[iy, ix] = True
-
-        return mask
 
     def remove_object_from_scene(
         self,
@@ -576,7 +525,6 @@ class TrainingDataGenerator:
             scale_jid=(scale_aug, scale_aug, scale_aug),
             mesh=obj.mesh,  # 原始 mesh
             is_on_floor=obj.is_on_floor,
-            is_on_wall=obj.is_on_wall,
         )
 
         return aug_obj, new_scene
@@ -600,8 +548,8 @@ class TrainingDataGenerator:
         for geom_name, geom in scene.geometry.items():
             if not isinstance(geom, trimesh.Trimesh):
                 continue
-            # 只检测其他家具物体，排除地板/墙壁
-            if any(skip in geom_name.lower() for skip in ["floor", "wall"]):
+            # 只检测其他家具物体，排除地板
+            if any(skip in geom_name.lower() for skip in "floor"):
                 continue
             
             geom_bounds = geom.bounds
@@ -710,7 +658,10 @@ class TrainingDataGenerator:
         object_image = self.render_object_reference(target_obj.mesh)
 
         # 3. 生成 GT 热力图
-        heatmap = self.generate_heatmap(scene, target_obj.pos)
+        heatmap = self.generate_heatmap(
+            target_pos=target_obj.pos,
+            bounds_bottom=scene_data.get('bounds_bottom', [])
+        )
 
         # 4. 生成文本
         text_prompt = self.generate_text_prompt(target_obj.model_id, is_aug=False)
@@ -754,7 +705,10 @@ class TrainingDataGenerator:
                 aug_object_image = self.render_object_reference(aug_obj.mesh)
 
                 # 生成 GT 热力图（基于移动后位置）
-                aug_heatmap = self.generate_heatmap(scene_without_obj, aug_obj.pos)
+                aug_heatmap = self.generate_heatmap(
+                    target_pos=aug_obj.pos,
+                    bounds_bottom=scene_data.get('bounds_bottom', [])
+                )
 
                 # 计算旋转和缩放标签
                 # 数据增强：旋转为随机生成的旋转的倒数，缩放为 1
