@@ -50,6 +50,11 @@ class VLMClient:
     def _load_vllm_engine(self, model_path: Path):
         """加载 vLLM 推理引擎"""
         try:
+            # 抑制 vLLM 内部的 INFO 日志
+            import logging
+            vllm_logger = logging.getLogger("vllm")
+            vllm_logger.setLevel(logging.WARNING)
+
             from vllm import LLM  # type: ignore
 
             logger.info(f"使用 vLLM 引擎加载: {model_path}")
@@ -59,6 +64,7 @@ class VLMClient:
                 gpu_memory_utilization=0.9,
                 max_model_len=8192,
                 trust_remote_code=True,
+                disable_log_stats=True,
             )
             logger.info("vLLM 引擎加载成功")
         except ImportError:
