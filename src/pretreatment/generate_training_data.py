@@ -126,7 +126,7 @@ class TrainingDataGenerator:
         self.aspect_ratio = cam_config.get("aspect_ratio", 1.0)
 
         # 最大剔除比例
-        self.max_object_ratio = gen_config.get("max_object_ratio", 0.5)
+        self.max_object_nums = gen_config.get("max_object_nums", 2)
 
         # 数据集划分比例
         split_ratio = gen_config.get("split_ratio", {"train": 0.8, "val": 0.1, "test": 0.1})
@@ -135,7 +135,6 @@ class TrainingDataGenerator:
         self.test_ratio = split_ratio.get("test", 0.1)
 
         # 输出目录结构：data/train/, data/val/, data/test/
-        # 每个场景一个文件夹：data/train/scene_001/
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.train_dir.mkdir(parents=True, exist_ok=True)
         self.val_dir.mkdir(parents=True, exist_ok=True)
@@ -941,23 +940,19 @@ class TrainingDataGenerator:
         scene_dir.mkdir(parents=True, exist_ok=True)
 
         # 对场景中的每个物体生成一个样本（按 jid 去重，限制最大剔除比例）
-        processed_jids = set()
-        max_objects = max(1, int(len(objects) * self.max_object_ratio))
+        max_objects = min(len(objects), self.max_object_nums)
         objects_processed = 0
         
-        random.shuffle(objects)  # 随机打乱物体顺序，增加样本多样性
+        random.shuffle(objects)
 
         for target_obj in objects:
+            
             if objects_processed >= max_objects:
                 break
-            if target_obj.jid in processed_jids:
-                continue
+            
             if not target_obj.is_on_floor:
                 # 只处理在地面上的物体，跳过悬浮物体
                 continue
-
-            # 记录已处理的物体 jid，避免重复处理同一物体
-            processed_jids.add(target_obj.jid)
 
             # 数据增强（仅在 train 阶段，按 aug_ratio 比例决定走增强流程还是普通流程）
             is_aug = split == "train" and self.augmentation and random.random() < self.aug_ratio

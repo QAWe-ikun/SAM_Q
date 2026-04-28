@@ -19,7 +19,7 @@ data:
 generation:
   image_size: 1024           # Output image resolution (pixels)
   heatmap_sigma: 15.0        # Gaussian kernel sigma for heatmap
-  max_object_ratio: 0.5      # Maximum ratio of objects to remove per scene (0.0~1.0)
+  max_object_nums: 2          # Maximum nums of objects to remove per scene
   qwen_model_name: "./models/qwen3_vl"  # Qwen3-VL model path (local directory or Hugging Face name)
   split_ratio:               # Data split ratios (train/val/test)
     train: 0.8
