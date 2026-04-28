@@ -17,15 +17,23 @@ data/
 │   │   │   ├── obj_chair_01.png    # 椅子参考图
 │   │   │   ├── obj_table_02.png    # 桌子参考图
 │   │   │   └── ...
+│   │   ├── original_images/        # 包含所有物体的原始房间图（用于调试/参考）
+│   │   │   ├── obj_chair_01.png    # 原始房间图（含椅子）
+│   │   │   ├── obj_table_02.png    # 原始房间图（含桌子）
+│   │   │   └── ...
 │   │   ├── masks/                  # GT 放置热力图
 │   │   │   ├── obj_chair_01_mask.png
 │   │   │   ├── obj_table_02_mask.png
+│   │   │   └── ...
+│   │   ├── debug/                  # 调试图片（original + heatmap 叠加）
 │   │   │   └── ...
 │   │   └── samples.json            # 该场景所有样本的元数据
 │   ├── scene_002/
 │   │   ├── plane_images/
 │   │   ├── object_images/
+│   │   ├── original_images/
 │   │   ├── masks/
+│   │   ├── debug/
 │   │   └── samples.json
 │   └── ...
 ├── val/                            # 验证集（结构同 train/）
@@ -190,10 +198,10 @@ Stage 1 训练结束后**自动生成**，无需手动创建。
 
 ```bash
 # Stage 1: Qwen3-VL LoRA 微调（训练完自动提取 seg_features）
-python main.py train --config configs/test_stage1.yaml
+python main.py train --config configs/stage1_qwen_lora.yaml
 
 # Stage 2: Adapter + SAM3 Decoder（读 seg_features，不加载 Qwen3-VL）
-python main.py train --config configs/test_stage2.yaml
+python main.py train --config configs/stage2_decoder.yaml
 ```
 
 Config 区别：

@@ -98,7 +98,6 @@ class TrainingDataGenerator:
         gen_config = config.get("generation", {})
         aug_config = config.get("augmentation", {})
         cam_config = config.get("camera", {})
-        heatmap_config = config.get("heatmap", {})
 
         self.scene_dir = Path(data_config.get("scene_dir", ""))
         self.model_dir = Path(data_config.get("model_dir", ""))
@@ -124,6 +123,9 @@ class TrainingDataGenerator:
         self.side_view_camera_distance = cam_config.get("side_view_distance", 5.0)
         self.fov_degrees = cam_config.get("fov_degrees", 45)
         self.aspect_ratio = cam_config.get("aspect_ratio", 1.0)
+
+        # 最大剔除比例
+        self.max_object_ratio = gen_config.get("max_object_ratio", 0.5)
 
         # 输出目录结构：data/train/, data/val/, data/test/
         # 每个场景一个文件夹：data/train/scene_001/
@@ -626,19 +628,21 @@ class TrainingDataGenerator:
         plane_dir = scene_dir / "plane_images"
         object_dir = scene_dir / "object_images"
         mask_dir = scene_dir / "masks"
+        original_dir = scene_dir / "original_images"
         plane_dir.mkdir(exist_ok=True)
         object_dir.mkdir(exist_ok=True)
         mask_dir.mkdir(exist_ok=True)
+        original_dir.mkdir(exist_ok=True)
 
         # 保存图片
         plane_path = plane_dir / f"{sample_id}.png"
         object_path = object_dir / f"{sample_id}.png"
         mask_path = mask_dir / f"{sample_id}_mask.png"
-        original_image_path = scene_dir / f"{sample_id}_original.png"
+        original_path = original_dir / f"{sample_id}.png"
 
         Image.fromarray(plane_image).save(plane_path)
         Image.fromarray(object_image).save(object_path)
-        Image.fromarray(original_image).save(original_image_path)
+        Image.fromarray(original_image).save(original_path)
 
         # 热力图转为灰度图
         heatmap_uint8 = (heatmap * 255).astype(np.uint8)
@@ -674,21 +678,30 @@ class TrainingDataGenerator:
         if not objects:
             return
 
-        # 创建场景输出目录
-        scene_name = json_path.stem
-        scene_dir = self.output_dir / split / scene_name
-        scene_dir.mkdir(parents=True, exist_ok=True)
-
-        # 收集该场景的所有样本
-        samples = []
-
         # 渲染原始房间图（用于调试叠加）
         original_image = self.render_top_view(scene, scene_data.get('bounds_bottom', []))
         if original_image is None:
             return
 
-        # 对场景中的每个物体生成一个样本
+        # 收集该场景的所有样本
+        samples = []
+
+        # 创建场景输出目录（确认有有效数据后再创建）
+        scene_name = json_path.stem
+        scene_dir = self.output_dir / split / scene_name
+        scene_dir.mkdir(parents=True, exist_ok=True)
+
+        # 对场景中的每个物体生成一个样本（按 jid 去重，限制最大剔除比例）
+        processed_jids = set()
+        max_objects = max(1, int(len(objects) * self.max_object_ratio))
+        objects_processed = 0
+
         for target_obj in objects:
+            if objects_processed >= max_objects:
+                break
+            if target_obj.jid in processed_jids:
+                continue
+            processed_jids.add(target_obj.jid)
             # 1. 渲染物体参考图
             object_image = self.render_object_reference(target_obj.mesh)
             if object_image is None:
@@ -739,15 +752,7 @@ class TrainingDataGenerator:
             )
             if sample_meta is not None:
                 samples.append(sample_meta)
-
-            # 7. 保存调试图片（original + heatmap 叠加）
-            self._save_debug_image(
-                scene_dir=scene_dir,
-                sample_id=f"obj_{target_obj.jid}_{self.sample_counter:06d}",
-                original_image=original_image,
-                heatmap=heatmap,
-                object_image=object_image,
-            )
+                objects_processed += 1
 
         # 保存该场景的 samples.json
         if samples:
@@ -755,8 +760,14 @@ class TrainingDataGenerator:
             with open(samples_json_path, 'w', encoding='utf-8') as f:
                 json.dump(samples, f, ensure_ascii=False, indent=2)
             logger.info(f"场景 {scene_name}: 生成 {len(samples)} 个样本")
+        else:
+            # 没有有效样本，删除空目录
+            import shutil
+            if scene_dir.exists():
+                shutil.rmtree(scene_dir)
+            logger.warning(f"场景 {scene_name}: 无有效样本，跳过")
 
-        # 8. 数据增强（如果启用）
+        # 7. 数据增强（如果启用）
         if self.augmentation:
             self._process_augmentation(scene, scene_data, scene_dir, original_image, split)
 
@@ -822,28 +833,6 @@ class TrainingDataGenerator:
                     existing_samples.append(sample_meta)
                     with open(samples_json_path, 'w', encoding='utf-8') as f:
                         json.dump(existing_samples, f, ensure_ascii=False, indent=2)
-
-    def _save_debug_image(
-        self,
-        scene_dir: Path,
-        sample_id: str,
-        original_image: np.ndarray,
-        heatmap: np.ndarray,
-        object_image: np.ndarray,
-    ):
-        """保存调试图片（original + heatmap 叠加）"""
-        temp_dir = scene_dir / "debug"
-        temp_dir.mkdir(exist_ok=True)
-
-        heatmap_color = cv2.applyColorMap(
-            (heatmap * 255).astype(np.uint8), cv2.COLORMAP_JET
-        )
-        overlay = cv2.addWeighted(original_image, 0.6, heatmap_color, 0.4, 0)
-
-        cv2.imwrite(str(temp_dir / f"{sample_id}_original.jpg"), original_image)
-        cv2.imwrite(str(temp_dir / f"{sample_id}_object.jpg"), object_image)
-        cv2.imwrite(str(temp_dir / f"{sample_id}_mask.jpg"), heatmap_color)
-        cv2.imwrite(str(temp_dir / f"{sample_id}_overlay.jpg"), overlay)
 
     def run(self):
         """执行数据生成"""

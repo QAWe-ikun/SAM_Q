@@ -20,69 +20,74 @@ from typing import Optional, List, Dict, Any
 class ObjectPlacementDataset(Dataset):
     """
     Dataset for object placement prediction task.
-    
+
     Expected directory structure:
         data/
-        ├── plane_images/
-        │   ├── scene_001.png
-        │   └── ...
-        ├── object_images/
-        │   ├── obj_001.png
-        │   └── ...
-        ├── masks/
-        │   ├── scene_001_mask.png
-        │   └── ...
-        └── annotations.json
+        ├── train/
+        │   ├── scene_001/
+        │   │   ├── plane_images/
+        │   │   ├── object_images/
+        │   │   ├── masks/
+        │   │   └── samples.json
+        │   └── scene_002/
+        │       └── ...
+        ├── val/
+        └── test/
     """
-    
+
     def __init__(
         self,
         data_dir: str,
-        transform: Optional[Any] = None,
         split: str = "train",
-        ann_file: str = "annotations.json",
         seg_feature_dir: Optional[str] = None,
+        transform: Optional[Any] = None,
     ):
         """
         Initialize the dataset.
 
         Args:
             data_dir: Root directory containing the dataset
-            transform: Optional transforms to apply
             split: Dataset split ('train', 'val', 'test')
-            ann_file: Annotation filename
             seg_feature_dir: Directory containing pre-extracted <SEG> hidden states (for Stage 2)
+            transform: Optional transforms to apply
         """
         self.data_dir = Path(data_dir)
-        self.transform = transform
         self.split = split
-        self.ann_file = ann_file
         self.seg_feature_dir = Path(seg_feature_dir) if seg_feature_dir else None
+        self.transform = transform
 
-        # Load annotations
-        self.annotations = self._load_annotations()
-        
-    def _load_annotations(self) -> List[Dict]:
-        """Load annotations from JSON file."""
-        annotations_path = self.data_dir / self.ann_file
+        # Load all samples from per-scene samples.json files
+        self.samples = self._load_samples()
 
-        if not annotations_path.exists():
+    def _load_samples(self) -> List[Dict]:
+        """Load samples from all scene folders."""
+        split_dir = self.data_dir / self.split
+        if not split_dir.exists():
             raise FileNotFoundError(
-                f"Annotations file not found at {annotations_path}"
+                f"Split directory not found: {split_dir}"
             )
 
-        with open(annotations_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
+        all_samples = []
+        for scene_dir in sorted(split_dir.iterdir()):
+            if not scene_dir.is_dir():
+                continue
+            samples_file = scene_dir / "samples.json"
+            if not samples_file.exists():
+                continue
 
-        # Filter by split if applicable
-        if data and "split" in data[0]:
-            data = [item for item in data if item.get("split") == self.split]
+            with open(samples_file, "r", encoding="utf-8") as f:
+                scene_samples = json.load(f)
 
-        return data
+            # Add scene_dir path to each sample for resolving relative paths
+            for sample in scene_samples:
+                sample["_scene_dir"] = scene_dir
+                all_samples.append(sample)
+
+        return all_samples
 
     def __len__(self) -> int:
-        return len(self.annotations)
-    
+        return len(self.samples)
+
     def __getitem__(self, idx: int) -> Dict[str, Any]:
         """
         Get a single sample.
@@ -90,30 +95,34 @@ class ObjectPlacementDataset(Dataset):
         Returns:
             sample: Dictionary containing:
                 - plane_image: Plane/room top-down view (Tensor) [3, H, W]
+                - object_image: Object top-down view (Tensor) [3, H, W]
                 - images: List of image tensors [3, H, W] (order matches <image> in prompt)
                 - text_prompt: Placement instruction (str)
                 - mask: Ground truth placement mask (Tensor) [1, H, W]
                 - metadata: Additional info
         """
-        ann = self.annotations[idx]
+        ann = self.samples[idx]
+        scene_dir = ann["_scene_dir"]
 
         # Load plane_image (for SAM3 input)
-        plane_image = self._load_image(self.data_dir / ann["plane_image_path"])
+        plane_path = scene_dir / ann["plane_image_path"]
+        plane_image = self._load_image(plane_path)
         plane_tensor = torch.from_numpy(np.array(plane_image, dtype=np.float32) / 255.0).permute(2, 0, 1)
 
-        # Load all images (for Qwen3-VL input, order matches <image> placeholders)
-        images = []
-        for img_path in ann["images_path"]:
-            pil_img = self._load_image(self.data_dir / img_path)
-            tensor = torch.from_numpy(np.array(pil_img, dtype=np.float32) / 255.0).permute(2, 0, 1)
-            images.append(tensor)
+        # Load object image
+        object_path = scene_dir / ann["object_image_path"]
+        object_image = self._load_image(object_path)
+        object_tensor = torch.from_numpy(np.array(object_image, dtype=np.float32) / 255.0).permute(2, 0, 1)
+
+        # Build images list for Qwen3-VL (plane + object)
+        images = [plane_tensor, object_tensor]
 
         # Load mask
-        mask = self._load_mask(self.data_dir / ann["mask_path"])
+        mask_path = scene_dir / ann["mask_path"]
+        mask = self._load_mask(mask_path)
 
         # Get text prompt and optional stage1 response
         text_prompt = ann.get("text_prompt", "Place the object here.")
-        # stage1 conversation response (contains <SEG> token)
         response = ann.get("response", None)
 
         # Stage 2 GT: 6D rotation [6] + scale [1] (optional)
@@ -123,7 +132,7 @@ class ObjectPlacementDataset(Dataset):
         # Pre-extracted <SEG> hidden state (for Stage 2)
         seg_hidden = None
         if self.seg_feature_dir is not None:
-            sample_id = ann.get("id", ann.get("scene_id", f"{self.split}_{idx:06d}"))
+            sample_id = ann.get("sample_id", f"{self.split}_{idx:06d}")
             seg_path = self.seg_feature_dir / f"{sample_id}.pt"
             if seg_path.exists():
                 seg_data = torch.load(seg_path, map_location="cpu", weights_only=True)
@@ -131,6 +140,7 @@ class ObjectPlacementDataset(Dataset):
 
         return {
             "plane_image": plane_tensor,              # [3, H, W] for SAM3
+            "object_image": object_tensor,            # [3, H, W]
             "images": images,                         # List of [3, H, W] for Qwen3-VL
             "text_prompt": text_prompt,
             "response": response,
@@ -139,8 +149,8 @@ class ObjectPlacementDataset(Dataset):
             "scale": scale,
             "seg_hidden": seg_hidden,                 # None or [hidden_dim]
             "metadata": {
-                "scene_id": ann.get("scene_id", idx),
-                "object_id": ann.get("object_id", None),
+                "sample_id": ann.get("sample_id", idx),
+                "split": self.split,
             },
         }
     

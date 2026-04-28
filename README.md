@@ -280,28 +280,14 @@ SAM-Q uses a **two-stage training** strategy:
 
 #### Option 1: Use Existing Dataset
 
-```
-data/
-├── annotations.json          # Unified annotation file
-├── plane_images/            # Room top-down views (1024x1024)
-│   └── scene_001.png
-├── object_images/           # Object top-down views (1024x1024)
-│   └── chair_001.png
-└── masks/                   # Ground truth placement heatmaps
-    └── scene_001_mask.png
-```
+📖 **See**: [docs/DATASET.md](docs/DATASET.md) for details
 
 #### Option 2: Auto-Generate Dataset from 3D Scenes
 
 If you have SSR3D-FRONT dataset:
 
 ```bash
-python src/pretreatment/generate_training_data.py \
-  --scene_dir path/to/scenes \
-  --model_dir path/to/3D-FUTURE-model \
-  --output_dir data/ \
-  --num_samples 1000 \
-  --augmentation
+python main.py pretreat --config configs/pretreatment.yaml
 ```
 
 📖 **See**: [docs/DATA_GENERATION.md](docs/DATA_GENERATION.md) for details.
