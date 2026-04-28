@@ -26,7 +26,7 @@ model:
     model_name: "./models/qwen3_vl"
     hidden_dim: 4096
     freeze: true  # ← Frozen, use Stage 1 LoRA
-    lora_path: "outputs/stage1_lora/"  # ← Load Stage 1 LoRA adapter
+    lora_path: "/mnt/f/outputs/stage1_lora/"  # ← Load Stage 1 LoRA adapter
     attn_implementation: "flash_attention_2"
 
   sam3:
@@ -53,7 +53,7 @@ loss:
   dice_weight: 1.0
   bce_weight: 1.0
   rotation_weight: 0.5
-  scale_weight: 0.0  # ← 暂时关闭，数据量不足时无法学习
+  scale_weight: 0.5
 
 optimizer:
   type: "AdamW"
@@ -70,7 +70,7 @@ scheduler:
 training:
   num_epochs: 50
   device: "cuda"
-  save_dir: "outputs/stage2_full/"
+  save_dir: "/mnt/f/outputs/stage2_full/"
   save_best: true
   save_epoch: false  # Set true to save at save_interval epochs
   save_interval: 10  # Save every N epochs (when save_epoch=true)

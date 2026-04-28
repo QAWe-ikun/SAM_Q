@@ -544,9 +544,9 @@ class TrainingDataGenerator:
 
         返回: (增强后的物体信息, 新场景)
         """
-        # 1. 随机旋转（Z 轴）
-        rot_z = random.uniform(-self.aug_rotation_range, self.aug_rotation_range)
-        rot_aug = R.from_euler('z', rot_z, degrees=True).as_quat().tolist()
+        # 1. 随机旋转（Y 轴）
+        rot_y = random.uniform(-self.aug_rotation_range, self.aug_rotation_range)
+        rot_aug = R.from_euler('y', rot_y, degrees=True).as_quat().tolist()
 
         # 2. 随机移动到新位置（不与其他物体碰撞）
         bounds = scene.bounds
@@ -569,7 +569,7 @@ class TrainingDataGenerator:
         # 4. 创建增强后的物体
         aug_mesh = obj.mesh.copy()
 
-        if rot_z != 0:
+        if rot_y != 0:
             R_mat = np.eye(4)
             R_mat[:3, :3] = R.from_quat(rot_aug).as_matrix()
             aug_mesh.apply_transform(R_mat)
@@ -580,7 +580,7 @@ class TrainingDataGenerator:
 
         # 5. 更新场景
         new_scene = self.remove_object_from_scene(scene, obj)
-        new_scene.add_geometry(aug_mesh, geom_name=f"obj_{obj.jid}_aug")
+        new_scene.add_geometry(aug_mesh, geom_name=f"obj_{obj.jid}")
 
         # 6. 创建增强后的物体信息
         aug_obj = ObjectInfo(
@@ -636,7 +636,7 @@ class TrainingDataGenerator:
         生成 text_prompt：使用 Qwen3-VL 对比 original 和 plane 图像，
         自动生成摆放位置描述（如"放在桌子左边"、"整齐摆放在墙角"等）。
         """
-        base_prompt = f"物体{desc}的参考图为：<image>\n平面图为：<image>\n两者的尺寸相同，"
+        base_prompt = f"物体{desc}的参考图为：<image>\n平面图为：<image>\n两者的尺寸相同。"
 
         try:
             # 将 numpy 数组转为 PIL Image
@@ -722,9 +722,8 @@ class TrainingDataGenerator:
                     {
                         "type": "text",
                         "text": "第一张图是包含所有物体的原始房间图，第二张图是移除了某个物体后的房间图，第三张图是被移除的物体的参考图。"
-                              f"请对比这三张图，用简短的中文描述被移除的物体{desc}原来放在什么位置，"
-                              "以及周围参照物的关系。例如：'放在桌子左侧'、'整齐摆放在墙角'、'靠在书架旁边'等。"
-                              "只需输出位置描述，不要说'我会在...'或'好的'等多余内容。"
+                              f"请对比这三张图，用简短的中文描述被移除的物体{desc}原来放在什么位置，以及周围参照物的关系。"
+                              "以 '请你将[物体名称]摆放在' 开头。"
                     }
                 ]
             }
@@ -754,24 +753,18 @@ class TrainingDataGenerator:
         input_len = inputs["input_ids"].shape[1]
         response = self._qwen_processor.decode(outputs[0, input_len:], skip_special_tokens=True).strip()
 
-        # ========== 临时调试：输出 response ==========
-        print("=" * 60)
-        print(f"[DEBUG] Qwen3-VL Response: {response}")
-        print("=" * 60)
-        # ==============================================
-
         return response
 
-    def generate_response(self, text_prompt: str) -> str:
+    def generate_response(self, text_prompt: str, rotation_6d: List[float], scale: float) -> str:
         """
-        生成 response：使用 Qwen3-VL 根据 text_prompt 生成自然回复。
-        例如输入："物体图为：<image>\n平面图为：<image>\n请将该物体放在桌子左侧"
-        期望输出："好的，我会将该物体放在桌子左侧。<SEG>"
+        生成 response：使用 Qwen3-VL 根据 text_prompt 生成自然回复，
+        并在末尾硬编码加上绕 Y 轴的旋转角度和缩放比例。
         """
         try:
             if self._qwen_model is None:
-                # 如果模型未加载，使用默认回复
                 raise RuntimeError("Qwen3-VL 模型未加载")
+
+            rot_y_deg = self._extract_rotation_y(rotation_6d)
 
             messages = [
                 {
@@ -782,7 +775,10 @@ class TrainingDataGenerator:
                             "text": f"你是一个物体放置助手。用户给出了放置指令，请你用礼貌的语气回复，"
                                    f"并在末尾加上<SEG>标记。"
                                    f"\n指令：{text_prompt}"
-                                   f"\n请用'好的，我会...'开头回复，并在句末加上<SEG>。"
+                                   f"\n旋转角度：{rot_y_deg:.1f}°（绕Y轴）"
+                                   f"\n缩放比例：{scale:.2f}"
+                                   f"\n请用'好的，我会...'开头回复，说明放置位置、旋转角度和缩放比例，"
+                                   f"并在句末加上<SEG>。"
                         }
                     ]
                 }
@@ -817,6 +813,34 @@ class TrainingDataGenerator:
             return response
         except Exception as e:
             raise RuntimeError(f"Qwen3-VL 生成 response 失败: {e}")
+
+    def _extract_rotation_y(self, rotation_6d: List[float]) -> float:
+        """
+        从 6D 旋转表示中提取绕 Y 轴的旋转角度（度数）。
+
+        6D rotation 是旋转矩阵 R 的前两列：
+        [r11, r21, r31, r12, r22, r32]
+
+        绕 Y 轴旋转角度 = atan2(-R[2][0], R[2][2])
+        """
+        import math
+
+        r11, r21, r31, r12, r22, r32 = rotation_6d
+
+        # 计算第三列（叉乘）
+        r33 = r11 * r22 - r21 * r12
+
+        # 提取绕 Y 轴的旋转角度
+        rot_y = math.atan2(-r31, r33)
+        rot_y_deg = math.degrees(rot_y)
+
+        # 规范化到 [-180, 180]
+        if rot_y_deg > 180:
+            rot_y_deg -= 360
+        elif rot_y_deg < -180:
+            rot_y_deg += 360
+
+        return rot_y_deg
 
     def rotation_6d_from_quat(self, quat: List[float]) -> List[float]:
         """四元数转 6D 旋转"""
@@ -941,7 +965,7 @@ class TrainingDataGenerator:
             if is_aug:
                 # 增强流程
                 aug_meta = self._process_augmentation(
-                    scene, scene_data, scene_dir, original_image, split, target_obj
+                    scene, scene_data, scene_dir, split, target_obj
                 )
                 if aug_meta is not None:
                     samples.append(aug_meta)
@@ -962,7 +986,7 @@ class TrainingDataGenerator:
             target_obj.mesh.apply_scale(orig_scale)
             
             # 2. 渲染物体参考图
-            object_image = self.render_object_reference(target_obj.mesh)
+            object_image = self.render_object_reference(target_obj.mesh, scene_data.get('bounds_bottom', []))
             if object_image is None:
                 continue
 
@@ -985,7 +1009,7 @@ class TrainingDataGenerator:
                 text_prompt = self.generate_text_prompt(
                     original_image, plane_image, object_image, target_obj.desc
                 )
-                response = self.generate_response(text_prompt)
+                response = self.generate_response(text_prompt, rotation_6d, scale)
             except RuntimeError:
                 logger.warning(f"跳过样本：Qwen3-VL 文本生成失败 (obj: {target_obj.jid})")
                 continue
@@ -1026,7 +1050,6 @@ class TrainingDataGenerator:
         scene: trimesh.Scene,
         scene_data: dict,
         scene_dir: Path,
-        original_image: np.ndarray,
         split: str,
         target_obj: ObjectInfo,
     ) -> Optional[dict]:
@@ -1036,7 +1059,10 @@ class TrainingDataGenerator:
             return None
 
         # 渲染增强后物体参考图
-        aug_object_image = self.render_object_reference(aug_obj.mesh)
+        aug_object_image = self.render_object_reference(aug_obj.mesh, scene_data.get('bounds_bottom', []))
+        
+        # 渲染增强后原始房间图（用于调试叠加）
+        aug_original_image = self.render_top_view(aug_scene, scene_data.get('bounds_bottom', []))
 
         # 生成 GT 热力图（基于移动后位置）
         aug_heatmap = self.generate_heatmap(
@@ -1063,19 +1089,19 @@ class TrainingDataGenerator:
         # 生成文本
         try:
             aug_text_prompt = self.generate_text_prompt(
-                original_image, aug_plane_image, aug_object_image, aug_obj.desc
+                aug_original_image, aug_plane_image, aug_object_image, aug_obj.desc
             )
-            aug_response = self.generate_response(aug_text_prompt)
+            aug_response = self.generate_response(aug_text_prompt, aug_rot_6d, aug_scale)
         except RuntimeError:
             logger.warning(f"跳过增强样本：Qwen3-VL 文本生成失败")
             return None
 
         sample_meta = self.save_sample(
             scene_dir=scene_dir,
-            obj_id=f"aug_{target_obj.jid}",
+            obj_id=target_obj.jid,
             plane_image=aug_plane_image,
             object_image=aug_object_image,
-            original_image=original_image,
+            original_image=aug_original_image,
             heatmap=aug_heatmap,
             text_prompt=aug_text_prompt,
             response=aug_response,

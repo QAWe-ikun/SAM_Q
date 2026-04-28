@@ -220,7 +220,6 @@ def run_pretreat(args):
     print(f"  场景目录: {scene_dir}")
     print(f"  模型目录: {model_dir}")
     print(f"  输出目录: {output_dir}")
-    print(f"  样本数量: {gen_config.get('num_samples', 1000)}")
     print(f"  图像分辨率: {gen_config.get('image_size', 1024)}")
     print(f"  热力图 Sigma: {gen_config.get('heatmap_sigma', 15.0)}")
     print(f"  数据增强: {'启用' if aug_config.get('enabled', False) else '禁用'}")

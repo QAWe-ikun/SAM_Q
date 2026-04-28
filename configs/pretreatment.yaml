@@ -30,8 +30,8 @@ generation:
 # Data Augmentation
 # ----------------------------------------------------------------------------
 augmentation:
-  enabled: true              # Enable data augmentation
-  aug_ratio: 0.5             # Augmentation ratio (reserved for future use)
+  enabled: false              # Enable data augmentation
+  aug_ratio: 0.2             # Augmentation ratio (reserved for future use)
   rotation_range: 180        # Z-axis rotation range (degrees)
   scale_range:               # Scale range
     min: 0.8

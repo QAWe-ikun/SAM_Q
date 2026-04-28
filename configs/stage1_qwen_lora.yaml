@@ -73,7 +73,7 @@ scheduler:
 training:
   num_epochs: 3  # 2-5 epochs typically sufficient
   device: "cuda"
-  save_dir: "outputs/stage1_lora/"
+  save_dir: "/mnt/f/outputs/stage1_lora/"
   save_best: true
   save_epoch: false  # Set true to save at save_interval epochs
   save_interval: 500  # Save every N steps (when save_epoch=false)
