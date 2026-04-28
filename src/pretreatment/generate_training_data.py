@@ -128,6 +128,9 @@ class TrainingDataGenerator:
         # 最大剔除比例
         self.max_object_nums = gen_config.get("max_object_nums", 2)
 
+        # VLM 批量处理大小
+        self.vlm_batch_size = gen_config.get("vlm_batch_size", 4)
+
         # 数据集划分比例
         split_ratio = gen_config.get("split_ratio", {"train": 0.8, "val": 0.1, "test": 0.1})
         self.train_ratio = split_ratio.get("train", 0.8)
@@ -830,6 +833,147 @@ class TrainingDataGenerator:
             R_mat[0, 1], R_mat[1, 1], R_mat[2, 1],
         ]
 
+    def _batch_generate_placement_descriptions(
+        self,
+        original_images: List[Image.Image],
+        plane_images: List[Image.Image],
+        object_images: List[Image.Image],
+        descs: List[str],
+    ) -> List[str]:
+        """
+        批量生成摆放位置描述。
+
+        Args:
+            original_images: 原始房间图列表
+            plane_images: 剔除后房间图列表
+            object_images: 物体参考图列表
+            descs: 物体描述列表
+
+        Returns:
+            placement_descriptions: 生成的位置描述列表
+        """
+        if self._qwen_model is None:
+            raise RuntimeError("Qwen3-VL 模型未加载")
+
+        all_descriptions = []
+        n = len(descs)
+
+        for j in range(n):
+            messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "image", "image": original_images[j]},
+                        {"type": "image", "image": plane_images[j]},
+                        {"type": "image", "image": object_images[j]},
+                        {
+                            "type": "text",
+                            "text": "第一张图是包含所有物体的原始房间图，第二张图是移除了某个物体后的房间图，第三张图是被移除的物体的参考图。"
+                                  f"请对比这三张图，用简短的中文描述被移除的物体{descs[j]}原来放在什么位置，以及周围参照物的关系。"
+                                  "以 '请你将[物体名称]摆放在' 开头。"
+                        }
+                    ]
+                }
+            ]
+
+            text = self._qwen_processor.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True
+            )
+
+            inputs = self._qwen_processor(
+                text=[text],
+                images=[original_images[j], plane_images[j], object_images[j]],
+                return_tensors="pt",
+            ).to(self._qwen_model.device)
+
+            from transformers import GenerationConfig  # type: ignore
+            with torch.no_grad():
+                outputs = self._qwen_model.generate(
+                    **inputs,
+                    generation_config=GenerationConfig(
+                        max_new_tokens=512,
+                        do_sample=False,
+                    ),
+                )
+
+            input_len = inputs["input_ids"].shape[1]
+            response = self._qwen_processor.decode(outputs[0, input_len:], skip_special_tokens=True).strip()
+            all_descriptions.append(response)
+
+        return all_descriptions
+
+    def _batch_generate_responses(
+        self,
+        text_prompts: List[str],
+        rotation_6d_list: List[List[float]],
+        scale_list: List[float],
+    ) -> List[str]:
+        """
+        批量生成 response。
+
+        Args:
+            text_prompts: 放置指令列表
+            rotation_6d_list: 6D 旋转表示列表
+            scale_list: 缩放比例列表
+
+        Returns:
+            responses: 生成的 response 列表
+        """
+        if self._qwen_model is None:
+            raise RuntimeError("Qwen3-VL 模型未加载")
+
+        all_responses = []
+        n = len(text_prompts)
+
+        for j in range(n):
+            rot_y_deg = self._extract_rotation_y(rotation_6d_list[j])
+            scale = scale_list[j]
+
+            messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": f"你是一个物体放置助手。用户给出了放置指令，请你用礼貌的语气回复，"
+                                   f"并在末尾加上<SEG>标记。"
+                                   f"\n指令：{text_prompts[j]}"
+                                   f"\n旋转角度：{rot_y_deg:.1f}°（绕Y轴）"
+                                   f"\n缩放比例：{scale:.2f}"
+                                   f"\n请用'好的，我会...'开头回复，说明放置位置、旋转角度和缩放比例，"
+                                   f"并在句末加上<SEG>。"
+                        }
+                    ]
+                }
+            ]
+
+            text = self._qwen_processor.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True
+            )
+
+            inputs = self._qwen_processor(
+                text=[text],
+                return_tensors="pt",
+            ).to(self._qwen_model.device)
+
+            from transformers import GenerationConfig  # type: ignore
+            with torch.no_grad():
+                outputs = self._qwen_model.generate(
+                    **inputs,
+                    generation_config=GenerationConfig(
+                        max_new_tokens=512,
+                        do_sample=False,
+                    ),
+                )
+
+            input_len = inputs["input_ids"].shape[1]
+            response = self._qwen_processor.decode(outputs[0, input_len:], skip_special_tokens=True).strip()
+            if "<SEG>" not in response:
+                response += "<SEG>"
+            all_responses.append(response)
+
+        return all_responses
+
     def save_sample(
         self,
         scene_dir: Path,
@@ -918,28 +1062,29 @@ class TrainingDataGenerator:
         objects_processed = 0
         random.shuffle(objects)
 
+        # ========== Phase 1: 收集阶段 - 渲染所有数据，收集 VLM 输入 ==========
+        valid_samples = []  # 存储所有有效样本的数据
+
         for target_obj in objects:
-            
             if objects_processed >= max_objects:
                 break
-            
+
             if not target_obj.is_on_floor:
-                # 只处理在地面上的物体，跳过悬浮物体
                 continue
 
-            # 数据增强（仅在 train 阶段，按 aug_ratio 比例决定走增强流程还是普通流程）
+            # 数据增强判断
             is_aug = split == "train" and self.augmentation and random.random() < self.aug_ratio
 
             if is_aug:
-                # 增强流程
+                # 增强流程（保持原有逻辑）
                 aug_meta = self._process_augmentation(
                     scene, scene_data, scene_dir, split, target_obj
                 )
                 if aug_meta is not None:
                     objects_processed += 1
                 continue
-            
-            # 1. 计算旋转和缩放标签（倒数）
+
+            # 计算旋转和缩放标签
             orig_rot = target_obj.rot
             if len(orig_rot) == 4 and not np.allclose(orig_rot, [0, 0, 0, 1]):
                 inv_rot = R.from_quat(orig_rot).inv().as_quat().tolist()
@@ -949,15 +1094,15 @@ class TrainingDataGenerator:
 
             orig_scale = random.uniform(*self.scale_range)
             scale = 1.0 / orig_scale
-            
+
             target_obj.mesh.apply_scale(orig_scale)
-            
-            # 2. 渲染物体参考图
+
+            # 渲染物体参考图
             object_image = self.render_object_reference(target_obj.mesh, scene_data.get('bounds_bottom', []))
             if object_image is None:
                 continue
 
-            # 3. 生成 GT 热力图
+            # 生成 GT 热力图
             heatmap = self.generate_heatmap(
                 target_pos=target_obj.pos,
                 bounds_bottom=scene_data.get('bounds_bottom', [])
@@ -965,37 +1110,87 @@ class TrainingDataGenerator:
             if heatmap is None:
                 continue
 
-            # 4. 剔除物体，渲染剔除后房间图
+            # 剔除物体，渲染剔除后房间图
             scene_without_obj = self.remove_object_from_scene(scene, target_obj)
             plane_image = self.render_top_view(scene_without_obj, scene_data.get('bounds_bottom', []))
             if plane_image is None:
                 continue
-            
-            # 5. 生成文本（失败则跳过该样本）
-            try:
-                text_prompt = self.generate_text_prompt(
-                    original_image, plane_image, object_image, target_obj.desc
-                )
-                response = self.generate_response(text_prompt, rotation_6d, scale)
-            except RuntimeError:
-                logger.warning(f"跳过样本：Qwen3-VL 文本生成失败 (obj: {target_obj.jid})")
-                continue
 
-            # 6. 保存样本
-            sample_meta = self.save_sample(
-                scene_dir=scene_dir,
-                obj_id=target_obj.jid,
-                plane_image=plane_image,
-                object_image=object_image,
-                heatmap=heatmap,
-                text_prompt=text_prompt,
-                response=response,
-                rotation_6d=rotation_6d,
-                scale=scale,
-                split=split,
-            )
-            if sample_meta is not None:
-                objects_processed += 1
+            # 收集样本数据
+            valid_samples.append({
+                "target_obj": target_obj,
+                "original_image": original_image,
+                "plane_image": plane_image,
+                "object_image": object_image,
+                "heatmap": heatmap,
+                "rotation_6d": rotation_6d,
+                "scale": scale,
+            })
+
+        # ========== Phase 2: 批量 VLM 推理 ==========
+        if valid_samples:
+            # 批量生成 placement description
+            try:
+                placement_descs = self._batch_generate_placement_descriptions(
+                    original_images=[s["original_image"] for s in valid_samples],
+                    plane_images=[s["plane_image"] for s in valid_samples],
+                    object_images=[s["object_image"] for s in valid_samples],
+                    descs=[s["target_obj"].desc for s in valid_samples],
+                )
+            except Exception as e:
+                logger.warning(f"批量生成 placement description 失败: {e}")
+                placement_descs = [None] * len(valid_samples)
+
+            # 构建 text prompts 并批量生成 responses
+            text_prompts = []
+            rotation_6d_list = []
+            scale_list = []
+
+            for i, sample in enumerate(valid_samples):
+                if placement_descs[i] is not None:
+                    base_prompt = f"物体{sample['target_obj'].desc}的参考图为：<image>\n平面图为：<image>\n两者的尺寸相同，"
+                    text_prompts.append(base_prompt + placement_descs[i])
+                    rotation_6d_list.append(sample["rotation_6d"])
+                    scale_list.append(sample["scale"])
+
+            try:
+                responses = self._batch_generate_responses(
+                    text_prompts=text_prompts,
+                    rotation_6d_list=rotation_6d_list,
+                    scale_list=scale_list,
+                )
+            except Exception as e:
+                logger.warning(f"批量生成 responses 失败: {e}")
+                responses = [None] * len(text_prompts)
+
+            # ========== Phase 3: 保存阶段 ==========
+            resp_idx = 0
+            for i, sample in enumerate(valid_samples):
+                if placement_descs[i] is None:
+                    continue
+
+                text_prompt = text_prompts[resp_idx] if resp_idx < len(text_prompts) else None
+                response = responses[resp_idx] if resp_idx < len(responses) else None
+                resp_idx += 1
+
+                if text_prompt is None or response is None:
+                    continue
+
+                # 保存样本
+                sample_meta = self.save_sample(
+                    scene_dir=scene_dir,
+                    obj_id=sample["target_obj"].jid,
+                    plane_image=sample["plane_image"],
+                    object_image=sample["object_image"],
+                    heatmap=sample["heatmap"],
+                    text_prompt=text_prompt,
+                    response=response,
+                    rotation_6d=sample["rotation_6d"],
+                    scale=sample["scale"],
+                    split=split,
+                )
+                if sample_meta is not None:
+                    objects_processed += 1
 
         logger.info(f"场景 {scene_name}: 生成 {objects_processed} 个样本")
 
