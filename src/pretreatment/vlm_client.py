@@ -215,6 +215,28 @@ class VLMClient:
         logger.info(f"transformers placement description: {result[:80]}...")
         return result
 
+    @staticmethod
+    def extract_rotation_y(rotation_6d: List[float]) -> float:
+        """从 6D 旋转表示中提取绕 Y 轴的旋转角度（度数）"""
+        import math
+
+        r11, r21, r31, r12, r22, r32 = rotation_6d
+
+        # 计算第三列（叉乘）
+        r33 = r11 * r22 - r21 * r12
+
+        # 提取绕 Y 轴的旋转角度
+        rot_y = math.atan2(-r31, r33)
+        rot_y_deg = math.degrees(rot_y)
+
+        # 规范化到 [-180, 180]
+        if rot_y_deg > 180:
+            rot_y_deg -= 360
+        elif rot_y_deg < -180:
+            rot_y_deg += 360
+
+        return rot_y_deg
+
     def generate_response(
         self,
         text_prompt: str,

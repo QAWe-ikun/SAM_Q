@@ -10,6 +10,7 @@ import tqdm
 import random
 import logging
 import warnings
+import numpy as np
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -193,7 +194,6 @@ class TrainingDataGenerator:
 
                 # 收集增强样本数据，稍后批量 VLM 处理
                 collected.append({
-                    "is_aug": False,  # 标记为 False 以便进入 VLM 批量处理
                     "target_obj": aug_obj,
                     "original_image": original_image,
                     "plane_image": aug_object_image,
@@ -210,7 +210,7 @@ class TrainingDataGenerator:
 
             # 计算旋转和缩放标签
             orig_rot = target_obj.rot
-            if len(orig_rot) == 4 and not allclose(orig_rot, [0, 0, 0, 1]):
+            if len(orig_rot) == 4 and not np.allclose(orig_rot, [0, 0, 0, 1]):
                 inv_rot = self._invert_quat(orig_rot)
             else:
                 inv_rot = [0, 0, 0, 1]
@@ -245,7 +245,6 @@ class TrainingDataGenerator:
 
             # 收集样本数据
             collected.append({
-                "is_aug": False,
                 "target_obj": target_obj,
                 "original_image": original_image,
                 "plane_image": plane_image,
@@ -313,17 +312,15 @@ class TrainingDataGenerator:
             logger.info(f"{'='*60}")
 
             # Phase 1: 收集所有场景的样本数据
-            all_collected = []
+            vlm_samples = []
 
             for idx in tqdm.tqdm(range(start_idx, end_idx)):
                 json_path = json_files[idx]
                 split = splits[idx]
                 logger.info(f"  [{idx+1}/{n}] 收集场景数据: {json_path.stem} ({split})")
                 scene_samples = self._collect_scene_samples(json_path, split)
-                all_collected.extend(scene_samples)
+                vlm_samples.extend(scene_samples)
 
-            # 过滤出需要 VLM 处理的样本
-            vlm_samples = [s for s in all_collected if not s.get("is_aug", False)]
             logger.info(f"\n  Phase 1 完成: 收集 {len(vlm_samples)} 个样本需 VLM 处理")
 
             # Phase 2: 批量 VLM 推理
@@ -341,7 +338,7 @@ class TrainingDataGenerator:
                         placement_descs.append(desc)
                 except Exception as e:
                     logger.error(f"批量生成 placement description 失败: {e}")
-                    placement_descs = [None] * len(vlm_samples)
+                    continue
 
                 # 构建 text prompts
                 text_prompts = []
@@ -349,7 +346,7 @@ class TrainingDataGenerator:
                 scale_list = []
                 valid_indices = []
 
-                for i, sample in tqdm.tqdm(enumerate(vlm_samples)):
+                for i, sample in enumerate(tqdm.tqdm(vlm_samples)):
                     if placement_descs[i] is not None:
                         base_prompt = (
                             f"物体{sample['target_obj'].desc}的参考图为：<image>\n"
@@ -375,7 +372,7 @@ class TrainingDataGenerator:
                     responses = [None] * len(text_prompts)
 
                 # Phase 3: 保存所有样本
-                for i, sample_idx in tqdm.tqdm(enumerate(valid_indices)):
+                for i, sample_idx in enumerate(tqdm.tqdm(valid_indices)):
                     sample = vlm_samples[sample_idx]
                     text_prompt = text_prompts[i]
                     response = responses[i] if i < len(responses) else None
@@ -383,14 +380,9 @@ class TrainingDataGenerator:
                     if response is None:
                         continue
 
-                    # 增强样本的 obj_id 需要特殊处理
-                    obj_id = sample["target_obj"].jid
-                    if sample.get("is_augmentation", False):
-                        obj_id = f"aug_{obj_id}"
-
                     sample_meta = self.sample_saver.save_sample(
                         scene_dir=sample["scene_dir"],
-                        obj_id=obj_id,
+                        obj_id=sample["target_obj"].jid,
                         plane_image=sample["plane_image"],
                         object_image=sample["object_image"],
                         heatmap=sample["heatmap"],
@@ -403,16 +395,11 @@ class TrainingDataGenerator:
                     if sample_meta is not None:
                         total_processed += 1
 
-            # 每个 epoch 结束后保存数据
-            for split_name in ["train", "val", "test"]:
-                self.sample_saver.save_split_json(split_name)
-                self.sample_saver.clear_split_samples(split_name)
+                # 每个 epoch 结束后保存数据
+                for split_name in ["train", "val", "test"]:
+                    self.sample_saver.save_split_json(split_name)
+                    self.sample_saver.clear_split_samples(split_name)
 
         logger.info(f"\n{'='*60}")
         logger.info(f"生成完成! 总样本数: {self.sample_saver.sample_counter} (VLM 处理: {total_processed})")
         logger.info(f"{'='*60}")
-
-
-def allclose(a, b, tol=1e-5):
-    """简单的数组比较"""
-    return all(abs(x - y) < tol for x, y in zip(a, b))
