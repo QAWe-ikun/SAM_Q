@@ -102,37 +102,38 @@ class SAMQPlacementModel(nn.Module):
         self._seg_max_tokens = seg_token_config.get("max_generate_tokens", 128) if seg_token_config else 128
 
         # SAM3 Loader (lazy loading, version selection via checkpoint path)
-        self.sam3_loader = SAM3Loader(
-            checkpoint_path=sam_checkpoint_path,
-            device=self.device,
-            dtype=torch.bfloat16,  # SAM3 uses bfloat16
-        )
+        if sam_checkpoint_path is not None:
+            self.sam3_loader = SAM3Loader(
+                checkpoint_path=sam_checkpoint_path,
+                device=self.device,
+                dtype=torch.bfloat16,  # SAM3 uses bfloat16
+            )
         
-        # Adapter: <SEG> hidden state → SAM3 prompt embeddings
-        self.adapter = CrossModalAdapter(
-            qwen_dim=qwen_hidden_dim,
-            sam3_dim=sam3_input_dim,
-            hidden_dim=adapter_hidden_dim,
-        ).to(self.device)
-                
-        # SegTokenProjector: optional, used when num_seg_tokens > 1
-        if num_seg_tokens > 1:
-            seg_cfg = seg_token_config or {}
-            self.seg_projector = SegTokenProjector(
+            # Adapter: <SEG> hidden state → SAM3 prompt embeddings
+            self.adapter = CrossModalAdapter(
                 qwen_dim=qwen_hidden_dim,
                 sam3_dim=sam3_input_dim,
-                num_output_tokens=seg_cfg.get("num_output_tokens", 64),
-                hidden_dim=seg_cfg.get("hidden_dim", adapter_hidden_dim),
-                dropout=seg_cfg.get("dropout", 0.1),
+                hidden_dim=adapter_hidden_dim,
             ).to(self.device)
+                    
+            # SegTokenProjector: optional, used when num_seg_tokens > 1
+            if num_seg_tokens > 1:
+                seg_cfg = seg_token_config or {}
+                self.seg_projector = SegTokenProjector(
+                    qwen_dim=qwen_hidden_dim,
+                    sam3_dim=sam3_input_dim,
+                    num_output_tokens=seg_cfg.get("num_output_tokens", 64),
+                    hidden_dim=seg_cfg.get("hidden_dim", adapter_hidden_dim),
+                    dropout=seg_cfg.get("dropout", 0.1),
+                ).to(self.device)
             
-        # SEGActionHead: <SEG> hidden → rotation + scale (parallel to SAM3)
-        ah_cfg = action_head_config or {}
-        heatmap_size = ah_cfg.get("heatmap_size", 64)
-        self.seg_action_head = SEGActionHead(
-            hidden_dim=qwen_hidden_dim,
-            heatmap_size=heatmap_size,
-        ).to(self.device)
+            # SEGActionHead: <SEG> hidden → rotation + scale (parallel to SAM3)
+            ah_cfg = action_head_config or {}
+            heatmap_size = ah_cfg.get("heatmap_size", 64)
+            self.seg_action_head = SEGActionHead(
+                hidden_dim=qwen_hidden_dim,
+                heatmap_size=heatmap_size,
+            ).to(self.device)
         
     def freeze_qwen(self):
         """Freeze Qwen3-VL parameters."""

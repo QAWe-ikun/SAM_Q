@@ -6,7 +6,7 @@ SAM-Q: Main Entry Point
 Unified CLI for training, inference, and evaluation of the SAM-Q system.
 
 Usage:
-    python main.py train --config configs/base.yaml
+    python main.py train --config configs/stage1_qwen_lora.yaml
     python main.py predict --checkpoint checkpoints/best.pt --plane_image room.png --object_image chair.png
     python main.py visualize --results results.json --output output.png
     python main.py pretreat --config configs/pretreatment.yaml
@@ -255,20 +255,17 @@ def run_train(args):
     # Initialize datasets
     data_config = config.get("data", {})
     data_dir = data_config.get("root_dir", "data/")
-    ann_file = data_config.get("ann_file", "annotations.json")
     seg_feature_dir = data_config.get("seg_feature_dir", None)
 
     train_dataset = ObjectPlacementDataset(
         data_dir=data_dir,
         split="train",
-        ann_file=ann_file,
         seg_feature_dir=seg_feature_dir,
     )
 
     val_dataset = ObjectPlacementDataset(
         data_dir=data_dir,
         split="val",
-        ann_file=ann_file,
         seg_feature_dir=seg_feature_dir,
     )
 

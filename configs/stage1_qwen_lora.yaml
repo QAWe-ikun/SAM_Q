@@ -13,7 +13,6 @@ experiment:
 
 data:
   root_dir: "data/"
-  ann_file: "annotations.json"
   pin_memory: false
 
 model:
@@ -41,12 +40,6 @@ model:
         - "down_proj"
       use_qlora: false  # Set true if VRAM < 12GB
       bias: "none"
-
-  sam3:
-    sam_checkpoint_path: "./models/sam3/sam3.pt"
-    input_dim: 256
-    freeze_image_encoder: true
-    freeze_detector: true  # ← Frozen in Stage 1
 
   adapter:
     freeze: true  # ← Frozen in Stage 1

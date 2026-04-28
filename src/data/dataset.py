@@ -63,9 +63,11 @@ class ObjectPlacementDataset(Dataset):
         """Load samples from all scene folders."""
         split_dir = self.data_dir / self.split
         if not split_dir.exists():
-            raise FileNotFoundError(
-                f"Split directory not found: {split_dir}"
+            import logging
+            logging.warning(
+                f"Split directory not found: {split_dir}, using empty dataset"
             )
+            return []
 
         all_samples = []
         for scene_dir in sorted(split_dir.iterdir()):
@@ -95,7 +97,6 @@ class ObjectPlacementDataset(Dataset):
         Returns:
             sample: Dictionary containing:
                 - plane_image: Plane/room top-down view (Tensor) [3, H, W]
-                - object_image: Object top-down view (Tensor) [3, H, W]
                 - images: List of image tensors [3, H, W] (order matches <image> in prompt)
                 - text_prompt: Placement instruction (str)
                 - mask: Ground truth placement mask (Tensor) [1, H, W]
@@ -109,20 +110,19 @@ class ObjectPlacementDataset(Dataset):
         plane_image = self._load_image(plane_path)
         plane_tensor = torch.from_numpy(np.array(plane_image, dtype=np.float32) / 255.0).permute(2, 0, 1)
 
-        # Load object image
-        object_path = scene_dir / ann["object_image_path"]
-        object_image = self._load_image(object_path)
-        object_tensor = torch.from_numpy(np.array(object_image, dtype=np.float32) / 255.0).permute(2, 0, 1)
-
-        # Build images list for Qwen3-VL (plane + object)
-        images = [plane_tensor, object_tensor]
+        # Load all images from images_path
+        images = []
+        for img_path in ann.get("images_path", [ann["plane_image_path"]]):
+            img = self._load_image(scene_dir / img_path)
+            tensor = torch.from_numpy(np.array(img, dtype=np.float32) / 255.0).permute(2, 0, 1)
+            images.append(tensor)
 
         # Load mask
         mask_path = scene_dir / ann["mask_path"]
         mask = self._load_mask(mask_path)
 
         # Get text prompt and optional stage1 response
-        text_prompt = ann.get("text_prompt", "Place the object here.")
+        text_prompt = ann.get("text_prompt", None)
         response = ann.get("response", None)
 
         # Stage 2 GT: 6D rotation [6] + scale [1] (optional)
@@ -140,7 +140,6 @@ class ObjectPlacementDataset(Dataset):
 
         return {
             "plane_image": plane_tensor,              # [3, H, W] for SAM3
-            "object_image": object_tensor,            # [3, H, W]
             "images": images,                         # List of [3, H, W] for Qwen3-VL
             "text_prompt": text_prompt,
             "response": response,

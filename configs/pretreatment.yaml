@@ -17,27 +17,31 @@ data:
 # Generation Settings
 # ----------------------------------------------------------------------------
 generation:
-  num_samples: 1000          # Target number of samples to generate
   image_size: 1024           # Output image resolution (pixels)
   heatmap_sigma: 15.0        # Gaussian kernel sigma for heatmap
   max_object_ratio: 0.5      # Maximum ratio of objects to remove per scene (0.0~1.0)
+  qwen_model_name: "./models/qwen3_vl"  # Qwen3-VL model path (local directory or Hugging Face name)
+  split_ratio:               # Data split ratios (train/val/test)
+    train: 0.8
+    val: 0.1
+    test: 0.1
 
 # ----------------------------------------------------------------------------
 # Data Augmentation
 # ----------------------------------------------------------------------------
 augmentation:
-  enabled: false             # Enable data augmentation
+  enabled: true              # Enable data augmentation
   aug_ratio: 0.5             # Augmentation ratio (reserved for future use)
   rotation_range: 180        # Z-axis rotation range (degrees)
   scale_range:               # Scale range
     min: 0.8
-    max: 1.5
+    max: 1.25
 
 # ----------------------------------------------------------------------------
 # Camera Settings
 # ----------------------------------------------------------------------------
 camera:
-  top_view_height: 8.0       # Top view camera height
+  top_view_height: 1.0       # Top view camera height
   side_view_distance: 5.0    # Side view camera distance
   fov_degrees: 45            # Field of view in degrees
   aspect_ratio: 1.0          # Aspect ratio (width/height)

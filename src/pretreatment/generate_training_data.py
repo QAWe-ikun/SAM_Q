@@ -102,23 +102,24 @@ class TrainingDataGenerator:
         self.scene_dir = Path(data_config.get("scene_dir", ""))
         self.model_dir = Path(data_config.get("model_dir", ""))
         self.output_dir = Path(data_config.get("output_dir", ""))
+        self.train_dir = self.output_dir / "train"
+        self.val_dir = self.output_dir / "val"
+        self.test_dir = self.output_dir / "test"
 
         self.image_size = gen_config.get("image_size", 1024)
         self.heatmap_sigma = gen_config.get("heatmap_sigma", 15.0)
-        self.num_samples = gen_config.get("num_samples", 1000)
         
-        self.augmentation = aug_config.get("enabled", False)
-        self.aug_ratio = aug_config.get("aug_ratio", 0.5)
+        self.augmentation = aug_config.get("enabled", True)
+        self.aug_ratio = aug_config.get("aug_ratio", 0.2)
         
         # 更新全局配置
         self.aug_rotation_range = aug_config.get("rotation_range", 180)
         scale_range = aug_config.get("scale_range", {})
-        self.aug_scale_range = (
+        self.scale_range = (
             scale_range.get("min", 0.8),
-            scale_range.get("max", 1.5)
+            scale_range.get("max", 1.25)
         )
         
-
         self.top_view_camera_height = cam_config.get("top_view_height", 1.0)
         self.side_view_camera_distance = cam_config.get("side_view_distance", 5.0)
         self.fov_degrees = cam_config.get("fov_degrees", 45)
@@ -127,9 +128,18 @@ class TrainingDataGenerator:
         # 最大剔除比例
         self.max_object_ratio = gen_config.get("max_object_ratio", 0.5)
 
+        # 数据集划分比例
+        split_ratio = gen_config.get("split_ratio", {"train": 0.8, "val": 0.1, "test": 0.1})
+        self.train_ratio = split_ratio.get("train", 0.8)
+        self.val_ratio = split_ratio.get("val", 0.1)
+        self.test_ratio = split_ratio.get("test", 0.1)
+
         # 输出目录结构：data/train/, data/val/, data/test/
         # 每个场景一个文件夹：data/train/scene_001/
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.train_dir.mkdir(parents=True, exist_ok=True)
+        self.val_dir.mkdir(parents=True, exist_ok=True)
+        self.test_dir.mkdir(parents=True, exist_ok=True)
 
         # 全局样本计数
         self.sample_counter = 0
@@ -230,7 +240,7 @@ class TrainingDataGenerator:
 
             # 判断是否在地面上
             is_on_floor = abs(pos[1] - bounds_bottom[0][1]) < 0.01
-
+            
             # 创建副本并应用变换
             mesh_transformed = mesh.copy()
             if len(rot) == 4 and not np.allclose(rot, [0, 0, 0, 1]):
@@ -252,7 +262,7 @@ class TrainingDataGenerator:
                 rot=rot,
                 size=size,
                 scale_jid=(sx, sy, sz),
-                mesh=mesh,  # 原始 mesh（未变换）
+                mesh=mesh,
                 is_on_floor=is_on_floor,
             ))
 
@@ -387,6 +397,7 @@ class TrainingDataGenerator:
     def render_object_reference(
         self,
         mesh: trimesh.Trimesh,
+        bounds_bottom: List[List[float]]
     ) -> np.ndarray:
         """渲染物体参考图（俯视图，正向朝上，保持原始尺寸）"""
         # 复制 mesh 并重置所有变换
@@ -399,24 +410,28 @@ class TrainingDataGenerator:
         obj_scene = trimesh.Scene([obj_mesh])
         
         # 使用与 render_top_view 相同的相机配置
-        bounds = obj_scene.bounds
-        if bounds is None:
-            return np.zeros((self.image_size, self.image_size, 3), dtype=np.uint8)
+        bounds_bottom = np.array(bounds_bottom)
+        min_x = bounds_bottom[:, 0].min()
+        min_y = bounds_bottom[:, 2].min()
+        max_x = bounds_bottom[:, 0].max()
+        max_y = bounds_bottom[:, 2].max()
 
-        center = bounds.mean(axis=0)
+         # 计算场景对角线
+        scene_width = max_x - min_x
+        scene_depth = max_y - min_y
+        diag = np.sqrt(scene_width**2 + scene_depth**2)
 
-        # 自适应计算相机高度
-        obj_width = bounds[1][0] - bounds[0][0]
-        obj_depth = bounds[1][2] - bounds[0][2]
-        obj_diag = np.sqrt(obj_width**2 + obj_depth**2)
+        # 根据 FOV 自适应计算相机高度，确保完整覆盖场景
         fov_rad = np.radians(self.fov_degrees)
-        required_height = (obj_diag / 2.0) / np.tan(fov_rad / 2.0)
-        adaptive_height = max(required_height, 2.0) + 0.5
+        # 图像是正方形 (aspect_ratio=1.0)，视口对角线覆盖场景对角线
+        required_height = (diag / 2.0) / np.tan(fov_rad / 2.0)
 
-        # 相机位置：在物体正上方
-        camera_pos = np.array([center[0], bounds[1][2] + adaptive_height, center[1]])
-        # 相机目标：物体中心
-        camera_target = np.array([center[0], bounds[0][2], center[1]])
+        # 使用计算的高度与配置高度的最大值，并增加一点余量
+        adaptive_height = self.top_view_camera_height + required_height
+
+        center = [(min_x + max_x) / 2, (min_y + max_y) / 2, 0]
+        camera_pos = np.array([center[0], adaptive_height, center[1]])
+        camera_target = np.array([center[0], bounds_bottom[0][1], center[1]])
         
         return self.render_scene(obj_scene, camera_pos, camera_target)
 
@@ -533,10 +548,7 @@ class TrainingDataGenerator:
         rot_z = random.uniform(-self.aug_rotation_range, self.aug_rotation_range)
         rot_aug = R.from_euler('z', rot_z, degrees=True).as_quat().tolist()
 
-        # 2. 随机缩放
-        scale_aug = random.uniform(*self.aug_scale_range)
-
-        # 3. 随机移动到新位置（不与其他物体碰撞）
+        # 2. 随机移动到新位置（不与其他物体碰撞）
         bounds = scene.bounds
         if bounds is None:
             return None, None
@@ -549,14 +561,13 @@ class TrainingDataGenerator:
                 obj.pos[2],  # 保持 Z 值
             ]
             # 检查碰撞
-            if not self._check_position_collision(scene, new_pos, obj.mesh, scale_aug):
+            if not self._check_position_collision(scene, new_pos, obj.mesh):
                 break
         else:
             return None, None  # 无法找到合适位置
 
         # 4. 创建增强后的物体
         aug_mesh = obj.mesh.copy()
-        aug_mesh.apply_scale(scale_aug)
 
         if rot_z != 0:
             R_mat = np.eye(4)
@@ -579,7 +590,7 @@ class TrainingDataGenerator:
             pos=new_pos,
             rot=rot_aug,
             size=obj.size,
-            scale_jid=(scale_aug, scale_aug, scale_aug),
+            scale_jid=(1, 1, 1),
             mesh=obj.mesh,  # 原始 mesh
             is_on_floor=obj.is_on_floor,
         )
@@ -591,11 +602,9 @@ class TrainingDataGenerator:
         scene: trimesh.Scene,
         pos: List[float],
         mesh: trimesh.Trimesh,
-        scale: float,
     ) -> bool:
         """检查指定位置是否与其他物体碰撞（使用 AABB 包围盒）"""
         test_mesh = mesh.copy()
-        test_mesh.apply_scale(scale)
         T = np.eye(4)
         T[:3, 3] = pos
         test_mesh.apply_transform(T)
@@ -622,20 +631,21 @@ class TrainingDataGenerator:
                 
         return False
 
-    def generate_text_prompt(self, original_image: np.ndarray, plane_image: np.ndarray, is_aug: bool = False) -> str:
+    def generate_text_prompt(self, original_image: np.ndarray, plane_image: np.ndarray, object_image: np.ndarray, desc: str) -> str:
         """
         生成 text_prompt：使用 Qwen3-VL 对比 original 和 plane 图像，
         自动生成摆放位置描述（如"放在桌子左边"、"整齐摆放在墙角"等）。
         """
-        base_prompt = f"物体图为：<image>\n平面图为：<image>\n"
+        base_prompt = f"物体{desc}的参考图为：<image>\n平面图为：<image>\n两者的尺寸相同，"
 
         try:
             # 将 numpy 数组转为 PIL Image
             original_pil = Image.fromarray(original_image)
             plane_pil = Image.fromarray(plane_image)
+            obj_pil = Image.fromarray(object_image)
 
-            # 让 Qwen3-VL 对比两张图，描述物体应该摆放的位置
-            vlm_prompt = self._query_placement_description(original_pil, plane_pil)
+            # 让 Qwen3-VL 对比三张图，描述物体应该摆放的位置
+            vlm_prompt = self._query_placement_description(original_pil, plane_pil, obj_pil, desc)
         except Exception as e:
             raise RuntimeError(f"Qwen3-VL 生成位置描述失败: {e}")
 
@@ -687,13 +697,11 @@ class TrainingDataGenerator:
         self._qwen_model.config.use_cache = True
         self._qwen_model.eval()
 
-    def _query_placement_description(self, original_pil: Image.Image, plane_pil: Image.Image) -> str:
+    def _query_placement_description(self, original_pil: Image.Image, plane_pil: Image.Image, obj_pil: Image.Image, desc: str) -> str:
         """
         使用 Qwen3-VL 对比原始房间图和剔除后房间图，生成摆放位置描述。
         返回类似"放在桌子左侧"、"整齐摆放在墙角"等自然语言描述。
         """
-        self._load_qwen_model()
-
         # 构建对话
         messages = [
             {
@@ -708,9 +716,13 @@ class TrainingDataGenerator:
                         "image": plane_pil,
                     },
                     {
+                        "type": "image",
+                        "image": obj_pil,
+                    },
+                    {
                         "type": "text",
-                        "text": "第一张图是包含所有物体的原始房间图，第二张图是移除了某个物体后的房间图。"
-                              "请对比两张图，用简短的中文描述被移除的物体原来放在什么位置，"
+                        "text": "第一张图是包含所有物体的原始房间图，第二张图是移除了某个物体后的房间图，第三张图是被移除的物体的参考图。"
+                              f"请对比这三张图，用简短的中文描述被移除的物体{desc}原来放在什么位置，"
                               "以及周围参照物的关系。例如：'放在桌子左侧'、'整齐摆放在墙角'、'靠在书架旁边'等。"
                               "只需输出位置描述，不要说'我会在...'或'好的'等多余内容。"
                     }
@@ -725,22 +737,28 @@ class TrainingDataGenerator:
 
         inputs = self._qwen_processor(
             text=[text],
-            images=[original_pil, plane_pil],
+            images=[original_pil, plane_pil, obj_pil],
             return_tensors="pt",
         ).to(self._qwen_model.device)
 
+        from transformers import GenerationConfig
         with torch.no_grad():
             outputs = self._qwen_model.generate(
-                **inputs
+                **inputs,
+                generation_config=GenerationConfig(
+                    max_new_tokens=512,
+                    do_sample=False,
+                ),
             )
 
         input_len = inputs["input_ids"].shape[1]
         response = self._qwen_processor.decode(outputs[0, input_len:], skip_special_tokens=True).strip()
 
-        # 清理回复，去掉多余的前缀
-        for prefix in ["位置描述：", "位置：", "摆放位置："]:
-            if response.startswith(prefix):
-                response = response[len(prefix):]
+        # ========== 临时调试：输出 response ==========
+        print("=" * 60)
+        print(f"[DEBUG] Qwen3-VL Response: {response}")
+        print("=" * 60)
+        # ==============================================
 
         return response
 
@@ -779,11 +797,14 @@ class TrainingDataGenerator:
                 return_tensors="pt",
             ).to(self._qwen_model.device)
 
+            from transformers import GenerationConfig
             with torch.no_grad():
                 outputs = self._qwen_model.generate(
                     **inputs,
-                    max_new_tokens=64,
-                    do_sample=False,
+                    generation_config=GenerationConfig(
+                        max_new_tokens=512,
+                        do_sample=False,
+                    ),
                 )
 
             input_len = inputs["input_ids"].shape[1]
@@ -791,7 +812,7 @@ class TrainingDataGenerator:
 
             # 确保以 <SEG> 结尾
             if "<SEG>" not in response:
-                response = response.rstrip("。.!！") + "。<SEG>"
+                response += "<SEG>"
 
             return response
         except Exception as e:
@@ -854,7 +875,10 @@ class TrainingDataGenerator:
             "sample_id": sample_id,
             "split": split,
             "plane_image_path": f"plane_images/{sample_id}.png",
-            "object_image_path": f"object_images/{sample_id}.png",
+            "images_paths": [
+                f"object_images/{sample_id}.png",
+                f"plane_images/{sample_id}.png",
+            ],
             "mask_path": f"masks/{sample_id}_mask.png",
             "text_prompt": text_prompt,
             "response": response,
@@ -896,27 +920,35 @@ class TrainingDataGenerator:
         processed_jids = set()
         max_objects = max(1, int(len(objects) * self.max_object_ratio))
         objects_processed = 0
+        
+        random.shuffle(objects)  # 随机打乱物体顺序，增加样本多样性
 
         for target_obj in objects:
             if objects_processed >= max_objects:
                 break
             if target_obj.jid in processed_jids:
                 continue
+            if not target_obj.is_on_floor:
+                # 只处理在地面上的物体，跳过悬浮物体
+                continue
+
+            # 记录已处理的物体 jid，避免重复处理同一物体
             processed_jids.add(target_obj.jid)
-            # 1. 渲染物体参考图
-            object_image = self.render_object_reference(target_obj.mesh)
-            if object_image is None:
-                continue
 
-            # 2. 生成 GT 热力图
-            heatmap = self.generate_heatmap(
-                target_pos=target_obj.pos,
-                bounds_bottom=scene_data.get('bounds_bottom', [])
-            )
-            if heatmap is None:
-                continue
+            # 数据增强（仅在 train 阶段，按 aug_ratio 比例决定走增强流程还是普通流程）
+            is_aug = split == "train" and self.augmentation and random.random() < self.aug_ratio
 
-            # 3. 计算旋转和缩放标签（倒数）
+            if is_aug:
+                # 增强流程
+                aug_meta = self._process_augmentation(
+                    scene, scene_data, scene_dir, original_image, split, target_obj
+                )
+                if aug_meta is not None:
+                    samples.append(aug_meta)
+                    objects_processed += 1
+                continue
+            
+            # 1. 计算旋转和缩放标签（倒数）
             orig_rot = target_obj.rot
             if len(orig_rot) == 4 and not np.allclose(orig_rot, [0, 0, 0, 1]):
                 inv_rot = R.from_quat(orig_rot).inv().as_quat().tolist()
@@ -924,8 +956,23 @@ class TrainingDataGenerator:
                 inv_rot = [0, 0, 0, 1]
             rotation_6d = self.rotation_6d_from_quat(inv_rot)
 
-            orig_scale = np.mean(target_obj.scale_jid)
-            scale = 1.0 / orig_scale if orig_scale > 0 else 1.0
+            orig_scale = random.uniform(*self.scale_range)
+            scale = 1.0 / orig_scale
+            
+            target_obj.mesh.apply_scale(orig_scale)
+            
+            # 2. 渲染物体参考图
+            object_image = self.render_object_reference(target_obj.mesh)
+            if object_image is None:
+                continue
+
+            # 3. 生成 GT 热力图
+            heatmap = self.generate_heatmap(
+                target_pos=target_obj.pos,
+                bounds_bottom=scene_data.get('bounds_bottom', [])
+            )
+            if heatmap is None:
+                continue
 
             # 4. 剔除物体，渲染剔除后房间图
             scene_without_obj = self.remove_object_from_scene(scene, target_obj)
@@ -936,7 +983,7 @@ class TrainingDataGenerator:
             # 5. 生成文本（失败则跳过该样本）
             try:
                 text_prompt = self.generate_text_prompt(
-                    original_image, plane_image, is_aug=False
+                    original_image, plane_image, object_image, target_obj.desc
                 )
                 response = self.generate_response(text_prompt)
             except RuntimeError:
@@ -974,10 +1021,6 @@ class TrainingDataGenerator:
                 shutil.rmtree(scene_dir)
             logger.warning(f"场景 {scene_name}: 无有效样本，跳过")
 
-        # 7. 数据增强（如果启用）
-        if self.augmentation:
-            self._process_augmentation(scene, scene_data, scene_dir, original_image, split)
-
     def _process_augmentation(
         self,
         scene: trimesh.Scene,
@@ -985,69 +1028,63 @@ class TrainingDataGenerator:
         scene_dir: Path,
         original_image: np.ndarray,
         split: str,
-    ):
-        """数据增强流程"""
-        # 随机选择一个物体进行增强
-        _, objects = self.build_scene(scene_data)
-        if not objects:
-            return
-
-        target_obj = random.choice(objects)
-
+        target_obj: ObjectInfo,
+    ) -> Optional[dict]:
+        """数据增强：对指定物体进行随机变换，生成增强样本"""
         aug_obj, aug_scene = self.augmentation_object(target_obj, scene)
-        if aug_obj is not None:
-            # 渲染增强后物体参考图
-            aug_object_image = self.render_object_reference(aug_obj.mesh)
+        if aug_obj is None:
+            return None
 
-            # 生成 GT 热力图（基于移动后位置）
-            aug_heatmap = self.generate_heatmap(
-                target_pos=aug_obj.pos,
-                bounds_bottom=scene_data.get('bounds_bottom', [])
+        # 渲染增强后物体参考图
+        aug_object_image = self.render_object_reference(aug_obj.mesh)
+
+        # 生成 GT 热力图（基于移动后位置）
+        aug_heatmap = self.generate_heatmap(
+            target_pos=aug_obj.pos,
+            bounds_bottom=scene_data.get('bounds_bottom', [])
+        )
+        if aug_heatmap is None:
+            return None
+
+        # 计算旋转和缩放标签
+        aug_rot_6d = self.rotation_6d_from_quat(
+            R.from_quat(aug_obj.rot).inv().as_quat().tolist()
+        )
+        aug_scale = 1.0
+
+        # 渲染剔除后房间图
+        aug_plane_image = self.render_top_view(
+            self.remove_object_from_scene(aug_scene, aug_obj),
+            scene_data.get('bounds_bottom', [])
+        )
+        if aug_plane_image is None:
+            return None
+
+        # 生成文本
+        try:
+            aug_text_prompt = self.generate_text_prompt(
+                original_image, aug_plane_image, aug_object_image, aug_obj.desc
             )
+            aug_response = self.generate_response(aug_text_prompt)
+        except RuntimeError:
+            logger.warning(f"跳过增强样本：Qwen3-VL 文本生成失败")
+            return None
 
-            # 计算旋转和缩放标签
-            aug_rot_6d = self.rotation_6d_from_quat(
-                R.from_quat(aug_obj.rot).inv().as_quat().tolist()
-            )
-            aug_scale = 1.0
+        sample_meta = self.save_sample(
+            scene_dir=scene_dir,
+            obj_id=f"aug_{target_obj.jid}",
+            plane_image=aug_plane_image,
+            object_image=aug_object_image,
+            original_image=original_image,
+            heatmap=aug_heatmap,
+            text_prompt=aug_text_prompt,
+            response=aug_response,
+            rotation_6d=aug_rot_6d,
+            scale=aug_scale,
+            split=split,
+        )
 
-            # 渲染剔除后房间图
-            aug_plane_image = self.render_top_view(
-                self.remove_object_from_scene(aug_scene, aug_obj),
-                scene_data.get('bounds_bottom', [])
-            )
-
-            # 生成增强文本（失败则跳过）
-            try:
-                aug_text_prompt = self.generate_text_prompt(original_image, aug_plane_image, is_aug=True)
-                aug_response = self.generate_response(aug_text_prompt)
-            except RuntimeError:
-                logger.warning(f"跳过增强样本：Qwen3-VL 文本生成失败")
-                return
-
-            sample_meta = self.save_sample(
-                scene_dir=scene_dir,
-                obj_id=f"aug_{target_obj.jid}",
-                plane_image=aug_plane_image,
-                object_image=aug_object_image,
-                original_image=original_image,
-                heatmap=aug_heatmap,
-                text_prompt=aug_text_prompt,
-                response=aug_response,
-                rotation_6d=aug_rot_6d,
-                scale=aug_scale,
-                split=split,
-            )
-
-            # 更新 samples.json
-            if sample_meta is not None:
-                samples_json_path = scene_dir / "samples.json"
-                if samples_json_path.exists():
-                    with open(samples_json_path, 'r', encoding='utf-8') as f:
-                        existing_samples = json.load(f)
-                    existing_samples.append(sample_meta)
-                    with open(samples_json_path, 'w', encoding='utf-8') as f:
-                        json.dump(existing_samples, f, ensure_ascii=False, indent=2)
+        return sample_meta
 
     def run(self):
         """执行数据生成"""
@@ -1055,10 +1092,20 @@ class TrainingDataGenerator:
         json_files = sorted(self.scene_dir.glob("*.json"))
         logger.info(f"找到 {len(json_files)} 个场景文件")
 
-        for _, json_path in tqdm.tqdm(enumerate(json_files, 1), total=len(json_files)):
-            self.process_scene(json_path)
+        # 随机打乱场景列表
+        random.shuffle(json_files)
 
-            if self.sample_counter >= self.num_samples:
-                break
+        # 按 split_ratio 划分
+        n = len(json_files)
+        n_train = int(n * self.train_ratio)
+        n_val = int(n * self.val_ratio)
+        n_test = n - n_train - n_val  # 剩余全部分给 test
+
+        splits = ["train"] * n_train + ["val"] * n_val + ["test"] * n_test
+
+        self._load_qwen_model()
+
+        for idx, json_path in enumerate(tqdm.tqdm(json_files, desc="Processing scenes")):
+            self.process_scene(json_path, split=splits[idx])
 
         logger.info(f"\n生成完成! 总样本数: {self.sample_counter}")

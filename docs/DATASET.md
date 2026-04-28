@@ -50,7 +50,10 @@ data/
   {
     "sample_id": "scene_001_obj_chair_01",
     "plane_image_path": "plane_images/obj_chair_01.png",
-    "object_image_path": "object_images/obj_chair_01.png",
+    "images_paths": [
+      "plane_images/obj_chair_01.png",
+      "object_images/obj_chair_01.png"
+    ],
     "mask_path": "masks/obj_chair_01_mask.png",
     "text_prompt": "<image>\n<image>\n把椅子放回原来的位置",
     "response": "好的，我会把椅子放回原来的位置。<SEG>",
@@ -61,7 +64,10 @@ data/
   {
     "sample_id": "scene_001_obj_table_02",
     "plane_image_path": "plane_images/obj_table_02.png",
-    "object_image_path": "object_images/obj_table_02.png",
+    "images_paths": [
+      "plane_images/obj_table_02.png",
+      "object_images/obj_table_02.png"
+    ],
     "mask_path": "masks/obj_table_02_mask.png",
     "text_prompt": "<image>\n<image>\n把桌子放回原来的位置",
     "response": "好的，我会把桌子放回原来的位置。<SEG>",
@@ -80,7 +86,7 @@ data/
 |------|------|---------|---------|------|
 | `sample_id` | str | 必须 | 必须 | 样本唯一标识符，格式 `{scene_id}_obj_{obj_type}_{idx}` |
 | `plane_image_path` | str | 必须 | 必须 | SAM3 输入（房间/平面俯视图），相对于 scene 文件夹 |
-| `object_image_path` | str | 必须 | 必须 | 物体参考图，相对于 scene 文件夹 |
+| `images_path` | list[str] | 必须 | 必须 | 所有输入图片列表（通常为 plane + object），相对于 scene 文件夹 |
 | `mask_path` | str | 必须 | 必须 | 二值 mask 图，白色 = 放置区域，相对于 scene 文件夹 |
 | `text_prompt` | str | 必须 | 必须 | 放置指令，支持 `<image>` 占位符 |
 | `response` | str | **必须** | 不需要 | Qwen3-VL 的目标回复，末尾包含 `<SEG>` |

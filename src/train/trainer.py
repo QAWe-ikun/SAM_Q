@@ -65,7 +65,6 @@ class Trainer:
         # stage2 (placement) → Adapter + SAM3 Decoder, placement 损失
         loss_config = config.get("loss", {})
         self.stage = loss_config.get("type", "placement")  # "lm" | "placement"
-        print(f"[Trainer] Training stage: {self.stage}")
 
         # Initialize model (needs self.stage)
         self.model = model or self._init_model()
@@ -118,19 +117,6 @@ class Trainer:
         model_config = self.config.get("model", {})
         num_seg_tokens = model_config.get("num_seg_tokens", 1)
 
-        # SAM3 checkpoint (pretrained or trained)
-        sam3_ckpt = model_config.get("sam3", {}).get("sam_checkpoint_path")
-
-        # Adapter checkpoint (trained split weights)
-        adapter_ckpt = model_config.get("adapter", {}).get("adapter_checkpoint_path")
-
-        # Stage 1 (LM) does not need SAM3; Stage 2 (placement) requires it
-        if self.stage == "lm":
-            sam3_ckpt = None
-            
-        print(f"[Trainer] Initializing SAM3 checkpoint: {sam3_ckpt}")
-        print(f"[Trainer] Initializing Adapter checkpoint: {adapter_ckpt}")
-
         # Stage 2 with pre-extracted seg_features doesn't need Qwen3-VL
         # This saves ~16GB VRAM
         data_config = self.config.get("data", {})
@@ -143,8 +129,8 @@ class Trainer:
             print(f"[Trainer] Stage 2 without seg_features: loading Qwen3-VL for online inference")
 
         model = SAMQPlacementModel(
-            sam_checkpoint_path=sam3_ckpt,
-            adapter_checkpoint_path=adapter_ckpt,
+            sam_checkpoint_path=model_config.get("sam3", {}).get("sam_checkpoint_path", None),
+            adapter_checkpoint_path=model_config.get("adapter", {}).get("adapter_checkpoint_path", None),
             qwen_model_name=model_config.get("qwen", {}).get("model_name") if use_qwen else None,
             qwen_lora_path=model_config.get("qwen", {}).get("lora_path") if use_qwen else None,
             sam3_input_dim=model_config.get("sam3", {}).get("input_dim", 256),
@@ -619,14 +605,13 @@ class Trainer:
             if out_path.exists():
                 count += 1
                 continue
-
-            plane_img = sample["plane_image"]
-            obj_img = sample["object_image"]
+            
             text_prompt = sample["text_prompt"]
+            images = sample["images"]
 
             seg_hidden, _ = self.model.qwen_encoder.generate_with_seg(
                 text_prompt=text_prompt,
-                images=[plane_img, obj_img],
+                images=images,
                 force_only=True,
                 num_seg=self.config.get("model", {}).get("num_seg_tokens", 1),
             )

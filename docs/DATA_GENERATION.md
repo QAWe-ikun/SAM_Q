@@ -58,7 +58,10 @@ data/
   {
     "sample_id": "scene_001_obj_chair_01",
     "plane_image_path": "plane_images/obj_chair_01.png",
-    "object_image_path": "object_images/obj_chair_01.png",
+    "images_paths": [
+      "plane_images/obj_chair_01.png",
+      "object_images/obj_chair_01.png"
+    ],
     "mask_path": "masks/obj_chair_01_mask.png",
     "text_prompt": "<image>\n<image>\n把椅子放回原来的位置",
     "response": "好的，我会把椅子放回原来的位置。<SEG>",

@@ -33,7 +33,7 @@ class Qwen3VLEncoder(nn.Module):
 
     def __init__(
         self,
-        model_name: str = "Qwen/Qwen3-VL-8B-Instruct",
+        model_name: Optional[str] = None,
         device: Optional[str] = None,
         dtype: torch.dtype = torch.float16,
         num_seg_tokens: int = 1,
@@ -724,95 +724,3 @@ class Qwen3VLEncoder(nn.Module):
         response = self.processor.decode(generated_tokens, skip_special_tokens=True)
 
         return response
-
-
-class Qwen3VLEncoderWithProjection(nn.Module):
-    """
-    Qwen3-VL Encoder with projection layer for SAM3 compatibility.
-
-    Projects Qwen3-VL embeddings (or SEG hidden states) to SAM3's expected
-    input dimension.
-
-    Supports:
-        - Single SEG token: [B, hidden_dim] → [B, sam3_input_dim]
-        - Multi SEG tokens: [B, num_seg, hidden_dim] → [B, num_seg, sam3_input_dim]
-        - Fine-tuning mode with LoRA
-    """
-
-    def __init__(
-        self,
-        model_name: str = "Qwen/Qwen3-VL-8B-Instruct",
-        sam3_input_dim: int = 256,
-        device: Optional[str] = None,
-        dtype: torch.dtype = torch.float16,
-        num_seg_tokens: int = 1,
-    ):
-        super().__init__()
-
-        self.encoder = Qwen3VLEncoder(
-            model_name=model_name,
-            device=device,
-            dtype=dtype,
-            num_seg_tokens=num_seg_tokens,
-        )
-
-        # Projection layer to match SAM3 input dimension
-        self.projection = nn.Linear(
-            self.encoder.output_dim,
-            sam3_input_dim,
-        )
-
-    def enable_finetuning(self, **kwargs):
-        """Enable LoRA fine-tuning on the underlying encoder."""
-        return self.encoder.enable_finetuning(**kwargs)
-
-    def disable_finetuning(self):
-        """Disable fine-tuning mode."""
-        self.encoder.disable_finetuning()
-
-    def forward(
-        self,
-        text_prompt: str,
-        images: Optional[List[Image.Image]] = None,
-        labels: Optional[torch.Tensor] = None,
-        num_seg: int = 1,
-        force_only: bool = True,
-    ) -> torch.Tensor | Dict[str, torch.Tensor]:
-        """
-        Forward pass with projection.
-
-        Args:
-            text_prompt: Text with optional <image> placeholders
-            images: List of PIL images in order
-            labels: Labels for training mode
-            num_seg: Number of SEG tokens to use
-            force_only: Force SEG tokens (training) or generate (inference)
-
-        Returns:
-            If training mode:
-                dict with 'logits', 'hidden_states', 'projected_seg', 'loss'
-            Otherwise:
-                projected_seg: [B, sam3_input_dim] or [B, num_seg, sam3_input_dim]
-        """
-        # Training mode: get logits + hidden states
-        if self.encoder.training_mode or labels is not None:
-            encoder_output = self.encoder(
-                text_prompt=text_prompt,
-                images=images,
-                labels=labels,
-            )
-            # Project SEG hidden states
-            seg_hidden = encoder_output["hidden_states"]
-            projected = self.projection(seg_hidden)
-            encoder_output["projected_hidden_states"] = projected
-            return encoder_output
-
-        # Inference mode: extract and project SEG hidden states
-        seg_hidden, was_natural = self.encoder.generate_with_seg(
-            text_prompt=text_prompt,
-            images=images,
-            force_only=force_only,
-            num_seg=num_seg,
-        )
-        projected = self.projection(seg_hidden)
-        return projected, was_natural
