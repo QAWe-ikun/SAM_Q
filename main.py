@@ -316,7 +316,7 @@ def run_predict(args):
     from src.utils.config import Config
     from PIL import Image
     import json
-    import torch
+    import torch # type: ignore
     from pathlib import Path
 
     # Load inference config (or use defaults)
@@ -464,7 +464,7 @@ def run_demo(args):
     print("Install with: pip install gradio")
 
     try:
-        import gradio as gr
+        import gradio as gr # type: ignore
     except ImportError:
         print("\nError: Gradio not installed.")
         print("Install with: pip install gradio")
@@ -474,7 +474,7 @@ def run_demo(args):
     from src.inference import visualize_results
     from PIL import Image
     import numpy as np
-    import torch
+    import torch # type: ignore
 
     # Load model (cached)
     def get_model():
