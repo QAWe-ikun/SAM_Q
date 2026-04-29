@@ -28,13 +28,14 @@ class SampleSaver:
         obj_id: str,
         plane_image: np.ndarray,
         object_image: np.ndarray,
+        original_image: np.ndarray,
         heatmap: np.ndarray,
         text_prompt: str,
         response: str,
         rotation_6d: List[float],
         scale: float,
         split: str = "train",
-    ) -> Optional[dict]:
+    ):
         """
         保存单个样本到场景目录中。
 
@@ -47,18 +48,23 @@ class SampleSaver:
         # 创建子目录
         plane_dir = scene_dir / "plane_images"
         object_dir = scene_dir / "object_images"
+        original_dir = scene_dir / "original_images"
         mask_dir = scene_dir / "masks"
-        plane_dir.mkdir(exist_ok=True)
-        object_dir.mkdir(exist_ok=True)
-        mask_dir.mkdir(exist_ok=True)
+
+        plane_dir.mkdir(parents=True, exist_ok=True)
+        object_dir.mkdir(parents=True, exist_ok=True)
+        original_dir.mkdir(parents=True, exist_ok=True)
+        mask_dir.mkdir(parents=True, exist_ok=True)
 
         # 保存图片
         plane_path = plane_dir / f"{sample_id}.png"
         object_path = object_dir / f"{sample_id}.png"
+        original_path = original_dir / f"{sample_id}.png"
         mask_path = mask_dir / f"{sample_id}_mask.png"
 
         Image.fromarray(plane_image).save(plane_path)
         Image.fromarray(object_image).save(object_path)
+        Image.fromarray(original_image).save(original_path)
 
         # 热力图转为灰度图
         heatmap_uint8 = (heatmap * 255).astype(np.uint8)
@@ -83,8 +89,6 @@ class SampleSaver:
 
         # 收集到全局列表
         self.samples_by_split[split].append(metadata)
-
-        return metadata
 
     def save_split_json(self, split_name: str) -> int:
         """

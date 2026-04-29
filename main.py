@@ -220,6 +220,7 @@ def run_pretreat(args):
     print(f"  场景目录: {scene_dir}")
     print(f"  模型目录: {model_dir}")
     print(f"  输出目录: {output_dir}")
+    print(f"  数据集生成阶段：{gen_config.get('step', 'render_only')}")
     print(f"  图像分辨率: {gen_config.get('image_size', 1024)}")
     print(f"  热力图 Sigma: {gen_config.get('heatmap_sigma', 15.0)}")
     print(f"  数据增强: {'启用' if aug_config.get('enabled', False) else '禁用'}")
@@ -239,7 +240,7 @@ def run_train(args):
 
     from src.utils.config import Config
     from src.data.dataset import ObjectPlacementDataset
-    from torch.utils.data import DataLoader
+    from torch.utils.data import DataLoader # type: ignore
     from src.train import Trainer
 
     # Load configuration

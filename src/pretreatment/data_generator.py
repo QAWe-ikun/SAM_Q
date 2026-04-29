@@ -11,6 +11,7 @@ import random
 import logging
 import warnings
 import numpy as np
+from PIL import Image
 from pathlib import Path
 from datetime import datetime
 from typing import Any, Dict, List
@@ -135,7 +136,7 @@ class TrainingDataGenerator:
         self.epoch_size = gen_config.get("epoch_size", 1000)
 
         # 两步流程控制
-        self.step = gen_config.get("step", "all")  # "render_only", "vlm_only", "all"
+        self.step = gen_config.get("step", "render_only")  # "render_only", "vlm_only"
 
     def rotation_6d_from_quat(self, quat: List[float]) -> List[float]:
         """四元数转 6D 旋转"""
@@ -151,7 +152,7 @@ class TrainingDataGenerator:
         self,
         json_path: Path,
         split: str,
-    ) -> int:
+    ):
         """
         渲染单个场景并按 DATASET.md 格式保存图片（第一步）。
         
@@ -169,37 +170,26 @@ class TrainingDataGenerator:
             with open(json_path, 'r', encoding='utf-8') as f:
                 scene_data = json.load(f)
         except Exception:
-            return 0
+            return
 
         # 构建场景
         scene, objects = self.scene_builder.build_scene(scene_data)
         if not objects:
-            return 0
+            return
 
         # 渲染原始房间图
         original_image = self.renderer.render_top_view(
             scene, scene_data.get('bounds_bottom', [])
         )
         if original_image is None:
-            return 0
+            return
 
         # 创建场景输出目录（按 DATASET.md 结构）
         scene_name = json_path.stem
         scene_dir = self.output_dir / split / scene_name
-        plane_dir = scene_dir / "plane_images"
-        object_dir = scene_dir / "object_images"
-        original_dir = scene_dir / "original_images"
-        mask_dir = scene_dir / "masks"
-        
-        for d in [plane_dir, object_dir, original_dir, mask_dir]:
-            d.mkdir(parents=True, exist_ok=True)
-
-        # 保存原始房间图（只需保存一次）
-        from PIL import Image
-        Image.fromarray(original_image).save(original_dir / "original.png")
 
         if len(objects) <= 2:
-            return 0
+            return
 
         random.shuffle(objects)
 
@@ -221,7 +211,7 @@ class TrainingDataGenerator:
 
             if is_aug:
                 # 增强流程
-                aug_obj, _ = self.augmentation.augmentation_object(
+                aug_obj, aug_scene = self.augmentation.augmentation_object(
                     target_obj, scene
                 )
                 if aug_obj is None:
@@ -232,6 +222,10 @@ class TrainingDataGenerator:
                 )
                 if aug_object_image is None:
                     continue
+                
+                aug_origin_image = self.renderer.render_top_view(
+                    aug_scene, scene_data.get('bounds_bottom', [])
+                )
 
                 aug_heatmap = self.heatmap_generator.generate(
                     aug_obj.pos, scene_data.get('bounds_bottom', [])
@@ -240,25 +234,19 @@ class TrainingDataGenerator:
                     continue
 
                 aug_rot_6d = self.rotation_6d_from_quat(aug_obj.rot)
-
-                # 保存增强样本
-                sample_id = f"aug_{target_obj.jid}"
-                obj_filename = f"{sample_id}.png"
                 
-                Image.fromarray(aug_object_image).save(object_dir / obj_filename)
-                Image.fromarray(aug_object_image).save(plane_dir / obj_filename)
-                self._save_heatmap(aug_heatmap, mask_dir / f"{sample_id}_mask.png")
-
                 # step1: text_prompt 为 base_prompt, response 为空
                 base_prompt = (
-                    f"物体{sample_id}的参考图为：<image>\n"
+                    f"物体{target_obj.desc}的参考图为：<image>\n"
                     f"平面图为：<image>\n两者的尺寸相同，"
                 )
+                
                 self.sample_saver.save_sample(
                     scene_dir=scene_dir,
-                    obj_id=sample_id,
+                    obj_id=target_obj.jid,
                     plane_image=aug_object_image,
                     object_image=aug_object_image,
+                    original_image=aug_origin_image,
                     heatmap=aug_heatmap,
                     text_prompt=base_prompt,
                     response="",  # step2 填充
@@ -304,25 +292,17 @@ class TrainingDataGenerator:
             if plane_image is None:
                 continue
 
-            # 保存样本
-            sample_id = target_obj.jid
-            obj_filename = f"{sample_id}.png"
-            
-            Image.fromarray(object_image).save(object_dir / obj_filename)
-            Image.fromarray(plane_image).save(plane_dir / obj_filename)
-            Image.fromarray(original_image).save(original_dir / obj_filename)
-            self._save_heatmap(heatmap, mask_dir / f"{sample_id}_mask.png")
-
             # step1: text_prompt 为 base_prompt, response 为空
             base_prompt = (
-                f"物体{sample_id}的参考图为：<image>\n"
+                f"物体{target_obj.desc}的参考图为：<image>\n"
                 f"平面图为：<image>\n两者的尺寸相同，"
             )
             self.sample_saver.save_sample(
                 scene_dir=scene_dir,
-                obj_id=sample_id,
+                obj_id=target_obj.jid,
                 plane_image=plane_image,
                 object_image=object_image,
+                original_image=original_image,
                 heatmap=heatmap,
                 text_prompt=base_prompt,
                 response="",  # step2 填充
@@ -333,7 +313,6 @@ class TrainingDataGenerator:
             saved_count += 1
 
         logger.info(f"  场景 {scene_name}: 渲染并保存 {saved_count} 个样本")
-        return saved_count
 
     @staticmethod
     def _save_heatmap(heatmap: np.ndarray, path: Path):
@@ -369,12 +348,10 @@ class TrainingDataGenerator:
 
     def run(self):
         """执行数据生成"""
-        if self.step == "render_only":
-            self._run_render_only()
-        elif self.step == "vlm_only":
+        if self.step == "vlm_only":
             self._run_vlm_only()
-        else:  # "all"
-            self._run_all()
+        else:
+            self._run_render_only()
 
     def _run_render_only(self):
         """第一步：只渲染场景并保存"""
@@ -384,20 +361,21 @@ class TrainingDataGenerator:
         logger.info("=" * 60)
 
         json_files = sorted(self.scene_dir.glob("*.json"))
-        random.shuffle(json_files)
 
         n = len(json_files)
         splits = self._get_splits(n)
 
-        total_saved = 0
 
         for idx, json_path in enumerate(tqdm.tqdm(json_files)):
             split = splits[idx]
-            saved = self._render_and_save_scene(json_path, split)
-            total_saved += saved
+            self._render_and_save_scene(json_path, split)
+
+        # 保存每个 split 的 JSON
+        for split_name in ["train", "val", "test"]:
+            self.sample_saver.save_split_json(split_name)
 
         logger.info(f"\n{'='*60}")
-        logger.info(f"渲染完成! 共保存 {total_saved} 个样本")
+        logger.info(f"渲染完成! 共保存 {self.sample_saver.sample_counter} 个样本")
         logger.info(f"{'='*60}")
 
     def _run_vlm_only(self):
@@ -418,7 +396,7 @@ class TrainingDataGenerator:
         for split in ["train", "val", "test"]:
             split_dir = self.output_dir / split
             json_path = split_dir / f"{split}.json"
-            
+
             if not json_path.exists():
                 logger.warning(f"{split}.json 不存在，跳过")
                 continue
@@ -432,47 +410,65 @@ class TrainingDataGenerator:
 
             logger.info(f"\n处理 {split} 数据集: {len(samples)} 个样本")
 
-            # 批量 VLM 推理
+            # 批量 VLM 推理 - 使用一个总体进度条
             batch_size = self.vlm_batch_size
-            for batch_start in range(0, len(samples), batch_size):
+            pbar = tqdm.tqdm(range(0, len(samples), batch_size), desc=f"{split} VLM")
+
+            for batch_start in pbar:
                 batch_end = min(batch_start + batch_size, len(samples))
                 batch = samples[batch_start:batch_end]
 
                 try:
-                    # 加载图片并生成 placement descriptions
-                    placement_descs = []
-                    loaded_images = []
+                    # 加载所有图片
+                    original_images = []
+                    plane_images = []
+                    object_images = []
+                    descs = []
+
                     for sample in batch:
-                        scene_dir = split_dir / sample["scene_dir"]
+                        scene_dir = self.output_dir / sample["scene_dir"]
                         plane_path = scene_dir / sample["plane_image_path"]
                         object_path = scene_dir / sample["images_paths"][0]
+                        original_path = scene_dir / "original_images" / f"{sample['sample_id']}.png"
 
-                        plane_image = np.array(Image.open(plane_path))
-                        object_image = np.array(Image.open(object_path))
-                        loaded_images.append((plane_image, object_image))
+                        original_images.append(np.array(Image.open(original_path)))
+                        plane_images.append(np.array(Image.open(plane_path)))
+                        object_images.append(np.array(Image.open(object_path)))
+                        descs.append(sample["sample_id"])
 
-                        desc = self.vlm_client.generate_placement_description(
-                            plane_image, plane_image, object_image, sample["sample_id"]
-                        )
-                        placement_descs.append(desc)
+                    # 批量生成 placement descriptions
+                    placement_descs = self.vlm_client.generate_placement_description_batch(
+                        original_images, plane_images, object_images, descs
+                    )
 
-                    # 更新 text_prompt 和 response
+                    # 收集所有 response 参数
+                    text_prompts = []
+                    rotation_6d_list = []
+                    scale_list = []
+                    valid_indices = []
+
                     for i, sample in enumerate(batch):
                         if placement_descs[i] is None:
+                            logger.warning(f"skip desc{i}")
                             continue
 
-                        plane_image, object_image = loaded_images[i]
                         text_prompt = f"{sample['text_prompt']}\n{placement_descs[i]}"
-                        
-                        response = self.vlm_client.generate_response(
-                            text_prompt,
-                            sample["rotation_6d"],
-                            sample["scale"],
-                        )
-                        
-                        # 更新样本元数据
-                        sample["text_prompt"] = text_prompt
-                        sample["response"] = response
+                        text_prompts.append(text_prompt)
+                        rotation_6d_list.append(sample["rotation_6d"])
+                        scale_list.append(sample["scale"])
+                        valid_indices.append(i)
+
+                    # 批量生成 responses
+                    responses = self.vlm_client.generate_responses_batch(
+                        text_prompts, rotation_6d_list, scale_list
+                    )
+
+                    # 更新样本元数据
+                    for i, valid_idx in enumerate(valid_indices):
+                        logger.info(f"text_prompt: {text_prompts[i]}")
+                        logger.info(f"response prompt: {responses[i]}")
+                        batch[valid_idx]["text_prompt"] = text_prompts[i]
+                        batch[valid_idx]["response"] = responses[i]
 
                 except Exception as e:
                     logger.error(f"批量 VLM 推理失败: {e}")
@@ -486,15 +482,3 @@ class TrainingDataGenerator:
         logger.info(f"\n{'='*60}")
         logger.info("VLM 推理完成!")
         logger.info(f"{'='*60}")
-
-    def _run_all(self):
-        """完整流程：先渲染再 VLM 推理"""
-        logger.info("=" * 60)
-        logger.info("完整流程：先渲染场景再 VLM 推理")
-        logger.info("=" * 60)
-
-        # Step 1: 渲染并保存图片和 JSON
-        self._run_render_only()
-
-        # Step 2: VLM 推理
-        self._run_vlm_only()
