@@ -10,7 +10,7 @@ import torch
 from tqdm import tqdm
 from pathlib import Path
 from datetime import datetime
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader # type: ignore
 from typing import Dict, Any, Optional, List
 
 from .metrics import compute_metrics
@@ -342,12 +342,11 @@ class Trainer:
         tokenizer = self.model.qwen_encoder.processor.tokenizer
 
         # Configure training arguments
-        grad_accum = training_config.get("gradient_accumulation_steps", 1)
-        batch_size = training_config.get("batch_size", 1)
+        grad_accum = training_config.get("gradient_accumulation_steps", 4)
+        batch_size = training_config.get("batch_size", 2)
         num_epochs = training_config.get("num_epochs", 3)
-        lr = self.config.get("optimizer", {}).get("lr", 2e-4)
-        warmup_steps = self.config.get("scheduler", {}).get("warmup_epochs", 0)
-        save_steps = training_config.get("save_interval", 500)
+        lr = self.config.get("optimizer", {}).get("lr", 1e-4)
+        warmup_steps = self.config.get("scheduler", {}).get("warmup_epochs", 1)
         log_steps = training_config.get("log_interval", 10)
 
         # Determine dtype
@@ -439,9 +438,18 @@ class Trainer:
         # Initialize SFTTrainer
         # Note: We use a custom data_collator, so passing 'tokenizer' is not strictly required
         # and avoids compatibility issues with different trl versions.
+        
+        # 测试模式：限制样本数
+        max_samples = self.config.get("data", {}).get("max_samples", 500)
+        train_ds = dataloader.dataset
+        if max_samples is not None and max_samples < len(train_ds):
+            from torch.utils.data import Subset # type: ignore
+            train_ds = Subset(train_ds, range(max_samples))
+            print(f"[DEBUG] 使用 {max_samples}/{len(dataloader.dataset)} 条样本进行训练")
+
         trainer = SFTTrainer(
             model=qwen_model,
-            train_dataset=dataloader.dataset,
+            train_dataset=train_ds,
             data_collator=qwen_data_collator,
             args=sft_config,
         )
@@ -960,7 +968,7 @@ class Trainer:
 
         training_config = self.config.get("training", {})
         save_epoch = training_config.get("save_epoch", False)
-        save_interval = training_config.get("save_interval", 10)
+        save_interval = training_config.get("save_interval", 100)
 
         # Determine suffix for split weights
         suffix = None

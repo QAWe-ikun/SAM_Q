@@ -78,7 +78,7 @@ class ObjectPlacementDataset(Dataset):
 
         # Add data_dir path to each sample for resolving relative paths
         for sample in all_samples:
-            scene_dir = self.data_dir / self.split / sample["scene_dir"]
+            scene_dir = self.data_dir / sample["scene_dir"]
             sample["_scene_dir"] = scene_dir
 
         return all_samples

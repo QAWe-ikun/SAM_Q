@@ -373,19 +373,20 @@ class VLMClient:
             rot_y_deg = self.extract_rotation_y(rotation_6d)
             prompt = (
                 f"你是一个物体放置助手。用户给出了放置指令，"
-                f"请你用礼貌的语气回复，并在末尾加上<SEG>标记。"
                 f"\n指令：{text_prompt}"
                 f"\n旋转角度：{rot_y_deg:.1f}°（绕Y轴）"
                 f"\n缩放比例：{scale:.2f}"
-                f"\n请用'好的，我会...'开头回复，说明放置位置、"
-                f"旋转角度和缩放比例，并在句末加上<SEG>。"
+                f"\n要求：必须以'好的，我会将[物体]摆放在[位置]'开头，"
+                f"简要说明旋转角度和缩放比例，句末加上<SEG>。"
+                f"不要添加额外的奖励、感谢等无关内容。"
             )
             prompts.append(prompt)
 
         sampling_params = SamplingParams(
-            temperature=0.7,
-            top_p=0.9,
-            max_tokens=512,
+            temperature=0.3,
+            top_p=0.85,
+            max_tokens=256,
+            stop=["<SEG>"],
         )
 
         outputs = self._vllm_engine.generate(prompts, sampling_params, use_tqdm=False)
@@ -393,8 +394,8 @@ class VLMClient:
 
         # 确保 <SEG> 结尾
         for i, result in enumerate(results):
-            if "<SEG>" not in result:
-                results[i] = result + "<SEG>"
+            if not result.endswith("<SEG>"):
+                results[i] = result.rstrip() + "<SEG>"
 
         return results
 

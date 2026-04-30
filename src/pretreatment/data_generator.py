@@ -393,7 +393,7 @@ class TrainingDataGenerator:
 
         from PIL import Image
 
-        for split in ["train", "val", "test"]:
+        for split in ["val", "train", "test"]:
             split_dir = self.output_dir / split
             json_path = split_dir / f"{split}.json"
 

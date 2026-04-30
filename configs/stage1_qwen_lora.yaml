@@ -12,8 +12,8 @@ experiment:
   description: "Stage 1: Fine-tune Qwen3-VL with LoRA to output <SEG> token"
 
 data:
-  root_dir: "data/"
-  pin_memory: false
+  root_dir: "/mnt/f/data/"
+  pin_memory: true
 
 model:
   num_seg_tokens: 1
@@ -27,32 +27,22 @@ model:
 
     lora:
       enabled: true
-      r: 64
+      r: 8
       alpha: 128
       dropout: 0.05
       target_modules:
         - "q_proj"
         - "k_proj"
         - "v_proj"
-        - "o_proj"
-        - "gate_proj"
-        - "up_proj"
-        - "down_proj"
+        # - "o_proj"
+        # - "gate_proj"
+        # - "up_proj"
+        # - "down_proj"
       use_qlora: false  # Set true if VRAM < 12GB
       bias: "none"
 
   adapter:
     freeze: true  # ← Frozen in Stage 1
-    hidden_dim: 512
-    num_queries: 64
-    dropout: 0.1
-
-  seg_token:
-    max_generate_tokens: 128
-    dropout: 0.1
-
-  action_head:
-    heatmap_size: 64
 
 loss:
   type: "lm"  # Language modeling loss
@@ -76,7 +66,7 @@ training:
   save_dir: "/mnt/f/outputs/stage1_lora/"
   save_best: true
   save_epoch: false  # Set true to save at save_interval epochs
-  save_interval: 500  # Save every N steps (when save_epoch=false)
+  save_interval: 100  # Save every N steps (when save_epoch=true)
   save_total_limit: 3
   log_interval: 10
   early_stopping: false
