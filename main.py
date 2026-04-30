@@ -269,6 +269,12 @@ def run_train(args):
         seg_feature_dir=seg_feature_dir,
     )
 
+    test_dataset = ObjectPlacementDataset(
+        data_dir=data_dir,
+        split="test",
+        seg_feature_dir=seg_feature_dir,
+    )
+
     # Create DataLoaders
     batch_size = data_config.get("batch_size", 2)
     num_workers = data_config.get("num_workers", 4)
@@ -289,9 +295,18 @@ def run_train(args):
         collate_fn=val_dataset._collate_fn if hasattr(val_dataset, '_collate_fn') else None,
     )
 
+    test_loader = DataLoader(
+        test_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+        collate_fn=test_dataset._collate_fn if hasattr(test_dataset, '_collate_fn') else None,
+    )
+
     print(f"\nDataset info:")
     print(f"  Training samples: {len(train_dataset)}")
     print(f"  Validation samples: {len(val_dataset)}")
+    print(f"  Test samples: {len(test_dataset)}")
     print(f"  Batch size: {batch_size}")
     print(f"  Data directory: {data_dir}")
 
@@ -302,6 +317,7 @@ def run_train(args):
     trainer.train(
         train_loader=train_loader,
         val_loader=val_loader,
+        test_loader=test_loader,
     )
 
 

@@ -257,7 +257,7 @@ class Trainer:
     def _load_lora_checkpoint(self, lora_ckpt: str):
         """加载 Stage 1 的 LoRA checkpoint。"""
         try:
-            from peft import PeftModel
+            from peft import PeftModel # type: ignore
             print(f"[Trainer] Loading LoRA checkpoint from {lora_ckpt}")
             self.model.qwen_encoder.model = PeftModel.from_pretrained(
                 self.model.qwen_encoder.model, lora_ckpt
@@ -270,14 +270,50 @@ class Trainer:
         self,
         train_loader: DataLoader,
         val_loader: Optional[DataLoader] = None,
+        test_loader: Optional[DataLoader] = None,
     ) -> None:
         """
         Full training loop.
-        
+
         Args:
             train_loader: Training DataLoader
             val_loader: Validation DataLoader (optional)
+            test_loader: Test DataLoader for final evaluation (optional)
         """
+        # 测试模式：限制样本数，保持 Stage1/Stage2 一致
+        max_samples = self.config.get("data", {}).get("max_samples", 500)
+        if max_samples is not None:
+            from torch.utils.data import Subset, DataLoader # type: ignore
+            
+            # 合并 train 和 val 数据集后进行分割
+            full_dataset = train_loader.dataset
+            total = len(full_dataset)
+            if max_samples < total:
+                # 80% train, 20% val
+                n_train = int(max_samples * 0.8)
+                n_val = max_samples - n_train
+                
+                train_ds = Subset(full_dataset, range(n_train))
+                val_ds = Subset(full_dataset, range(n_train, n_train + n_val))
+                
+                # 重建 DataLoader
+                train_loader = DataLoader(
+                    train_ds,
+                    batch_size=train_loader.batch_size,
+                    shuffle=True,
+                    num_workers=train_loader.num_workers,
+                    collate_fn=train_loader.collate_fn,
+                )
+                val_loader = DataLoader(
+                    val_ds,
+                    batch_size=val_loader.batch_size if val_loader else train_loader.batch_size,
+                    shuffle=False,
+                    num_workers=val_loader.num_workers if val_loader else train_loader.num_workers,
+                    collate_fn=val_loader.collate_fn if val_loader else train_loader.collate_fn,
+                ) if val_loader else None
+                
+                print(f"[DEBUG] 使用 {max_samples} 条样本进行训练: train={n_train}, val={n_val}")
+        
         # Stage 1: SFTTrainer handles its own loop
         if self.stage == "lm":
             self.run_sft_stage1(train_loader)
@@ -294,11 +330,28 @@ class Trainer:
             self._extract_seg_features(train_loader, seg_dir)
             if val_loader is not None:
                 self._extract_seg_features(val_loader, seg_dir)
+            
+            # Test 集最终评估
+            if test_loader is not None:
+                print(f"\n{'='*60}")
+                print(f"Running Stage 1 Test Evaluation...")
+                self._validate_stage1(test_loader)
+                print(f"{'='*60}\n")
+                self._extract_seg_features(test_loader, seg_dir)
+            
             print(f"\nStage 1 training completed!")
             return
 
         # Stage 2: Custom Epoch loop
         self.train_stage2(train_loader, val_loader)
+        
+        # Test 集最终评估
+        if test_loader is not None:
+            print(f"\n{'='*60}")
+            print(f"Running Stage 2 Test Evaluation...")
+            self._validate_stage2(test_loader)
+            print(f"{'='*60}\n")
+        
         print(f"\n{'='*60}")
         print(f"Stage 2 training completed!")
         print(f"{'='*60}\n")
@@ -317,8 +370,8 @@ class Trainer:
         该方法会接管整个训练流程（包含所有 Epochs），不需要外部循环。
         """
         try:
-            from trl import SFTTrainer
-            from transformers import TrainingArguments
+            from trl import SFTTrainer # type: ignore
+            from transformers import TrainingArguments # type: ignore
         except ImportError:
             raise ImportError(
                 "Please install trl: pip install trl>=0.8.0"
@@ -438,18 +491,9 @@ class Trainer:
         # Initialize SFTTrainer
         # Note: We use a custom data_collator, so passing 'tokenizer' is not strictly required
         # and avoids compatibility issues with different trl versions.
-        
-        # 测试模式：限制样本数
-        max_samples = self.config.get("data", {}).get("max_samples", 500)
-        train_ds = dataloader.dataset
-        if max_samples is not None and max_samples < len(train_ds):
-            from torch.utils.data import Subset # type: ignore
-            train_ds = Subset(train_ds, range(max_samples))
-            print(f"[DEBUG] 使用 {max_samples}/{len(dataloader.dataset)} 条样本进行训练")
-
         trainer = SFTTrainer(
             model=qwen_model,
-            train_dataset=train_ds,
+            train_dataset=dataloader.dataset,
             data_collator=qwen_data_collator,
             args=sft_config,
         )
