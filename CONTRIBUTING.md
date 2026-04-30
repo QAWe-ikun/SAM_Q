@@ -10,9 +10,8 @@ Thank you for your interest in contributing to SAM-Q! This guide provides guidel
 2. [Getting Started](#getting-started)
 3. [Development Workflow](#development-workflow)
 4. [Coding Standards](#coding-standards)
-5. [Testing](#testing)
-6. [Documentation](#documentation)
-7. [Pull Request Process](#pull-request-process)
+5. [Documentation](#documentation)
+6. [Pull Request Process](#pull-request-process)
 
 ---
 
@@ -181,84 +180,6 @@ class MyModel(nn.Module):
 - **Functions/Variables**: `snake_case` (`compute_iou`)
 - **Constants**: `UPPER_SNAKE_CASE` (`MAX_BATCH_SIZE`)
 
-#### 5. Imports
-
-Organize imports in groups:
-
-```python
-# Standard library
-import os
-from pathlib import Path
-from typing import Dict, Optional
-
-# Third-party
-import torch
-import numpy as np
-
-# Local application
-from ..utils.config import Config
-from .base_adapter import BaseAdapter
-```
-
-### File Structure
-
-Each module should follow:
-
-```
-src/models/encoders/
-├── __init__.py          # Exports
-├── base_encoder.py      # Abstract base
-└── qwen3vl_encoder.py   # Implementation
-```
-
----
-
-## Testing
-
-### Writing Tests
-
-Place tests in `tests/` directory:
-
-```python
-# tests/test_models/test_adapters.py
-
-import pytest
-import torch
-from src.models.adapters import CrossModalAdapter
-
-
-class TestCrossModalAdapter:
-    def test_forward(self):
-        adapter = CrossModalAdapter(
-            qwen_dim=4096,
-            sam3_dim=256,
-            num_queries=64,
-        )
-        x = torch.randn(2, 10, 4096)
-        output = adapter(x)
-        
-        assert output.shape == (2, 64, 256)
-```
-
-### Running Tests
-
-```bash
-# Run all tests
-python -m pytest tests/ -v
-
-# Run specific test file
-python -m pytest tests/test_models/test_adapters.py -v
-
-# Run with coverage
-python -m pytest tests/ --cov=src --cov-report=html
-```
-
-### Test Requirements
-
-- All new features must have tests
-- Aim for >80% code coverage
-- Test both success and edge cases
-
 ---
 
 ## Documentation
@@ -271,23 +192,6 @@ When adding features:
 2. Update `ARCHITECTURE.md` if architecture changes
 3. Add docstrings to all public APIs
 4. Add examples in docstrings
-
-### Example Code
-
-Provide working examples:
-
-```python
-"""
-Example usage:
-    >>> from src.inference import PlacementPredictor
-    >>> predictor = PlacementPredictor("checkpoints/best.pt")
-    >>> results = predictor.predict(
-    ...     plane_image=Image.open("room.png"),
-    ...     object_image=Image.open("chair.png"),
-    ...     text_prompt="Place near window"
-    ... )
-"""
-```
 
 ---
 
@@ -335,14 +239,6 @@ Brief description of changes
 
 ## Common Contributions
 
-### Adding a New Adapter
-
-1. Create file: `src/models/adapters/my_adapter.py`
-2. Implement class inheriting from `nn.Module`
-3. Add to `src/models/adapters/__init__.py`
-4. Write tests: `tests/test_models/test_my_adapter.py`
-5. Update docs
-
 ### Adding a New Dataset
 
 1. Create file: `src/data/my_dataset.py`
@@ -355,10 +251,10 @@ Brief description of changes
 
 If you have 3D scene data (e.g., SSR3D-FRONT):
 
-1. Use `src/pretreatment/generate_training_data.py`
+1. Use `src/pretreatment/data_generator.py`
 2. Configure scene/model paths and output parameters
 3. Run with `--augmentation` for data augmentation
-4. Outputs: `annotations.json`, `plane_images/`, `object_images/`, `masks/`
+4. Outputs: `splits.json`, `plane_images/`, `object_images/`, `masks/`
 
 See [docs/DATA_GENERATION.md](docs/DATA_GENERATION.md) for details.
 
