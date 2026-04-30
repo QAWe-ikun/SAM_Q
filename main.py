@@ -19,6 +19,7 @@ from pathlib import Path
 # 屏蔽无关警告
 warnings.filterwarnings("ignore", category=FutureWarning, module="timm")
 warnings.filterwarnings("ignore", message="Casting complex values to real discards the imaginary part")
+warnings.filterwarnings("ignore", message="pkg_resources is deprecated")
 
 # Add src to path
 src_path = Path(__file__).parent / "src"

@@ -11,7 +11,6 @@ import random
 import logging
 import warnings
 import numpy as np
-from PIL import Image
 from pathlib import Path
 from datetime import datetime
 from typing import Any, Dict, List

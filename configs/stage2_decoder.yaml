@@ -17,7 +17,7 @@ data:
   seg_feature_dir: "/mnt/f/data/seg_features/"  # 预提取的 <SEG> hidden states
   num_workers: 4
   pin_memory: true
-  max_samples: 500
+  max_samples: 50
 
 model:
   num_seg_tokens: 1
@@ -26,7 +26,7 @@ model:
     model_name: "./models/qwen3_vl"
     hidden_dim: 4096
     freeze: true  # ← Frozen, use Stage 1 LoRA
-    lora_path: "/mnt/f/outputs/stage1_lora/"  # ← Load Stage 1 LoRA adapter
+    lora_path: "/mnt/f/outputs/stage1_lora/stage1_qwen_lora_20260430_142804"  # ← Load Stage 1 LoRA adapter
     attn_implementation: "flash_attention_2"
 
   sam3:

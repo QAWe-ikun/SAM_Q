@@ -276,6 +276,9 @@ class Trainer:
             print(f"Running Stage 1 Validation...")
             stage1.validate(val_loader)
             print(f"{'='*60}\n")
+            
+        data_config = self.config.get("data", {})
+        max_samples = data_config.get("max_samples", None)
 
         # Extract seg features
         seg_dir = Path(self.config.get("data", {}).get("root_dir", "data/")) / "seg_features"
@@ -283,12 +286,10 @@ class Trainer:
         seg_extractor.extract(train_loader, seg_dir)
         if val_loader is not None:
             seg_extractor.extract(val_loader, seg_dir)
-        if test_loader is not None:
+        if test_loader is not None and max_samples is None:
             seg_extractor.extract(test_loader, seg_dir)
 
         # Test evaluation
-        data_config = self.config.get("data", {})
-        max_samples = data_config.get("max_samples", None)
         if test_loader is not None and max_samples is None:
             print(f"\n{'='*60}")
             print(f"Running Stage 1 Test Evaluation...")
