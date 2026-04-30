@@ -10,8 +10,8 @@ of the placement instruction (after the LLM has attended to all prior context).
 This projector expands it into multiple query tokens for the SAM3 detector.
 """
 
-import torch
-import torch.nn as nn
+import torch # type: ignore
+import torch.nn as nn # type: ignore
 from typing import Union
 from pathlib import Path
 

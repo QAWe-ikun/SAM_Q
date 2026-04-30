@@ -11,10 +11,10 @@ Supports three modes:
   - Fine-tuning mode: LoRA/QLoRA enabled, returns logits + hidden states for joint training
 """
 
-import torch
-import torch.nn as nn
-from typing import Optional, Dict, Any, Tuple, List
+import torch # type: ignore
 from PIL import Image
+import torch.nn as nn # type: ignore
+from typing import Optional, Dict, Tuple, List
 
 
 class Qwen3VLEncoder(nn.Module):
@@ -66,7 +66,7 @@ class Qwen3VLEncoder(nn.Module):
             return
 
         try:
-            from transformers import Qwen3VLForConditionalGeneration, AutoProcessor
+            from transformers import Qwen3VLForConditionalGeneration, AutoProcessor # type: ignore
 
             self.processor = AutoProcessor.from_pretrained(self.model_name, use_cache=use_cache)
 
@@ -74,7 +74,7 @@ class Qwen3VLEncoder(nn.Module):
             attn_impl = "eager"
             if self.device == "cuda":
                 try:
-                    import flash_attn  # noqa: F401
+                    import flash_attn  # type: ignore # noqa: F401
                     attn_impl = "flash_attention_2"
                 except ImportError:
                     attn_impl = "sdpa"  # PyTorch native, nearly same speed
@@ -155,7 +155,7 @@ class Qwen3VLEncoder(nn.Module):
             trainable_pct: Percentage of trainable parameters
         """
         try:
-            from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
+            from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training # type: ignore
         except ImportError as e:
             raise ImportError(
                 "Please install peft: pip install peft"
@@ -632,7 +632,7 @@ class Qwen3VLEncoder(nn.Module):
             lora_path: Path to the LoRA adapter directory
         """
         try:
-            from peft import PeftModel
+            from peft import PeftModel # type: ignore
         except ImportError as e:
             raise ImportError(
                 "Please install peft: pip install peft"
@@ -659,7 +659,7 @@ class Qwen3VLEncoder(nn.Module):
         This is useful for inference speedup after fine-tuning.
         """
         try:
-            from peft import PeftModel
+            from peft import PeftModel # type: ignore
         except ImportError as e:
             raise ImportError(
                 "Please install peft: pip install peft"

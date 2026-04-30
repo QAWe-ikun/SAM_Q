@@ -145,22 +145,3 @@ VLM 输出用于：
 5. **比例控制**：基础生成 vs 数据增强的比例建议为 1:1 或 2:1
 
 ---
-
-## 快速验证
-
-生成完成后，使用以下代码验证数据格式：
-
-```python
-from src.data.dataset import ObjectPlacementDataset
-
-dataset = ObjectPlacementDataset(
-    data_dir="data/",
-    split_dir="train/",
-)
-
-sample = dataset[0]
-print(f"plane_image: {sample['plane_image'].shape}")
-print(f"mask: {sample['mask'].shape}")
-print(f"rotation_6d: {sample['rotation_6d']}")
-print(f"scale: {sample['scale']}")
-```

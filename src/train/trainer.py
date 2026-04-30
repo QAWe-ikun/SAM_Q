@@ -111,7 +111,7 @@ class Trainer:
             sam_checkpoint_path=model_config.get("sam3", {}).get("sam_checkpoint_path", None),
             adapter_checkpoint_path=model_config.get("adapter", {}).get("adapter_checkpoint_path", None),
             qwen_model_name=model_config.get("qwen", {}).get("model_name") if use_qwen else None,
-            qwen_lora_path=model_config.get("qwen", {}).get("lora_path") if use_qwen else None,
+            qwen_lora_path=model_config.get("qwen", {}).get("lora_path", None) if use_qwen else None,
             sam3_input_dim=model_config.get("sam3", {}).get("input_dim", 256),
             qwen_hidden_dim=model_config.get("qwen", {}).get("hidden_dim", 4096),
             adapter_hidden_dim=model_config.get("adapter", {}).get("hidden_dim", 512),
@@ -287,7 +287,9 @@ class Trainer:
             seg_extractor.extract(test_loader, seg_dir)
 
         # Test evaluation
-        if test_loader is not None:
+        data_config = self.config.get("data", {})
+        max_samples = data_config.get("max_samples", None)
+        if test_loader is not None and max_samples is None:
             print(f"\n{'='*60}")
             print(f"Running Stage 1 Test Evaluation...")
             stage1.validate(test_loader)
@@ -311,7 +313,9 @@ class Trainer:
         stage2.train(train_loader, val_loader)
 
         # Test evaluation
-        if test_loader is not None:
+        data_config = self.config.get("data", {})
+        max_samples = data_config.get("max_samples", None)
+        if test_loader is not None and max_samples is None:
             print(f"\n{'='*60}")
             print(f"Running Stage 2 Test Evaluation...")
             stage2._validate(test_loader)

@@ -23,8 +23,6 @@ SAM-Q is a modular framework for **semantically-aware object placement** in indo
 - **SAM3** (Segment Anything Model 3): For spatial understanding and mask generation
 - **Qwen3-VL-8B** (Vision-Language Model): For multimodal comprehension (images + text)
 - **Novel Adapter Architecture**: For cross-modal embedding alignment
-- **H-MVP** (Hierarchical Multi-View Projection): For 3D collision detection
-- **Incremental VLA Memory**: For dynamic scene understanding
 
 ### Key Capabilities
 
@@ -32,10 +30,6 @@ SAM-Q is a modular framework for **semantically-aware object placement** in indo
 |------------|-------------|--------|
 | Language-Guided Placement | Natural language controls placement semantics | `models/encoders/` |
 | Cross-Modal Fusion | Bridges 4096D (Qwen) to 256D (SAM3) | `models/adapters/` |
-| 3D Collision Detection | Prevents invalid placements | `models/collision/` |
-| Incremental Memory | Updates scene understanding | `models/collision/incremental_hmvp.py` |
-| VLA Action Output | Position + rotation + scale with unified pixel-meter encoding | `models/vla/unified_scale_vla.py` |
-| Heatmap-Guided Sampling | Multiple candidate extraction | `models/sampling/` |
 
 ---
 
@@ -51,27 +45,14 @@ Encoder -> Adapter -> Detector -> Sampling
  Qwen3-VL  Cross-Attn  SAM3     Top-K+NMS
 ```
 
-### 2. Configuration Inheritance
-
-Configs inherit from base configs, avoiding duplication:
-
-```yaml
-# hmvp.yaml
-_base_: "base.yaml"  # Inherit all base settings
-
-advanced:
-  hmvp:
-    enabled: true    # Override only what's needed
-```
-
-### 3. Lazy Loading
+### 2. Lazy Loading
 
 Heavy models (Qwen3-VL, SAM3) are loaded lazily to:
 - Reduce import time
 - Enable development without GPU
 - Support testing with mocks
 
-### 4. Parameter Efficiency
+### 3. Parameter Efficiency
 
 | Component | Parameters | Trainable? |
 |-----------|-----------|------------|
@@ -116,15 +97,6 @@ Heavy models (Qwen3-VL, SAM3) are loaded lazily to:
 |  +------------------------------------------------------------+    |
 |  | Plane & Text Embeddings -> SAM3 Detector -> Placement Masks|    |
 |  +------------------------------------------------------------+    |
-+-------------------------------------------------------------------+
-              |
-              v
-+-------------------------------------------------------------------+
-|                   ADVANCED MODULES (Optional)                      |
-|                                                                    |
-|  +--------------------------+     +------------------------+       |
-|  | H-MVP Collision Detector |     |       VLA System       |       |
-|  +--------------------------+     +------------------------+       |
 +-------------------------------------------------------------------+
 ```
 
@@ -250,64 +222,7 @@ Adds learnable presence tokens to help distinguish similar prompts.
 
 ---
 
-### 3. Collision Detection (`src/models/collision/`)
-
-#### HMVPCollisionDetector
-
-**Concept**: Hierarchical Multi-View Projection for 3D collision detection.
-
-**How it works**:
-1. Build depth pyramid (4 levels) for scene and object
-2. Project onto 6 orthogonal views per level
-3. Check depth interval overlap
-4. Early exit if confident separation
-
-**Interface**:
-```python
-detector = HMVPCollisionDetector(
-    max_level=4,
-    base_resolution=8,
-    early_out_threshold=0.1,
-)
-
-collision_score = detector.check_collision(
-    scene_depths=scene_hmvp,
-    object_depths=obj_hmvp,
-    pose=predicted_pose,
-)
-```
-
-**Differentiable Operations**:
-- `soft_depth_interval_overlap`: Smooth overlap calculation
-- `soft_max_pool2d`: Softmax-based max approximation
-
-#### IncrementalHMVPMemory
-
-**Innovation**: Dynamic scene understanding that updates with each placement.
-
-**Workflow**:
-```
-Initial Scene -> Build H-MVP
-      |
-Place Object A
-      |
-Update H-MVP (incremental, not rebuild)
-      |
-Place Object B
-      |
-Update H-MVP
-      |
-...
-```
-
-**Key Methods**:
-- `initialize_from_scene()`: Build initial H-MVP
-- `update_with_new_object()`: Incremental update
-- `update_with_object_movement()`: Handle object movement
-
----
-
-### 4. VLA Module (`src/models/vla/`)
+### 3. VLA Module (`src/models/vla/`)
 
 #### Unified Architecture (Parallel SAM3 + SEGActionHead)
 
@@ -384,30 +299,6 @@ Heatmap         [-180, 180]°     [0.5, 2.0]x
 ```
 
 **Implementation**: `src/models/vla/unified_scale_vla.py`
-
----
-
-### 5. Sampling (`src/models/sampling/`)
-
-#### HeatmapGuidedPlacer
-
-**Purpose**: Extract diverse placement candidates from probability heatmap.
-
-**Pipeline**:
-1. Refine heatmap with SAM features
-2. Top-K peak extraction
-3. 2D NMS for diversity
-4. Convert 2D locations to 3D poses
-
-**Interface**:
-```python
-placer = HeatmapGuidedPlacer()
-candidates = placer.extract(
-    heatmap=probability_map,
-    num_candidates=5,
-    nms_radius=0.1,
-)
-```
 
 ---
 
@@ -489,150 +380,33 @@ Results: {heatmap, binary_heatmap, rotation_deg, scale_relative, qwen_response}
 
 ---
 
-## Configuration System
-
-### Hierarchy
-
-```
-base.yaml (all defaults)
-    |
-hmvp.yaml (enable H-MVP)
-    |
-incremental_vla.yaml (enable incremental VLA memory)
-    |
-vla.yaml (parallel SAM3 + SEGActionHead: heatmap + rotation + scale)
-```
-
-### Key Sections
-
-| Section | Purpose | Example Keys |
-|---------|---------|--------------|
-| `experiment` | Metadata | name, seed |
-| `data` | Dataset settings | batch_size, image sizes |
-| `model` | Architecture | qwen, sam3, adapter |
-| `loss` | Loss weights | dice_weight, bce_weight |
-| `optimizer` | Optimizer | lr, weight_decay |
-| `scheduler` | LR scheduling | T_max, eta_min |
-| `training` | Training loop | num_epochs, save_dir |
-| `advanced` | Optional modules | hmvp |
-
-### Usage
-
-```python
-from src.utils.config import Config
-
-config = Config("configs/hmvp.yaml")
-
-# Access with dot notation
-lr = config.get("optimizer.lr")
-hmvp_enabled = config.get("advanced.hmvp.enabled")
-
-# Override
-config.set("training.num_epochs", 200)
-
-# Save
-config.save("outputs/my_config.yaml")
-```
-
----
-
-## Extension Guide
-
-### Adding a New Adapter
-
-1. Create file: `src/models/adapters/my_adapter.py`
-2. Implement:
-```python
-import torch.nn as nn
-
-class MyAdapter(nn.Module):
-    def __init__(self, qwen_dim, sam3_dim, ...):
-        super().__init__()
-        # Initialize layers
-    
-    def forward(self, x):
-        # Transform x
-        return output
-```
-3. Add to `src/models/adapters/__init__.py`
-4. Update config: `model.adapter.type: "my_adapter"`
-
-### Adding a New Loss
-
-1. Create file: `src/models/losses/my_loss.py`
-2. Implement:
-```python
-class MyLoss(nn.Module):
-    def __init__(self, weight=1.0):
-        self.weight = weight
-    
-    def forward(self, pred, target):
-        # Compute loss
-        return loss_value
-```
-3. Integrate into trainer
-
-### Adding a New Encoder
-
-1. Create file: `src/models/encoders/my_encoder.py`
-2. Must implement:
-   - `forward()` method
-   - `output_dim` property
-3. Register in `__init__.py`
-
----
-
 ## File Structure
 
 ```
 SAM-Q/
 |-- configs/                     # Configuration files
-|   |-- config.yaml             # Inference config
-|   |-- stage1_qwen_lora.yaml   # Stage 1 training config
-|   +-- stage2_decoder.yaml     # Stage 2 training config
 |
 |-- src/
-|   |-- models/                  # Model architectures
-|   |   |-- encoders/           # Encoder modules
-|   |   |   +-- qwen3vl_encoder.py
-|   |   |-- loaders/            # SAM3 modules
-|   |   |   +-- sam3_loader.py
-|   |   |-- adapters/           # Adapter modules
-|   |   |   |-- base_adapter.py
-|   |   |   |-- cross_modal_adapter.py
-|   |   |   |-- seg_token_projector.py
-|   |   |   +-- presence_token_adapter.py
-|   |   |-- collision/          # Collision detection
-|   |   |   +-- hmvp_collision_detector.py
-|   |   |-- vla/                # VLA action output
-|   |   |   +-- unified_scale_vla.py  # SEGActionHead
-|   |   |-- sampling/           # Sampling strategies
-|   |   |   +-- heatmap_guided_placer.py
+|   +-- models/                  # Model architectures
+|   |   +-- encoders/           # Encoder modules
+|   |   +-- loaders/            # SAM3 modules
+|   |   +-- adapters/           # Adapter modules
+|   |   +-- vla/                # VLA action output
 |   |   +-- placement_model.py  # Main model (unified predict)
 |   |
-|   |-- pretreatment/            # Data generation
-|   |   +-- generate_training_data.py
+|   +-- pretreatment/            # Data generation
 |   |
-|   |-- data/                    # Data pipeline
-|   |   +-- dataset.py
+|   +-- data/                    # Data pipeline
 |   |
-|   |-- train/                   # Training framework
-|   |   |-- trainer.py
-|   |   |-- optimizer.py
-|   |   +-- metrics.py
+|   +-- train/                   # Training framework
 |   |
-|   |-- inference/               # Inference utilities
-|   |   |-- predictor.py
-|   |   +-- visualizer.py
+|   +-- inference/               # Inference utilities
 |   |
-|   |-- utils/                   # Utilities
-|   |   +-- config.py
+|   +-- utils/                   # Utilities
 |   |
 |   +-- sam3/                    # SAM3 model (submodule)
 |
 |-- scripts/                     # Helper scripts
-|   |-- download_models.py
-|   +-- download_data.sh
 |
 |-- main.py                      # CLI entry point
 |-- README.md                    # Documentation
@@ -709,4 +483,4 @@ See [README.md](README.md) for contribution guidelines.
 ---
 
 **Version**: 1.0.0  
-**Last Updated**: 2026-04-09
+**Last Updated**: 2026-04-30

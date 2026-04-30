@@ -12,10 +12,9 @@ Features:
 """
 
 import os
-from pathlib import Path
-import torch
-import torch.nn as nn
-from typing import Optional, Dict, Any, Tuple, Union
+import torch # type: ignore
+import torch.nn as nn # type: ignore
+from typing import Optional, Dict
 
 
 class SAM3Loader(nn.Module):
@@ -82,7 +81,7 @@ class SAM3Loader(nn.Module):
             if src_path not in sys.path:
                 sys.path.insert(0, src_path)
 
-            from model_builder import build_sam3_image_model
+            from model_builder import build_sam3_image_model # type: ignore
             
         except ImportError:
             raise ImportError(
@@ -101,23 +100,6 @@ class SAM3Loader(nn.Module):
             eval_mode=eval_mode,
             load_from_HF=False,
         )
-
-        # Debug: Print checkpoint keys to verify format
-        import torch
-        ckpt_data = torch.load(ckpt_path, map_location="cpu", weights_only=True)
-        if "model" in ckpt_data:
-            ckpt_keys = list(ckpt_data["model"].keys())
-        elif "model_state_dict" in ckpt_data:
-            ckpt_keys = list(ckpt_data["model_state_dict"].keys())
-        else:
-            ckpt_keys = list(ckpt_data.keys())
-        
-        # Check if backbone keys exist in checkpoint
-        backbone_keys = [k for k in ckpt_keys if "backbone" in k or "vision" in k]
-        print(f"  Backbone-related keys: {len(backbone_keys)}")
-        if backbone_keys:
-            print(f"  Sample backbone keys: {backbone_keys[:5]}")
-        print()
 
         # Extract internal components needed by SAM-Q
         self.sam3_vision_backbone = self.model.backbone.vision_backbone

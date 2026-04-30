@@ -5,8 +5,8 @@ Cross-Modal Adapter Module
 Cross-attention based adapter for multimodal embedding fusion.
 """
 
-import torch
-import torch.nn as nn
+import torch # type: ignore
+import torch.nn as nn # type: ignore
 from typing import Union
 from pathlib import Path
 

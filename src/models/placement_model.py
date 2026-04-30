@@ -9,9 +9,9 @@ Architecture:
 
 from pathlib import Path
 
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
+import torch # type: ignore
+import torch.nn as nn # type: ignore
+import torch.nn.functional as F # type: ignore
 from typing import Optional, Dict, Any, List
 from PIL import Image
 
@@ -172,7 +172,7 @@ class SAMQPlacementModel(nn.Module):
         Args:
             image: PIL.Image 或 torch.Tensor [C, H, W] / [B, C, H, W]
         """
-        import torchvision.transforms.functional as TF
+        import torchvision.transforms.functional as TF # type: ignore
 
         if isinstance(image, torch.Tensor):
             # 已经是 tensor，确保形状正确

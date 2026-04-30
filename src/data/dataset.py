@@ -128,7 +128,7 @@ class ObjectPlacementDataset(Dataset):
         # Pre-extracted <SEG> hidden state (for Stage 2)
         seg_hidden = None
         if self.seg_feature_dir is not None:
-            sample_id = ann.get("sample_id", f"{self.split}_{idx:06d}")
+            sample_id = ann.get("sample_id", None)
             seg_path = self.seg_feature_dir / f"{sample_id}.pt"
             if seg_path.exists():
                 seg_data = torch.load(seg_path, map_location="cpu", weights_only=True)

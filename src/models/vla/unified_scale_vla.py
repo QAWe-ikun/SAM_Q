@@ -17,10 +17,9 @@ Uses <SEG> token for dual purpose:
 
 from pathlib import Path
 
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from typing import Dict, Optional, Tuple, List, Union
+import torch # type: ignore
+import torch.nn as nn # type: ignore
+from typing import Dict, Tuple, Union
 from PIL import Image
 
 
@@ -72,7 +71,7 @@ class UnifiedScalePreprocessor(nn.Module):
         scene_scaled = scene_image.resize(
             (scene_target, scene_target), Image.Resampling.LANCZOS
         ).resize(
-            (self.model_input_size, model_input_size), Image.Resampling.LANCZOS
+            (self.model_input_size, model_input_size), Image.Resampling.LANCZOS # type: ignore
         )
 
         return obj_scaled, scene_scaled
@@ -89,7 +88,7 @@ def rotation_6d_to_matrix(rot_6d: torch.Tensor) -> torch.Tensor:
     Returns:
         matrix: [B, 3, 3] proper rotation matrix (orthonormal, det=+1)
     """
-    import torch.nn.functional as F
+    import torch.nn.functional as F # type: ignore
     a1 = rot_6d[:, 0:3]
     a2 = rot_6d[:, 3:6]
 

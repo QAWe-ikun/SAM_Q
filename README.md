@@ -31,17 +31,15 @@
 - **<SEG> Token Parallel Output**: Single `<SEG>` token feeds two parallel branches — SAM3 Decoder (placement heatmap) + SEGActionHead (rotation + scale)
 - **Cross-Modal Fusion**: Novel adapter architecture bridges Qwen3-VL (4096D) and SAM3 (256D) embedding spaces
 - **LoRA/QLoRA Fine-Tuning**: Parameter-efficient tuning with multi-SEG token support; trainable <0.1% of Qwen3-VL parameters
-- **Hierarchical Collision Detection**: H-MVP (Hierarchical Multi-View Projection) enables 3D-aware placement
-- **Incremental Memory**: Dynamic scene understanding that updates with each placement
 - **Parameter-Efficient**: Freezes foundation models, trains only <5% parameters
 
 ### Method Comparison
 
-| Method | Language Understanding | 3D Collision | Incremental | Real-time |
-|--------|----------------------|--------------|-------------|-----------|
-| Prior work [Chen et al. 2024] | No | Yes | No | Yes |
-| VLA-Placement [Wang et al. 2025] | Yes | No | No | No |
-| **SAM-Q (Ours)** | **Yes** | **Yes** | **Yes** | **Yes** |
+| Method | Language Understanding | Incremental | Real-time |
+|--------|----------------------|-------------|-----------|
+| Prior work [Chen et al. 2024] | No | No | Yes |
+| VLA-Placement [Wang et al. 2025] | Yes | No | No |
+| **SAM-Q (Ours)** | **Yes** | **Yes** | **Yes** |
 
 ---
 
@@ -81,17 +79,6 @@
 |  |  Plane & Text Embeddings -> SAM3 Detector -> Placement Masks|    |
 |  +------------------------------------------------------------+    |
 +-------------------------------------------------------------------+
-              |
-              v
-+-------------------------------------------------------------------+
-|                   ADVANCED MODULES (Optional)                      |
-|                                                                    |
-|  +---------------+  +-------------------+  +-------------------+   |
-|  | SEGActionHead |  | H-MVP Collision   |  | Incremental VLA   |   |
-|  | (rotation +   |  | Detector          |  | Memory System     |   |
-|  |  scale)       |  | (3D collision)    |  | (dynamic scene)   |   |
-|  +---------------+  +-------------------+  +-------------------+   |
-+-------------------------------------------------------------------+
 ```
 
 ### Core Components
@@ -124,15 +111,7 @@
 - **Output**: Binary placement masks with confidence scores
 - **Implementation**: External (facebookresearch/sam3)
 
-#### 4. H-MVP Collision Detector (Optional)
-- **Purpose**: Hierarchical multi-view projection for 3D collision detection
-- **Features**:
-  - Depth pyramid construction (4 levels)
-  - 6 orthogonal views per level
-  - Early-exit optimization for fast inference
-- **Implementation**: `src/models/collision/hmvp_collision_detector.py`
-
-#### 5. VLA Action Output (Parallel with SAM3)
+#### 4. VLA Action Output (Parallel with SAM3)
 - **Purpose**: Outputs position (heatmap), rotation, and scale for intelligent placement
 - **Architecture**: `<SEG>` token feeds two parallel branches:
   ```
@@ -147,7 +126,6 @@
   - Unified `predict()` returns all outputs in one call
 - **Implementation**:
   - `src/models/placement_model.py` (unified forward)
-  - `src/models/vla/unified_scale_vla.py` (SEGActionHead)
 
 ---
 
@@ -205,63 +183,6 @@ huggingface-cli download facebook/sam3 --local-dir models/sam3
 # Run sanity checks
 python -c "import torch; print(f'PyTorch: {torch.__version__}')"
 python -c "import transformers; print(f'Transformers: {transformers.__version__}')"
-```
-
----
-
-## Quick Start
-
-### Basic Inference
-
-```bash
-# Single placement prediction (uses defaults)
-python main.py predict \
-  --config configs/config.yaml \
-  --plane_image examples/room.png \
-  --object_image examples/chair.png \
-  --prompt "Place the chair near the dining table" \
-  --output results/ \
-  --threshold 0.5
-```
-
-**Note:** `--object_image` is used internally as part of the `images` list alongside the plane image. The model receives `[plane_image, object_image]` for multi-image reasoning.
-
-### Python API
-
-```python
-from src.models import SAMQPlacementModel
-from PIL import Image
-
-# Load model
-model = SAMQPlacementModel(
-    sam_checkpoint_path="./outputs/sam3_checkpoint_final.pt",
-    adapter_checkpoint_path="./outputs/adapter_checkpoint_final.pt",
-    qwen_model_name="./models/qwen3_vl",
-    qwen_lora_path="./outputs/lora_weights",
-    sam3_input_dim=256,
-    qwen_hidden_dim=4096,
-    adapter_hidden_dim=512,
-    device="cuda",
-    action_head_config={"heatmap_size": 64},
-)
-
-# Load all checkpoints
-model.load_all(eval_mode=True)
-
-# Predict
-room_img = Image.open("examples/room.png").convert("RGB")
-chair_img = Image.open("examples/chair.png").convert("RGB")
-
-output = model.predict(
-    plane_image=room_img,
-    text_prompt="Place the chair near the dining table",
-    images=[room_img, chair_img],
-    threshold=0.5,
-)
-
-# Results
-print(f"Scale: {output['scale_relative']}")
-print(f"Heatmap shape: {output['heatmap'].shape}")
 ```
 
 ---
@@ -333,26 +254,6 @@ After Stage 2:
 - `outputs/adapter_checkpoint_final.pt` — Final adapter weights
 - `outputs/sam3_checkpoint_best.pt` — Best SAM3 decoder weights (in original SAM3 format)
 - `outputs/sam3_checkpoint_final.pt` — Final SAM3 decoder weights
-
-### Monitoring
-
-Training outputs include per-epoch checkpoints, best validation loss checkpoint, and final checkpoint.
-
-### Training with H-MVP or Incremental Memory
-
-To enable H-MVP collision detection, edit `configs/config.yaml`:
-```yaml
-advanced:
-  hmvp:
-    enabled: true
-```
-
-To enable incremental H-MVP memory:
-```yaml
-advanced:
-  incremental_hmvp:
-    enabled: true
-```
 
 ---
 
@@ -434,59 +335,24 @@ loss:
 
 ---
 
-## Inference
-
-### Batch Inference
-
-```bash
-# Process multiple samples
-python main.py predict \
-  --config configs/config.yaml \
-  --plane_image examples/room.png \
-  --object_image examples/chair.png \
-  --prompt "Place the chair near the table" \
-  --output results/
-```
-
-### Output Format
-
-Inference results are saved as:
-- **Visualization**: PNG with overlayed heatmap and placement info
-- **JSON metadata**:
-  ```json
-  {
-    "scene_id": "scene_001",
-    "rotation_deg": 45.0,
-    "scale_relative": 1.2,
-    "heatmap_shape": [64, 64],
-    "best_candidate": 0
-  }
-  ```
-
----
-
 ## Project Structure
 
 ```
 SAM-Q/
 +-- configs/                     # Configuration files
-|   +-- config.yaml               # Configuration
-|   +-- stage1_qwen_lora.yaml               # Configuration for train stage 1
-|   +-- stage2_decoder.yaml               # Configuration for train stage 2
 |
 +-- src/
 |   +-- models/                  # Model architectures
 |   |   +-- encoders/           # Qwen3-VL encoder
 |   |   +-- loaders/           # SAM3 loader
 |   |   +-- adapters/           # Cross-modal adapters
-|   |   +-- collision/          # H-MVP + incremental memory
 |   |   +-- vla/                # VLA action output
-|   |   +-- sampling/           # Sampling strategies
 |   |   +-- placement_model.py  # Main model
 |   |
 |   +-- sam3/                    # SAM3 model
 |   +-- data/                    # Data pipeline
 |   +-- train/                   # Training framework
+|   +-- pretreatment/            # Generating training data
 |   +-- inference/               # Inference utilities
 |   +-- utils/                   # Utilities
 |
@@ -512,45 +378,8 @@ SAM-Q/
 | Metric | Baseline | SAM-Q (Ours) | Improvement |
 |--------|----------|--------------|-------------|
 | IoU | 0.62 | **0.78** | +25.8% |
-| Collision Rate | 18.5% | **6.2%** | -66.5% |
 | Semantic Alignment | 0.54 | **0.81** | +50.0% |
 | Inference Time (s) | 0.15 | **0.12** | -20.0% |
-
----
-
-## Advanced Usage
-
-### Custom Adapter Design
-
-```python
-from src.models.adapters import CrossModalAdapter
-
-# Create custom adapter
-adapter = CrossModalAdapter(
-    qwen_dim=4096,
-    sam3_dim=256,
-    num_queries=64,
-    hidden_dim=512,
-)
-```
-
-### H-MVP Collision Detection
-
-```python
-from src.models.collision import HMVPCollisionDetector
-
-detector = HMVPCollisionDetector(
-    max_level=4,
-    base_resolution=8,
-    early_out_threshold=0.1
-)
-
-collision_score = detector.check_collision(
-    scene_depths=scene_hmvp,
-    object_depths=obj_hmvp,
-    pose=predicted_pose
-)
-```
 
 ---
 
@@ -605,7 +434,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ## Contact
 
 - **Questions**: Open an issue on GitHub
-- **Email**: your.email@example.com
+- **Email**: 13610252512@139.com
 - **Project Page**: [Coming Soon]
 
 ---
