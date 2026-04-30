@@ -43,12 +43,14 @@ class SegFeatureExtractor:
 
         count = 0
         dataset = dataloader.dataset
+        # 如果是 Subset（测试模式），需要获取原始数据集以访问 annotations
+        original_dataset = dataset.dataset if hasattr(dataset, 'dataset') else dataset
         num_seg = self.config.get("model", {}).get("num_seg_tokens", 1)
 
         for idx in tqdm(range(len(dataset)), desc="提取 <SEG>", leave=False):
             sample = dataset[idx]
-            ann = dataset.annotations[idx]
-            sample_id = ann.get("id", ann.get("scene_id", f"{dataset.split}_{idx:06d}"))
+            ann = original_dataset.samples[idx]
+            sample_id = ann.get("sample_id", f"{idx:06d}")
 
             out_path = output_dir / f"{sample_id}.pt"
             if out_path.exists():

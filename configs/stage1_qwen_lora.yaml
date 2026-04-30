@@ -15,7 +15,7 @@ data:
   root_dir: "/mnt/f/data/"
   pin_memory: true
   num_workers: 4
-  max_samples: 500
+  max_samples: 50
 
 model:
   num_seg_tokens: 1
@@ -28,17 +28,17 @@ model:
 
     lora:
       enabled: true
-      r: 8
+      r: 16
       alpha: 128
       dropout: 0.05
       target_modules:
         - "q_proj"
         - "k_proj"
         - "v_proj"
-        # - "o_proj"
-        # - "gate_proj"
-        # - "up_proj"
-        # - "down_proj"
+        - "o_proj"
+        - "gate_proj"
+        - "up_proj"
+        - "down_proj"
       use_qlora: false  # Set true if VRAM < 12GB
       bias: "none"
 

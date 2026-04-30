@@ -10,7 +10,7 @@ import trimesh
 from typing import List, Tuple
 from scipy.spatial.transform import Rotation as R
 
-from .models import ObjectInfo
+from ..models import ObjectInfo
 
 
 class AugmentationProcessor:

@@ -6,5 +6,22 @@ SAM-Q Pretreatment 模块
 
 from .data_generator import TrainingDataGenerator
 from .models import ObjectInfo
+from .components import (
+    SceneBuilder,
+    Renderer,
+    HeatmapGenerator,
+    Augmentation,
+    SampleSaver,
+    VLMClient,
+)
 
-__all__ = ["TrainingDataGenerator", "ObjectInfo"]
+__all__ = [
+    "TrainingDataGenerator",
+    "ObjectInfo",
+    "SceneBuilder",
+    "Renderer",
+    "HeatmapGenerator",
+    "Augmentation",
+    "SampleSaver",
+    "VLMClient",
+]

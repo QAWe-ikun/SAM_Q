@@ -9,7 +9,7 @@ import numpy as np
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from .models import ObjectInfo
+from ..models import ObjectInfo
 from scipy.spatial.transform import Rotation as R
 
 

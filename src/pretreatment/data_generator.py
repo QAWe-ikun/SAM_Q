@@ -49,12 +49,12 @@ console_formatter = logging.Formatter("[%(levelname)s] %(message)s")
 console_handler.setFormatter(console_formatter)
 logger.addHandler(console_handler)
 
-from .vlm_client import VLMClient
-from .renderer import SceneRenderer
-from .sample_saver import SampleSaver
-from .scene_builder import SceneBuilder
-from .heatmap_generator import HeatmapGenerator
-from .augmentation import AugmentationProcessor
+from .components.vlm_client import VLMClient
+from .components.renderer import SceneRenderer
+from .components.sample_saver import SampleSaver
+from .components.scene_builder import SceneBuilder
+from .components.heatmap_generator import HeatmapGenerator
+from .components.augmentation import AugmentationProcessor
 
 
 class TrainingDataGenerator:
