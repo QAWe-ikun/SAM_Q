@@ -1,21 +1,10 @@
 # SAM-Q: Segment Anything meets Vision-Language Models for Intelligent Object Placement
 
 <p align="center">
-  <img src="assets/teaser.png" alt="SAM-Q Teaser" width="800"/>
-</p>
-
-<p align="center">
-  <strong>SIGGRAPH 2026 (Under Review)</strong>
-</p>
-
-<p align="center">
   <a href="#overview">Overview</a> •
   <a href="#architecture">Architecture</a> •
   <a href="#installation">Installation</a> •
-  <a href="#quick-start">Quick Start</a> •
   <a href="#training">Training</a> •
-  <a href="#inference">Inference</a> •
-  <a href="#dataset">Dataset</a> •
   <a href="#citation">Citation</a>
 </p>
 
