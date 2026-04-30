@@ -5,9 +5,9 @@ Evaluation Metrics for SAM-Q
 Provides metrics computation for object placement evaluation.
 """
 
-import torch
+import torch # type: ignore
 import numpy as np
-from typing import Dict, Any, Tuple
+from typing import Dict, Tuple
 
 
 def compute_iou(

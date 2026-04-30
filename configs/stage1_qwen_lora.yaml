@@ -14,6 +14,8 @@ experiment:
 data:
   root_dir: "/mnt/f/data/"
   pin_memory: true
+  num_workers: 4
+  max_samples: 500
 
 model:
   num_seg_tokens: 1

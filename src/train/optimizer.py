@@ -5,13 +5,12 @@ Optimizer and Scheduler Utilities
 Provides factory functions for creating optimizers and schedulers.
 """
 
-import torch
-from torch.optim import AdamW, SGD, Adam
-from torch.optim.lr_scheduler import (
+import torch # type: ignore
+from torch.optim import AdamW, SGD, Adam # type: ignore
+from torch.optim.lr_scheduler import ( # type: ignore
     CosineAnnealingLR,
     StepLR,
-    ExponentialLR,
-    LambdaLR,
+    ExponentialLR
 )
 from typing import Dict, Any, Optional
 

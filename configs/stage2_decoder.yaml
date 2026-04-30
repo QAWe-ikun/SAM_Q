@@ -13,11 +13,11 @@ experiment:
   description: "Stage 2: Train Adapter + SAM3 Decoder for heatmap + rotation + scale"
 
 data:
-  root_dir: "data/"
-  seg_feature_dir: "data/seg_features/"  # 预提取的 <SEG> hidden states
-  batch_size: 4
+  root_dir: "/mnt/f/data/"
+  seg_feature_dir: "/mnt/f/data/seg_features/"  # 预提取的 <SEG> hidden states
   num_workers: 4
   pin_memory: true
+  max_samples: 500
 
 model:
   num_seg_tokens: 1
@@ -77,5 +77,6 @@ training:
   save_split_weights: true  # ← Automatically save separate adapter/sam3 weights
   log_interval: 10
   val_interval: 1
+  batch_size: 2
   early_stopping: true
   patience: 20
