@@ -139,17 +139,21 @@ class WarmupScheduler:
         self.warmup_epochs = warmup_epochs
         self.warmup_start_lr = warmup_start_lr
         self.base_lrs = [group["lr"] for group in scheduler.optimizer.param_groups]
+        self.current_epoch = -1  # Track epoch manually
     
     def step(self, epoch: Optional[int] = None) -> None:
         """
         Step the scheduler.
-        
+
         Args:
             epoch: Current epoch (optional)
         """
         if epoch is None:
-            epoch = self.scheduler.last_epoch
-        
+            self.current_epoch += 1
+            epoch = self.current_epoch
+        else:
+            self.current_epoch = epoch
+
         if epoch < self.warmup_epochs:
             # Linear warmup
             alpha = (epoch + 1) / self.warmup_epochs
@@ -158,8 +162,8 @@ class WarmupScheduler:
             for param_group in self.scheduler.optimizer.param_groups:
                 param_group["lr"] = warmup_lr
         else:
-            # Follow base scheduler
-            self.scheduler.step(epoch - self.warmup_epochs)
+            # Follow base scheduler (do not pass epoch to avoid deprecation warning)
+            self.scheduler.step()
     
     def get_last_lr(self):
         """Get last computed learning rate."""

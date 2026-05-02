@@ -202,11 +202,11 @@ class SEGActionHead(nn.Module):
         else:
             filtered_state_dict = state_dict
 
-        missing, unexpected = self.load_state_dict(filtered_state_dict, strict=False)
+        _, unexpected = self.load_state_dict(filtered_state_dict, strict=False)
         
         if unexpected:
-            print(f"[SEGActionHead] Unexpected keys: {unexpected}")
+            print(f"<SEGActionHead> Unexpected keys: {unexpected}")
         
         self.to(device)
         self.eval()
-        print(f"[SEGActionHead] Loaded weights from {path}")
+        print(f"<SEGActionHead> Loaded weights from {path}")

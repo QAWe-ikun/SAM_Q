@@ -5,6 +5,8 @@ Stage 2 Trainer
 Custom epoch loop for Adapter + SAM3 Decoder training.
 """
 
+import os
+
 import torch # type: ignore
 from pathlib import Path
 import torch.nn.functional as F  # type: ignore
@@ -61,7 +63,6 @@ class Stage2Trainer:
         training_config = self.config.get("training", {})
         num_epochs = training_config.get("num_epochs", 100)
         val_interval = training_config.get("val_interval", 1)
-        log_interval = training_config.get("log_interval", 10)
 
         print(f"\n{'='*60}")
         print(f"Starting Stage 2 Training for {num_epochs} epochs")
@@ -72,7 +73,7 @@ class Stage2Trainer:
             self.current_epoch = epoch
 
             # Train
-            train_metrics = self._train_epoch(train_loader, log_interval)
+            train_metrics = self._train_epoch(train_loader)
 
             # Validate
             val_metrics = {}
@@ -109,7 +110,6 @@ class Stage2Trainer:
     def _train_epoch(
         self,
         dataloader: DataLoader,
-        log_interval: int = 10,
     ) -> Dict[str, float]:
         """Train for one epoch."""
         self.model.train()
@@ -127,7 +127,7 @@ class Stage2Trainer:
             leave=False,
         )
 
-        for batch_idx, batch in enumerate(progress_bar):
+        for _, batch in enumerate(progress_bar):
             batch_loss_tensor, batch_metrics = self._process_batch(batch, training=True)
 
             # Backward pass
@@ -145,12 +145,6 @@ class Stage2Trainer:
 
             progress_bar.set_postfix({"loss": f"{batch_metrics['total']:.4f}"})
 
-            if (batch_idx + 1) % log_interval == 0:
-                print(
-                    f"  Batch {batch_idx + 1}/{len(dataloader)} - "
-                    f"Loss: {batch_metrics['total']:.4f}"
-                )
-
         self.train_losses.append(total_loss / num_batches)
 
         return {
@@ -165,6 +159,8 @@ class Stage2Trainer:
     def validate(self, dataloader: DataLoader) -> Dict[str, float]:
         """Validation loop."""
         self.model.eval()
+        os.makedirs("debug/vis", exist_ok=True)
+        vis_count = 0
 
         total_loss = 0.0
         total_bce_loss = 0.0
@@ -195,6 +191,11 @@ class Stage2Trainer:
                 metrics = self._compute_iou_metrics(output, batch)
                 for key in all_metrics:
                     all_metrics[key] += metrics[key]
+                
+                # 可视化前 5 个 batch
+                if vis_count < 5:
+                    self._visualize_batch(batch, output, vis_count)
+                    vis_count += 1
 
         self.val_losses.append(total_loss / num_batches)
 
@@ -316,3 +317,41 @@ class Stage2Trainer:
                 return True
 
         return False
+
+    def _visualize_batch(self, batch, output, batch_idx):
+        """Save visualization of predicted and GT heatmaps."""
+        import cv2 # type: ignore
+        import numpy as np
+        
+        pred_mask = torch.sigmoid(output["heatmap"])
+        gt_mask = batch["masks"]
+        
+        # Resize pred to GT size if needed
+        if pred_mask.shape[-2:] != gt_mask.shape[-2:]:
+            pred_mask = F.interpolate(pred_mask, size=gt_mask.shape[-2:], mode="bilinear", align_corners=False)
+        
+        # Get first sample in batch
+        pred = pred_mask[0, 0].cpu().float().numpy()
+        gt = gt_mask[0, 0].cpu().numpy()  # [B, 1, H, W] -> [H, W]
+        plane_img = batch["plane_images"][0].cpu().numpy().transpose(1, 2, 0)
+        
+        # Normalize plane image to [0, 255]
+        plane_img = np.clip(plane_img * 255, 0, 255).astype(np.uint8)
+        
+        # Convert heatmaps to colored images
+        pred_colored = cv2.applyColorMap((pred * 255).astype(np.uint8), cv2.COLORMAP_JET)
+        gt_colored = cv2.applyColorMap((gt * 255).astype(np.uint8), cv2.COLORMAP_JET)
+        
+        # Resize heatmaps to match plane image size
+        h, w = plane_img.shape[:2]
+        pred_colored = cv2.resize(pred_colored, (w, h))
+        gt_colored = cv2.resize(gt_colored, (w, h))
+        
+        # Overlay on plane image
+        overlay_pred = cv2.addWeighted(plane_img, 0.7, pred_colored, 0.3, 0)
+        overlay_gt = cv2.addWeighted(plane_img, 0.7, gt_colored, 0.3, 0)
+        
+        # Save
+        out_path = f"debug/vis/val_batch{batch_idx:02d}.png"
+        combined = np.hstack([overlay_pred, overlay_gt])
+        cv2.imwrite(out_path, cv2.cvtColor(combined, cv2.COLOR_RGB2BGR))

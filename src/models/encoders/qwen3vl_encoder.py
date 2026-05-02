@@ -7,7 +7,7 @@ enabling multimodal input (object image + text prompt).
 Supports three modes:
   - Encoding mode: standard forward pass, returns full sequence hidden states
   - SEG token mode (single): generates/forces a <SEG> token, returns its hidden state
-  - Multi-SEG token mode (SA2VA-style): generates/forces multiple [SEG0]~[SEG63] tokens
+  - Multi-SEG token mode (SA2VA-style): generates/forces multiple <SEG0>~<SEG63> tokens
   - Fine-tuning mode: LoRA/QLoRA enabled, returns logits + hidden states for joint training
 """
 
@@ -26,7 +26,7 @@ class Qwen3VLEncoder(nn.Module):
 
     Features:
         - Single <SEG> token mode (backward compatible)
-        - Multi [SEG0]~[SEG63] token mode (SA2VA-style)
+        - Multi <SEG0>~<SEG63> token mode (SA2VA-style)
         - LoRA/QLoRA fine-tuning support
         - Training/inference mode switching
     """
@@ -54,7 +54,7 @@ class Qwen3VLEncoder(nn.Module):
 
         # <SEG> token IDs (set after model loading)
         self.seg_token_id: Optional[int] = None  # Single <SEG> (backward compatible)
-        self.seg_token_ids: List[int] = []       # Multi [SEG0]~[SEG63]
+        self.seg_token_ids: List[int] = []       # Multi <SEG0>~<SEG63>
 
         # Fine-tuning state
         self.training_mode: bool = False
@@ -95,14 +95,15 @@ class Qwen3VLEncoder(nn.Module):
 
             # Register <SEG> token(s) for SA2VA-style bridging
             # num_seg_tokens=1 → registers <SEG> (single mode)
-            # num_seg_tokens>1 → registers [SEG0]~[SEG{n-1}] (multi mode)
+            # num_seg_tokens>1 → registers <SEG0>~<SEG{n-1}> (multi mode)
             if self.num_seg_tokens == 1:
                 seg_tokens = ["<SEG>"]
             else:
-                seg_tokens = [f"[SEG{i}]" for i in range(self.num_seg_tokens)]
+                seg_tokens = [f"<SEG{i}>" for i in range(self.num_seg_tokens)]
 
             # Register SEG tokens only
-            self.processor.tokenizer.add_tokens(seg_tokens)
+            # Use add_special_tokens to ensure <SEG> is treated as a single atomic unit
+            self.processor.tokenizer.add_special_tokens({"additional_special_tokens": seg_tokens})
             self.model.resize_token_embeddings(len(self.processor.tokenizer))
 
             self.seg_token_ids = [
@@ -113,6 +114,23 @@ class Qwen3VLEncoder(nn.Module):
             # For VLA: <SEG> serves dual purpose (segmentation + action)
             # Use seg_token_id as the action token ID
             self.exec_token_id = self.seg_token_id
+            
+            with torch.no_grad():
+                for new_id in self.seg_token_ids:
+
+                    # Qwen3-VL uses </think> as EOS token
+                    eos_token = self.processor.tokenizer.eos_token
+                    if eos_token is None:
+                        eos_token = '</think>'
+                    ref_id = self.processor.tokenizer.convert_tokens_to_ids(eos_token)
+
+                    # output embedding
+                    self.model.get_input_embeddings().weight[new_id] = \
+                        self.model.get_input_embeddings().weight[ref_id].clone()
+
+                    # output lm_head
+                    if hasattr(self.model, 'lm_head'):
+                        self.model.lm_head.weight[new_id] = self.model.lm_head.weight[ref_id].clone()
 
             # Default to eval mode (training mode is enabled by enable_finetuning)
             self.model.eval()
@@ -169,15 +187,13 @@ class Qwen3VLEncoder(nn.Module):
 
         # Default target modules (attention + MLP)
         if target_modules is None:
-            target_modules = [
-                "q_proj", "v_proj", "k_proj", "o_proj",  # Attention
-                "gate_proj", "up_proj", "down_proj",      # MLP
-            ]
+            raise ValueError("No target modules")
 
         lora_config = LoraConfig(
             r=lora_r,
             lora_alpha=lora_alpha,
             target_modules=target_modules,
+            trainable_token_indices=[self.seg_token_id],  # 只训练 <SEG> 这一行，避免 modules_to_save 破坏 tied weights
             lora_dropout=lora_dropout,
             bias=lora_bias,
             task_type="CAUSAL_LM",
@@ -478,7 +494,7 @@ class Qwen3VLEncoder(nn.Module):
         num_seg: int,
     ) -> Tuple[torch.Tensor, bool]:
         """
-        Append multiple [SEG0]~[SEG{n-1}] tokens and extract their hidden states.
+        Append multiple <SEG0>~<SEG{n-1}> tokens and extract their hidden states.
 
         Returns:
             seg_hidden_states: [B, num_seg, hidden_dim]
@@ -487,7 +503,7 @@ class Qwen3VLEncoder(nn.Module):
         input_ids = inputs["input_ids"]
         batch_size = input_ids.size(0)
 
-        # Create SEG token IDs: [SEG0], [SEG1], ..., [SEG{num_seg-1}]
+        # Create SEG token IDs: <SEG0>, <SEG1>, ..., <SEG{num_seg-1}>
         seg_ids_to_append = self.seg_token_ids[:num_seg]
         seg_tensor = torch.tensor(
             seg_ids_to_append,

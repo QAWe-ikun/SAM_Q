@@ -268,7 +268,7 @@ class Trainer:
         stage1 = Stage1Trainer(self.model, self.config, self.output_dir, self.device)
 
         # Train
-        stage1.train(train_loader)
+        stage1.train(train_loader, val_loader)
 
         # Validate
         if val_loader is not None:

@@ -15,7 +15,7 @@ data:
   root_dir: "/mnt/f/data/"
   pin_memory: true
   num_workers: 4
-  max_samples: 50
+  max_samples: 500
 
 model:
   num_seg_tokens: 1
@@ -24,7 +24,7 @@ model:
     model_name: "./models/qwen3_vl"
     hidden_dim: 4096
     freeze: false  # ← Enable LoRA training
-    attn_implementation: "flash_attention_2"
+    attn_implementation: "eager"
 
     lora:
       enabled: true
@@ -36,9 +36,9 @@ model:
         - "k_proj"
         - "v_proj"
         - "o_proj"
-        - "gate_proj"
-        - "up_proj"
-        - "down_proj"
+        # - "gate_proj"
+        # - "up_proj"
+        # - "down_proj"
       use_qlora: false  # Set true if VRAM < 12GB
       bias: "none"
 
@@ -65,13 +65,13 @@ training:
   num_epochs: 3  # 2-5 epochs typically sufficient
   device: "cuda"
   save_dir: "/mnt/f/outputs/stage1_lora/"
-  save_best: false
+  save_best: true
   save_epoch: false  # Set true to save at save_interval epochs
   save_interval: 100  # Save every N steps (when save_epoch=true)
   save_total_limit: 3
   log_interval: 10
   early_stopping: false
-  gradient_accumulation_steps: 8  # Effective batch size = batch_size * gradient_accumulation_steps
+  gradient_accumulation_steps: 1  # Effective batch size = batch_size * gradient_accumulation_steps
   batch_size: 2  # per_device_train_batch_size for SFTTrainer
   fp16: false  # Set true for older GPUs (may cause NaN gradients)
   bf16: true   # Recommended for RTX 30/40 series or newer

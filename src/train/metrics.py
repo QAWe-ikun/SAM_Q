@@ -27,8 +27,8 @@ def compute_iou(
         IoU score
     """
     pred_binary = (pred_mask > threshold).float()
-    target_binary = (target_mask > 0.5).float()
-    
+    target_binary = (target_mask.to(pred_mask.device) > 0.5).float()
+
     intersection = (pred_binary * target_binary).sum()
     union = pred_binary.sum() + target_binary.sum() - intersection
     
@@ -55,8 +55,8 @@ def compute_precision_at_k(
         Precision score
     """
     pred_binary = (pred_mask > k).float()
-    target_binary = (target_mask > 0.5).float()
-    
+    target_binary = (target_mask.to(pred_mask.device) > 0.5).float()
+
     true_positives = (pred_binary * target_binary).sum()
     predicted_positives = pred_binary.sum()
     
@@ -83,8 +83,8 @@ def compute_recall_at_k(
         Recall score
     """
     pred_binary = (pred_mask > k).float()
-    target_binary = (target_mask > 0.5).float()
-    
+    target_binary = (target_mask.to(pred_mask.device) > 0.5).float()
+
     true_positives = (pred_binary * target_binary).sum()
     actual_positives = target_binary.sum()
     

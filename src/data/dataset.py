@@ -128,11 +128,17 @@ class ObjectPlacementDataset(Dataset):
         # Pre-extracted <SEG> hidden state (for Stage 2)
         seg_hidden = None
         if self.seg_feature_dir is not None:
-            sample_id = ann.get("sample_id", None)
+            sample_id = ann.get("sample_id")
+            if sample_id is None:
+                sample_id = ann.get("id", f"sample_{idx:06d}")
             seg_path = self.seg_feature_dir / f"{sample_id}.pt"
-            if seg_path.exists():
-                seg_data = torch.load(seg_path, map_location="cpu", weights_only=True)
-                seg_hidden = seg_data["seg_hidden"]  # [hidden_dim]
+            if not seg_path.exists():
+                raise FileNotFoundError(
+                    f"Stage 2 requires seg_feature but file not found: {seg_path}\n"
+                    f"sample_id: {sample_id}, split: {self.split}, index: {idx}"
+                )
+            seg_data = torch.load(seg_path, map_location="cpu", weights_only=True)
+            seg_hidden = seg_data["seg_hidden"]  # [hidden_dim]
 
         return {
             "plane_image": plane_tensor,              # [3, H, W] for SAM3

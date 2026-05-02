@@ -78,7 +78,7 @@
 - **Output**: 4096-dimensional token embeddings
 - **<SEG> Token Support**:
   - Single `<SEG>` mode: one token for single placement prediction
-  - Multi `[SEG0]`~`[SEG63]` mode: SA2VA-style for multiple placements or complex spatial reasoning
+  - Multi `<SEG0>`~`<SEG63>` mode: SA2VA-style for multiple placements or complex spatial reasoning
   - Hidden states are **not fixed vectors** — they are dynamically computed via self-attention over the full image + text context
 - **LoRA/QLoRA Fine-Tuning**:
   - Target modules: `q_proj`, `k_proj`, `v_proj`, `o_proj` (attention) + `gate_proj`, `up_proj`, `down_proj` (MLP)

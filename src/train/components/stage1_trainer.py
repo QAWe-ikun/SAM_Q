@@ -29,13 +29,13 @@ class Stage1Trainer:
         self.output_dir = output_dir
         self.device = device
 
-    def train(self, dataloader: DataLoader) -> Dict[str, float]:
+    def train(self, dataloader: DataLoader, val_dataloader: Optional[DataLoader] = None) -> Dict[str, float]:
         """
         Train Stage 1 using SFTTrainer.
         """
         try:
             from trl import SFTTrainer  # type: ignore
-            from transformers import TrainingArguments  # type: ignore
+            from transformers import TrainingArguments, TrainerCallback  # type: ignore
         except ImportError:
             raise ImportError("Please install trl: pip install trl>=0.8.0")
 
@@ -43,7 +43,6 @@ class Stage1Trainer:
         lora_cfg = self.config.get("model", {}).get("qwen", {}).get("lora", {})
 
         # Ensure model is loaded with LoRA
-        self.model.qwen_encoder.load_model(use_cache=False)
         if not self.model.qwen_encoder.training_mode:
             self.model.qwen_encoder.enable_finetuning(
                 lora_r=lora_cfg.get("r", 64),
@@ -66,6 +65,35 @@ class Stage1Trainer:
         use_bf16 = self.config.get("training", {}).get("bf16", False)
         use_fp16 = self.config.get("training", {}).get("fp16", True)
 
+        save_best = training_config.get("save_best", False)
+        save_epoch = training_config.get("save_epoch", False)
+        save_interval = training_config.get("save_interval", 100)
+        save_total_limit = training_config.get("save_total_limit", 3)
+
+        if save_best:
+            save_strategy = "steps"
+            save_steps = log_steps
+            load_best_model_at_end = True
+            metric_for_best_model = "loss"
+            greater_is_better = False
+            eval_strategy = "steps"
+            eval_steps = log_steps
+        elif save_epoch:
+            save_strategy = "steps"
+            steps_per_epoch = len(dataloader) // grad_accum
+            save_steps = steps_per_epoch * save_interval
+            load_best_model_at_end = False
+            metric_for_best_model = None
+            greater_is_better = None
+        else:
+            save_strategy = "no"
+            save_steps = None
+            load_best_model_at_end = False
+            metric_for_best_model = None
+            greater_is_better = None
+            eval_strategy = None
+            eval_steps = None
+
         sft_config = TrainingArguments(
             output_dir=str(self.output_dir),
             num_train_epochs=num_epochs,
@@ -76,7 +104,15 @@ class Stage1Trainer:
             fp16=use_fp16,
             bf16=use_bf16,
             logging_steps=log_steps,
-            save_strategy="no",
+            save_strategy=save_strategy,
+            save_steps=save_steps if save_strategy != "no" else None,
+            save_total_limit=save_total_limit,
+            save_safetensors=True,
+            load_best_model_at_end=load_best_model_at_end,
+            metric_for_best_model=metric_for_best_model,
+            greater_is_better=greater_is_better,
+            eval_strategy=eval_strategy if save_best else None,
+            eval_steps=eval_steps if save_best else None,
             report_to="none",
             warmup_steps=warmup_steps,
             lr_scheduler_type="cosine",
@@ -90,12 +126,81 @@ class Stage1Trainer:
         def qwen_data_collator(examples):
             return self._build_qwen_batch(examples, tokenizer)
 
+        # 每 logging_steps 用数据集第一条数据检查 <SEG> / eos logit
+        first_sample = dataloader.dataset[0]
+        first_text_prompt = first_sample.get("text_prompt", "")
+        first_images = first_sample.get("images", [])
+
+        class TieWeightSyncCallback(TrainerCallback):
+            """每步优化后同步 embed[<SEG>] 到 lm_head[<SEG>]，防止 tied weights 被 PEFT 破坏。"""
+            def __init__(self, model, seg_id):
+                self.model = model
+                self.seg_id = seg_id
+
+            def on_step_end(self, _args, state, control, **_kwargs):
+                emb = self.model.get_input_embeddings().weight
+                lm = self.model.get_output_embeddings().weight
+                if emb.data_ptr() != lm.data_ptr():
+                    with torch.no_grad():
+                        lm[self.seg_id].copy_(emb[self.seg_id])
+                return control
+
+        class LogitCallback(TrainerCallback):
+            def __init__(self, model, encoder, text_prompt, images, device):
+                self.model = model
+                self.encoder = encoder
+                self.text_prompt = text_prompt
+                self.images = images
+                self.device = device
+                self._seg_id = None
+                self._eos_id = None
+                self._test_inputs = None
+                self._img_list = None
+
+            def _setup(self):
+                if self._seg_id is not None:
+                    return
+                tokenizer = self.encoder.processor.tokenizer
+                self._seg_id = tokenizer.convert_tokens_to_ids('<SEG>')
+                self._eos_id = tokenizer.eos_token_id
+                messages, img_list = self.encoder._build_message(
+                    text_prompt=self.text_prompt,
+                    images=self.images,
+                )
+                test_text = self.encoder.processor.apply_chat_template(
+                    messages, tokenize=False, add_generation_prompt=True
+                )
+                self._img_list = img_list if img_list else None
+                self._test_inputs = self.encoder.processor(
+                    text=[test_text],
+                    images=self._img_list,
+                    return_tensors="pt",
+                ).to(self.device)
+
+            def on_log(self, _args, _state, control, logs=None, **_kwargs):
+                if logs is None:
+                    return control
+                self._setup()
+                with torch.no_grad():
+                    outputs = self.model(**self._test_inputs)
+                last_logits = outputs.logits[0, -1]
+                logs["seg_logit"] = last_logits[self._seg_id].item()
+                logs["eos_logit"] = last_logits[self._eos_id].item()
+                return control
+
+        seg_id = tokenizer.convert_tokens_to_ids('<SEG>')
+
         # Initialize SFTTrainer
         trainer = SFTTrainer(
             model=qwen_model,
             train_dataset=dataloader.dataset,
             data_collator=qwen_data_collator,
             args=sft_config,
+            eval_dataset=val_dataloader.dataset if val_dataloader is not None else None,
+            callbacks=[
+                TieWeightSyncCallback(qwen_model, seg_id),
+                LogitCallback(qwen_model, self.model.qwen_encoder, first_text_prompt, first_images, self.device),
+            ],
         )
 
         print(f"\n{'='*60}")
@@ -108,6 +213,11 @@ class Stage1Trainer:
         print(f"{'='*60}\n")
 
         train_result = trainer.train()
+
+        # If save_best, load best model checkpoint before saving
+        if save_best and trainer.state.best_model_checkpoint is not None:
+            print(f"Loading best model from {trainer.state.best_model_checkpoint}")
+            qwen_model.load_adapter(trainer.state.best_model_checkpoint)
 
         # Save LoRA weights
         lora_output_dir = self.output_dir / "lora_weights"
@@ -124,6 +234,25 @@ class Stage1Trainer:
         texts = []
         images = []
 
+        system_prompt = (
+            "你是3D室内物体摆放助手。用户会提供：\n"
+            "1. 场景平面参考图\n"
+            "2. 目标物体的参考图\n"
+            "3. 摆放指令\n\n"
+            "请根据场景中的环境布局（墙壁、现有家具位置与朝向），"
+            "推断目标物体应放置的位置、旋转角度和缩放比例。\n\n"
+            "坐标系：上方=前，下方=后，左方=左，右方=右。\n"
+            "旋转绕Y轴：正角度=顺时针（向右转），负角度=逆时针（向左转）。\n\n"
+            "【输出格式】\n"
+            "好的，我会将[物体]摆放在[具体位置]。"
+            "物体在参考图中朝[前/后/左/右]，在场景中需要朝[前/后/左/右]摆放，且大小[偏大/偏小/正常]。"
+            "所以要绕Y轴旋转[角度]°，缩放[比例]倍。"
+            "综上所述，我会把物体放在<SEG>\n\n"
+            "【要求】\n"
+            "1. 句末必须包含<SEG>\n"
+            "2. 不要添加任何与摆放无关的内容"
+        )
+
         for ex in examples:
             text_prompt = ex.get("text_prompt", "")
             response = ex.get("response", "好的，我将为您放置物体。<SEG>")
@@ -132,6 +261,9 @@ class Stage1Trainer:
                 text_prompt=text_prompt,
                 images=ex.get("images", []),
             )
+            messages = [
+                {"role": "system", "content": [{"type": "text", "text": system_prompt}]}
+            ] + messages
             messages.append({"role": "assistant", "content": [{"type": "text", "text": response}]})
 
             text = self.model.qwen_encoder.processor.apply_chat_template(
@@ -164,11 +296,43 @@ class Stage1Trainer:
 
     def validate(self, dataloader: DataLoader) -> Dict[str, float]:
         """Stage 1 validation with loss computation and sample generation."""
-        self.model.qwen_encoder.load_model()
         self.model.eval()
 
         tokenizer = self.model.qwen_encoder.processor.tokenizer
         qwen_model = self.model.qwen_encoder.model
+
+        # ===== 诊断代码：检查 LoRA 权重加载是否正确 =====
+        print("=" * 60)
+        seg_id = tokenizer.convert_tokens_to_ids('<SEG>')
+        eos_id = tokenizer.eos_token_id
+
+        # 1. 检查 embed_tokens 和 lm_head 是否共享同一块内存
+        emb = qwen_model.get_input_embeddings().weight
+        lm_head = qwen_model.get_output_embeddings().weight if hasattr(qwen_model, 'get_output_embeddings') else None
+        tied = lm_head is not None and emb.data_ptr() == lm_head.data_ptr()
+        print(f"1. embed_tokens == lm_head (tied): {tied}")
+        if not tied:
+            print("   ⚠️  embed 和 lm_head 未共享，强制同步 <SEG> 权重")
+            lm_head[seg_id] = emb[seg_id].clone()
+
+        # 2. 检查 tokenizer 词表
+        print(f"2. <SEG> token id: {seg_id}, vocab size: {len(tokenizer)}")
+
+        # 3. 检查 lm_head 中 <SEG> vs eos 的 norm
+        if lm_head is not None:
+            seg_norm = lm_head[seg_id].norm().item()
+            eos_norm = lm_head[eos_id].norm().item()
+            print(f"3. lm_head[<SEG>] norm: {seg_norm:.4f}, lm_head[eos] norm: {eos_norm:.4f}, diff: {abs(seg_norm - eos_norm):.4f}")
+            if abs(seg_norm - eos_norm) < 1e-4:
+                print("   ⚠️  <SEG> 和 eos 权重几乎一样，训练可能没生效")
+            else:
+                print("   ✅  <SEG> 权重已改变，训练有效")
+
+        # 4. 检查生成参数
+        print(f"5. model.config.eos_token_id: {qwen_model.config.eos_token_id}")
+        print(f"   tokenizer.eos_token: {tokenizer.eos_token}")
+        print("=" * 60)
+        # ===== 诊断结束 =====
 
         total_loss = 0.0
         num_batches = 0

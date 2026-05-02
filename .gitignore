@@ -35,3 +35,6 @@ data/
 
 # Log files 
 logs/
+
+# Debug
+debug/

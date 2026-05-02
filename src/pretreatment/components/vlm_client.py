@@ -327,14 +327,19 @@ class VLMClient:
 
     def generate_responses_batch(
         self,
+        original_images: List[np.ndarray],
+        object_images: List[np.ndarray],
         text_prompts: List[str],
         rotation_6d_list: List[List[float]],
         scale_list: List[float],
     ) -> List[str]:
         """
-        批量生成回复。
+        批量生成回复（多模态）。
 
         Args:
+            original_images: 原始房间图列表
+            plane_images: 平面图列表
+            object_images: 物体参考图列表
             text_prompts: 放置指令列表
             rotation_6d_list: 6D 旋转表示列表
             scale_list: 缩放比例列表
@@ -344,43 +349,103 @@ class VLMClient:
         """
         if self.use_vllm:
             return self._vllm_generate_responses_batch(
+                original_images, object_images,
                 text_prompts, rotation_6d_list, scale_list
             )
         else:
             results = []
-            for text_prompt, rotation_6d, scale in zip(
-                text_prompts, rotation_6d_list, scale_list
-            ):
+            for i in range(len(text_prompts)):
                 result = self._transformers_generate_response(
-                    text_prompt, rotation_6d, scale
+                    original_images[i], object_images[i],
+                    text_prompts[i], rotation_6d_list[i], scale_list[i]
                 )
                 results.append(result)
             return results
 
     def _vllm_generate_responses_batch(
         self,
+        original_images: List[np.ndarray],
+        object_images: List[np.ndarray],
         text_prompts: List[str],
         rotation_6d_list: List[List[float]],
         scale_list: List[float],
     ) -> List[str]:
-        """vLLM 批量生成回复"""
+        """vLLM 批量生成回复（多模态）"""
         from vllm import SamplingParams  # type: ignore
 
-        prompts = []
-        for text_prompt, rotation_6d, scale in zip(
-            text_prompts, rotation_6d_list, scale_list
-        ):
-            rot_y_deg = self.extract_rotation_y(rotation_6d)
-            prompt = (
-                f"你是一个物体放置助手。用户给出了放置指令，"
-                f"\n指令：{text_prompt}"
-                f"\n旋转角度：{rot_y_deg:.1f}°（绕Y轴）"
-                f"\n缩放比例：{scale:.2f}"
-                f"\n要求：必须以'好的，我会将[物体]摆放在[位置]'开头，"
-                f"简要说明旋转角度和缩放比例，句末加上<SEG>。"
-                f"不要添加额外的奖励、感谢等无关内容。"
+        # 构建多模态输入列表
+        vllm_inputs = []
+        for i in range(len(text_prompts)):
+            rot_y_deg = self.extract_rotation_y(rotation_6d_list[i])
+            
+            # 使用 processor 的 apply_chat_template 生成正确格式的 prompt
+            messages = [
+                {
+                    "role": "system",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": (
+                                "你是3D物体摆放助手。两张输入图都是俯视图（从上方垂直向下看），"
+                                "方向统一按图中视角定义：上方=前，下方=后，左方=左，右方=右。\n\n"
+                                "【观察步骤】\n"
+                                "1. 看物体参考图（第二张）：判断物体正面当前朝哪个方向（前/后/左/右）\n"
+                                "2. 看原始平面图（第一张）：结合指令判断目标摆放方向（前/后/左/右）\n"
+                                "3. 旋转只绕垂直轴(Y轴)，正角度=顺时针(向右转)，负角度=逆时针(向左转)\n\n"
+                                "【回复格式】\n"
+                                "'好的，我会将[物体]摆放在[具体位置]。'\n"
+                                "'物体在参考图中朝[前/后/左/右]，在场景中需要朝[前/后/左/右]摆放，且参考大小[偏大/偏小/正常]'\n"
+                                "'所以要绕Y轴旋转[角度]°，缩放[比例]倍。'\n"
+                                "'综上所述，我会把物体放在<SEG>'\n\n"
+                                "【重要】句末必须包含<SEG>，不要添加任何其他内容。"
+                                "【方向转换表】物体默认朝前时：\n"
+                                "- 目标朝前 → 0°\n"
+                                "- 目标朝后 → 180° 或 -180°\n"
+                                "- 目标朝右 → +90°（顺时针）\n" 
+                                "- 目标朝左 → -90°（逆时针）\n"
+                                "【缩放转换表】"
+                                " 物体参考大小偏大时，要缩小，缩放比例小于1\n"
+                                " 物体参考大小偏小时，要放大，缩放比例大于1\n"
+                                " 物体参考大小正常时，缩放比例约等于1\n"
+                                "如果物体当前不是朝前，请先计算当前方向与目标方向的差值，再查表。\n"
+                                "严禁使用'上/下'描述水平朝向，必须用'前/后/左/右'。"
+                            )
+                        }
+                    ]
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "image", "image": original_images[i]},      # 平面图
+                        {"type": "image", "image": object_images[i]},      # 物体参考图
+                        {
+                            "type": "text",
+                            "text": (
+                                f"原始平面图<image>，物体参考图<image>\n"
+                                f"放置指令：{text_prompts[i]}\n"
+                                f"已计算好的精确变换：绕Y轴旋转 {rot_y_deg:.1f}°，缩放 {scale_list[i]:.2f} 倍\n"
+                                f"请根据两张俯视图判断物体的当前朝向和目标朝向，"
+                                f"并用上述精确参数生成回复。"
+                            )
+                        }
+                    ]
+                }
+            ]
+
+            text_prompt = self._processor.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True
             )
-            prompts.append(prompt)
+
+            vllm_input = {
+                "prompt": text_prompt,
+                "multi_modal_data": {
+                    "image": [
+                        Image.fromarray(original_images[i]),
+                        Image.fromarray(object_images[i]),
+                    ]
+                },
+            }
+            vllm_inputs.append(vllm_input)
 
         sampling_params = SamplingParams(
             temperature=0.3,
@@ -389,7 +454,7 @@ class VLMClient:
             stop=["<SEG>"],
         )
 
-        outputs = self._vllm_engine.generate(prompts, sampling_params, use_tqdm=False)
+        outputs = self._vllm_engine.generate(vllm_inputs, sampling_params, use_tqdm=False)
         results = [out.outputs[0].text.strip() for out in outputs]
 
         # 确保 <SEG> 结尾
@@ -401,39 +466,78 @@ class VLMClient:
 
     def _transformers_generate_response(
         self,
+        original_image: np.ndarray,
+        object_image: np.ndarray,
         text_prompt: str,
         rotation_6d: List[float],
         scale: float,
     ) -> str:
-        """transformers 生成回复"""
+        """transformers 生成回复（多模态）"""
         rot_y_deg = self.extract_rotation_y(rotation_6d)
 
         messages = [
             {
-                "role": "user",
+                "role": "system",
                 "content": [
                     {
                         "type": "text",
                         "text": (
-                            f"你是一个物体放置助手。用户给出了放置指令，"
-                            f"请你用礼貌的语气回复，并在末尾加上<SEG>标记。"
-                            f"\n指令：{text_prompt}"
-                            f"\n旋转角度：{rot_y_deg:.1f}°（绕Y轴）"
-                            f"\n缩放比例：{scale:.2f}"
-                            f"\n请用'好的，我会...'开头回复，说明放置位置、"
-                            f"旋转角度和缩放比例，并在句末加上<SEG>。"
+                            "你是3D物体摆放助手。两张输入图都是俯视图（从上方垂直向下看），"
+                            "方向统一按图中视角定义：上方=前，下方=后，左方=左，右方=右。\n\n"
+                            "【观察步骤】\n"
+                            "1. 看物体参考图（第二张）：判断物体正面当前朝哪个方向（前/后/左/右）\n"
+                            "2. 看原始平面图（第一张）：结合指令判断目标摆放方向（前/后/左/右）\n"
+                            "3. 旋转只绕垂直轴(Y轴)，正角度=顺时针(向右转)，负角度=逆时针(向左转)\n\n"
+                            "【回复格式】\n"
+                            "'好的，我会将[物体]摆放在[具体位置]。'\n"
+                            "'物体在参考图中朝[前/后/左/右]，在场景中需要朝[前/后/左/右]摆放，且参考大小[偏大/偏小/正常]'\n"
+                            "'所以要绕Y轴旋转[角度]°，缩放[比例]倍。'\n"
+                            "'综上所述，我会把物体放在<SEG>'\n\n"
+                            "【重要】句末必须包含<SEG>，不要添加任何其他内容。"
+                            "【方向转换表】物体默认朝前时：\n"
+                            "- 目标朝前 → 0°\n"
+                            "- 目标朝后 → 180° 或 -180°\n"
+                            "- 目标朝右 → +90°（顺时针）\n" 
+                            "- 目标朝左 → -90°（逆时针）\n"
+                            "【缩放转换表】"
+                            " 物体参考大小偏大时，要缩小，缩放比例小于1\n"
+                            " 物体参考大小偏小时，要放大，缩放比例大于1\n"
+                            " 物体参考大小正常时，缩放比例约等于1\n"
+                            "如果物体当前不是朝前，请先计算当前方向与目标方向的差值，再查表。\n"
+                            "严禁使用'上/下'描述水平朝向，必须用'前/后/左/右'。"
+                        )
+                    }
+                ]
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image", "image": original_image},      # 平面图
+                    {"type": "image", "image": object_image},      # 物体参考图
+                    {
+                        "type": "text",
+                        "text": (
+                            f"原始平面图<image>，物体参考图<image>\n"
+                            f"放置指令：{text_prompt}\n"
+                            f"已计算好的精确变换：绕Y轴旋转 {rot_y_deg:.1f}°，缩放 {scale:.2f} 倍\n"
+                            f"请根据两张俯视图判断物体的当前朝向和目标朝向，"
+                            f"并用上述精确参数生成回复。"
                         )
                     }
                 ]
             }
         ]
-
+        
         text = self._processor.apply_chat_template(
             messages, tokenize=False, add_generation_prompt=True
         )
 
         inputs = self._processor(
             text=[text],
+            images=[
+                Image.fromarray(original_image),
+                Image.fromarray(object_image),
+            ],
             return_tensors="pt",
         ).to(self._model.device)
 

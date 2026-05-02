@@ -50,8 +50,8 @@ model:
 
 loss:
   type: "placement"
-  dice_weight: 1.0
-  bce_weight: 1.0
+  dice_weight: 1.2
+  bce_weight: 0.5
   rotation_weight: 0.5
   scale_weight: 0.5
 
@@ -71,12 +71,11 @@ training:
   num_epochs: 50
   device: "cuda"
   save_dir: "/mnt/f/outputs/stage2_full/"
-  save_best: true
+  save_best: false
   save_epoch: false  # Set true to save at save_interval epochs
   save_interval: 10  # Save every N epochs (when save_epoch=true)
   save_split_weights: true  # ← Automatically save separate adapter/sam3 weights
-  log_interval: 10
   val_interval: 1
   batch_size: 2
-  early_stopping: true
+  early_stopping: false
   patience: 20

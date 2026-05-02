@@ -450,16 +450,22 @@ class TrainingDataGenerator:
                         if placement_descs[i] is None:
                             logger.warning(f"skip desc{i}")
                             continue
+                        
+                        base_prompt = sample['text_prompt'].split("两者的尺寸相同", 1)[0] + "两者的尺寸相同。"
 
-                        text_prompt = f"{sample['text_prompt']}\n{placement_descs[i]}"
+                        text_prompt = f"{base_prompt}\n{placement_descs[i]}"
                         text_prompts.append(text_prompt)
                         rotation_6d_list.append(sample["rotation_6d"])
                         scale_list.append(sample["scale"])
                         valid_indices.append(i)
 
-                    # 批量生成 responses
+                    # 批量生成 responses（只传入有效样本对应的图片）
                     responses = self.vlm_client.generate_responses_batch(
-                        text_prompts, rotation_6d_list, scale_list
+                        original_images=[original_images[i] for i in valid_indices],
+                        object_images=[object_images[i] for i in valid_indices],
+                        text_prompts=[placement_descs[i] for i in valid_indices],
+                        rotation_6d_list=rotation_6d_list,
+                        scale_list=scale_list,
                     )
 
                     # 更新样本元数据
