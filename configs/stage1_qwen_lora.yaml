@@ -15,7 +15,7 @@ data:
   root_dir: "/mnt/f/data/"
   pin_memory: true
   num_workers: 4
-  max_samples: 500
+  max_samples: 50
 
 model:
   num_seg_tokens: 1
@@ -28,7 +28,7 @@ model:
 
     lora:
       enabled: true
-      r: 16
+      r: 64
       alpha: 128
       dropout: 0.05
       target_modules:
@@ -36,9 +36,9 @@ model:
         - "k_proj"
         - "v_proj"
         - "o_proj"
-        # - "gate_proj"
-        # - "up_proj"
-        # - "down_proj"
+        - "gate_proj"
+        - "up_proj"
+        - "down_proj"
       use_qlora: false  # Set true if VRAM < 12GB
       bias: "none"
 
@@ -70,8 +70,9 @@ training:
   save_interval: 100  # Save every N steps (when save_epoch=true)
   save_total_limit: 3
   log_interval: 10
-  early_stopping: false
-  gradient_accumulation_steps: 1  # Effective batch size = batch_size * gradient_accumulation_steps
+  early_stopping: true
+  patience: 10
+  gradient_accumulation_steps: 2  # Effective batch size = batch_size * gradient_accumulation_steps
   batch_size: 2  # per_device_train_batch_size for SFTTrainer
   fp16: false  # Set true for older GPUs (may cause NaN gradients)
   bf16: true   # Recommended for RTX 30/40 series or newer

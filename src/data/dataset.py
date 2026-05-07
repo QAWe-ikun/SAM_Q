@@ -131,14 +131,17 @@ class ObjectPlacementDataset(Dataset):
             sample_id = ann.get("sample_id")
             if sample_id is None:
                 sample_id = ann.get("id", f"sample_{idx:06d}")
-            seg_path = self.seg_feature_dir / f"{sample_id}.pt"
+            split = ann.get("split", self.split)
+            scene_dir = ann.get("scene_dir", "")
+            scene_id = Path(scene_dir).name if scene_dir else "unknown"
+            seg_path = self.seg_feature_dir / split / scene_id / f"{sample_id}.pt"
             if not seg_path.exists():
                 raise FileNotFoundError(
                     f"Stage 2 requires seg_feature but file not found: {seg_path}\n"
-                    f"sample_id: {sample_id}, split: {self.split}, index: {idx}"
+                    f"sample_id: {sample_id}, split: {split}, scene: {scene_id}, index: {idx}"
                 )
             seg_data = torch.load(seg_path, map_location="cpu", weights_only=True)
-            seg_hidden = seg_data["seg_hidden"]  # [hidden_dim]
+            seg_hidden = seg_data["seg_hidden"]  # [num_seg_tokens, hidden_dim]
 
         return {
             "plane_image": plane_tensor,              # [3, H, W] for SAM3

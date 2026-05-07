@@ -30,7 +30,6 @@ class MaskPredictor(nn.Module):
     def forward(self, obj_queries, pixel_embed):
         if len(obj_queries.shape) == 3:
             if pixel_embed.ndim == 3:
-                # batch size was omitted
                 mask_preds = torch.einsum(
                     "bqc,chw->bqhw", self.mask_embed(obj_queries), pixel_embed
                 )
@@ -39,9 +38,7 @@ class MaskPredictor(nn.Module):
                     "bqc,bchw->bqhw", self.mask_embed(obj_queries), pixel_embed
                 )
         else:
-            # Assumed to have aux masks
             if pixel_embed.ndim == 3:
-                # batch size was omitted
                 mask_preds = torch.einsum(
                     "lbqc,chw->lbqhw", self.mask_embed(obj_queries), pixel_embed
                 )

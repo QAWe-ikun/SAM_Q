@@ -17,7 +17,7 @@ data:
   seg_feature_dir: "/mnt/f/data/seg_features/"  # 预提取的 <SEG> hidden states
   num_workers: 4
   pin_memory: true
-  max_samples: 50
+  max_samples: null
 
 model:
   num_seg_tokens: 1
@@ -38,7 +38,7 @@ model:
   adapter:
     freeze: false  # ← Trainable
     hidden_dim: 512
-    num_queries: 64
+    num_queries: 1
     dropout: 0.1
 
   seg_token:
@@ -50,10 +50,8 @@ model:
 
 loss:
   type: "placement"
-  dice_weight: 1.2
-  bce_weight: 0.5
-  rotation_weight: 0.5
-  scale_weight: 0.5
+  heatmap_weight: 5.0  # Fixed — ensures heatmap gradient is never diluted
+  # rotation/scale weights are learned dynamically (uncertainty-weighted)
 
 optimizer:
   type: "AdamW"
@@ -65,7 +63,7 @@ scheduler:
   type: "CosineAnnealingLR"
   T_max: 50
   eta_min: 1.0e-6
-  warmup_epochs: 5
+  warmup_epochs: 2
 
 training:
   num_epochs: 50

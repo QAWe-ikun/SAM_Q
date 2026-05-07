@@ -21,6 +21,14 @@ warnings.filterwarnings("ignore", category=FutureWarning, module="timm")
 warnings.filterwarnings("ignore", message="Casting complex values to real discards the imaginary part")
 warnings.filterwarnings("ignore", message="pkg_resources is deprecated")
 
+import logging
+
+# 只屏蔽 transformers 的 info/warning
+logging.getLogger("transformers").setLevel(logging.ERROR)
+
+# 如果还想屏蔽 tokenizers 的并行警告
+logging.getLogger("tokenizers").setLevel(logging.ERROR)
+
 # Add src to path
 src_path = Path(__file__).parent / "src"
 sys.path.insert(0, str(src_path))

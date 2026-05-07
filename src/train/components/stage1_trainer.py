@@ -28,14 +28,36 @@ class Stage1Trainer:
         self.config = config
         self.output_dir = output_dir
         self.device = device
+        self.system_prompt = (
+            "你是3D室内物体摆放助手。用户会提供：\n"
+            "1. 场景平面参考图\n"
+            "2. 目标物体的参考图\n"
+            "3. 摆放指令\n\n"
+            "请根据场景中的环境布局（墙壁、现有家具位置与朝向），"
+            "推断目标物体应放置的位置、旋转角度和缩放比例。\n\n"
+            "坐标系：上方=前，下方=后，左方=左，右方=右。\n"
+            "旋转绕Y轴：正角度=顺时针（向右转），负角度=逆时针（向左转）。\n\n"
+            "【输出格式】\n"
+            "好的，我会将[物体]摆放在[具体位置]。"
+            "物体在参考图中朝[前/后/左/右]，在场景中需要朝[前/后/左/右]摆放，且大小[偏大/偏小/正常]。"
+            "所以要绕Y轴旋转[角度]°，缩放[比例]倍。"
+            "综上所述，我会把物体放在<SEG>"
+            "【强制顺序】你必须按以下顺序输出，缺一不可："
+            "1. 位置描述"
+            "2. 朝向判断"
+            "3. 旋转角度和缩放比例"
+            "4. 综上所述...<SEG>"
+            "缺少任何一步都是错误输出。"
+        )
 
     def train(self, dataloader: DataLoader, val_dataloader: Optional[DataLoader] = None) -> Dict[str, float]:
         """
         Train Stage 1 using SFTTrainer.
         """
+        print(f"[Train] val_dataloader: {val_dataloader is not None}, samples: {len(val_dataloader.dataset) if val_dataloader is not None else 0}")
         try:
             from trl import SFTTrainer  # type: ignore
-            from transformers import TrainingArguments, TrainerCallback  # type: ignore
+            from transformers import TrainingArguments, TrainerCallback, EarlyStoppingCallback  # type: ignore
         except ImportError:
             raise ImportError("Please install trl: pip install trl>=0.8.0")
 
@@ -69,15 +91,28 @@ class Stage1Trainer:
         save_epoch = training_config.get("save_epoch", False)
         save_interval = training_config.get("save_interval", 100)
         save_total_limit = training_config.get("save_total_limit", 3)
+        early_stopping = training_config.get("early_stopping", False)
+        patience = training_config.get("patience", 3)
 
-        if save_best:
+        eval_strategy = None
+        eval_steps = None
+
+        if early_stopping:
+            eval_strategy = "steps"
+            eval_steps = log_steps
+            load_best_model_at_end = True
+            metric_for_best_model = "eval_loss"
+            greater_is_better = False
+            save_strategy = "steps"
+            save_steps = log_steps
+        elif save_best:
+            eval_strategy = "steps"
+            eval_steps = log_steps
             save_strategy = "steps"
             save_steps = log_steps
             load_best_model_at_end = True
-            metric_for_best_model = "loss"
+            metric_for_best_model = "eval_loss"
             greater_is_better = False
-            eval_strategy = "steps"
-            eval_steps = log_steps
         elif save_epoch:
             save_strategy = "steps"
             steps_per_epoch = len(dataloader) // grad_accum
@@ -91,13 +126,14 @@ class Stage1Trainer:
             load_best_model_at_end = False
             metric_for_best_model = None
             greater_is_better = None
-            eval_strategy = None
-            eval_steps = None
+
+        eval_batch_size = batch_size // 2 if batch_size > 1 else 1
 
         sft_config = TrainingArguments(
             output_dir=str(self.output_dir),
             num_train_epochs=num_epochs,
             per_device_train_batch_size=batch_size,
+            per_device_eval_batch_size=eval_batch_size,
             gradient_accumulation_steps=grad_accum,
             dataloader_num_workers = dataloader_num_workers,
             learning_rate=lr,
@@ -107,12 +143,11 @@ class Stage1Trainer:
             save_strategy=save_strategy,
             save_steps=save_steps if save_strategy != "no" else None,
             save_total_limit=save_total_limit,
-            save_safetensors=True,
             load_best_model_at_end=load_best_model_at_end,
             metric_for_best_model=metric_for_best_model,
             greater_is_better=greater_is_better,
-            eval_strategy=eval_strategy if save_best else None,
-            eval_steps=eval_steps if save_best else None,
+            eval_strategy=eval_strategy,
+            eval_steps=eval_steps,
             report_to="none",
             warmup_steps=warmup_steps,
             lr_scheduler_type="cosine",
@@ -190,6 +225,24 @@ class Stage1Trainer:
 
         seg_id = tokenizer.convert_tokens_to_ids('<SEG>')
 
+        # Build callbacks
+        class EvalCacheCleanupCallback(TrainerCallback):
+            def on_step_end(self, _args, state, control, **_kwargs):
+                if state.global_step % 10 == 0:
+                    torch.cuda.empty_cache()
+                return control
+            def on_evaluate(self, _args, _state, control, **_kwargs):
+                torch.cuda.empty_cache()
+                return control
+
+        callbacks = [
+            TieWeightSyncCallback(qwen_model, seg_id),
+            LogitCallback(qwen_model, self.model.qwen_encoder, first_text_prompt, first_images, self.device),
+            EvalCacheCleanupCallback(),
+        ]
+        if early_stopping:
+            callbacks.append(EarlyStoppingCallback(early_stopping_patience=patience))
+
         # Initialize SFTTrainer
         trainer = SFTTrainer(
             model=qwen_model,
@@ -197,10 +250,7 @@ class Stage1Trainer:
             data_collator=qwen_data_collator,
             args=sft_config,
             eval_dataset=val_dataloader.dataset if val_dataloader is not None else None,
-            callbacks=[
-                TieWeightSyncCallback(qwen_model, seg_id),
-                LogitCallback(qwen_model, self.model.qwen_encoder, first_text_prompt, first_images, self.device),
-            ],
+            callbacks=callbacks,
         )
 
         print(f"\n{'='*60}")
@@ -213,11 +263,6 @@ class Stage1Trainer:
         print(f"{'='*60}\n")
 
         train_result = trainer.train()
-
-        # If save_best, load best model checkpoint before saving
-        if save_best and trainer.state.best_model_checkpoint is not None:
-            print(f"Loading best model from {trainer.state.best_model_checkpoint}")
-            qwen_model.load_adapter(trainer.state.best_model_checkpoint)
 
         # Save LoRA weights
         lora_output_dir = self.output_dir / "lora_weights"
@@ -234,25 +279,6 @@ class Stage1Trainer:
         texts = []
         images = []
 
-        system_prompt = (
-            "你是3D室内物体摆放助手。用户会提供：\n"
-            "1. 场景平面参考图\n"
-            "2. 目标物体的参考图\n"
-            "3. 摆放指令\n\n"
-            "请根据场景中的环境布局（墙壁、现有家具位置与朝向），"
-            "推断目标物体应放置的位置、旋转角度和缩放比例。\n\n"
-            "坐标系：上方=前，下方=后，左方=左，右方=右。\n"
-            "旋转绕Y轴：正角度=顺时针（向右转），负角度=逆时针（向左转）。\n\n"
-            "【输出格式】\n"
-            "好的，我会将[物体]摆放在[具体位置]。"
-            "物体在参考图中朝[前/后/左/右]，在场景中需要朝[前/后/左/右]摆放，且大小[偏大/偏小/正常]。"
-            "所以要绕Y轴旋转[角度]°，缩放[比例]倍。"
-            "综上所述，我会把物体放在<SEG>\n\n"
-            "【要求】\n"
-            "1. 句末必须包含<SEG>\n"
-            "2. 不要添加任何与摆放无关的内容"
-        )
-
         for ex in examples:
             text_prompt = ex.get("text_prompt", "")
             response = ex.get("response", "好的，我将为您放置物体。<SEG>")
@@ -262,7 +288,7 @@ class Stage1Trainer:
                 images=ex.get("images", []),
             )
             messages = [
-                {"role": "system", "content": [{"type": "text", "text": system_prompt}]}
+                {"role": "system", "content": [{"type": "text", "text": self.system_prompt}]}
             ] + messages
             messages.append({"role": "assistant", "content": [{"type": "text", "text": response}]})
 
@@ -354,6 +380,9 @@ class Stage1Trainer:
                         text_prompt=text_prompt,
                         images=sample_images,
                     )
+                    messages = [
+                        {"role": "system", "content": [{"type": "text", "text": self.system_prompt}]}
+                    ] + messages
                     messages.append({"role": "assistant", "content": [{"type": "text", "text": response}]})
 
                     text = self.model.qwen_encoder.processor.apply_chat_template(
@@ -402,6 +431,9 @@ class Stage1Trainer:
                 text_prompt=text_prompt,
                 images=sample_images,
             )
+            messages = [
+                {"role": "system", "content": [{"type": "text", "text": self.system_prompt}]}
+            ] + messages
 
             text = self.model.qwen_encoder.processor.apply_chat_template(
                 messages, tokenize=False, add_generation_prompt=True,

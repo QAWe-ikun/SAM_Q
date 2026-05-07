@@ -304,7 +304,7 @@ class SAMQPlacementModel(nn.Module):
             seg_hidden = seg_hidden.to(self.device)
 
         # === Parallel Branch 1: SAM3 → Heatmap ===
-        # Project <SEG> to SAM3 prompt space
+        # Project <SEG> to SAM3 prompt space (adapter has built-in LayerNorm)
         seg_3d = seg_hidden.unsqueeze(1)  # [B, 1, 4096]
         text_embeddings = self.adapter(seg_3d.to(device=self.device, dtype=torch.float32))
 
@@ -468,26 +468,25 @@ class SAMQPlacementModel(nn.Module):
 class PlacementLoss(nn.Module):
     """
     Loss function for object placement prediction.
-    
-    Combines:
-        - Segmentation loss (Dice + BCE)
-        - Position regularization
-    """
-    
-    def __init__(self, dice_weight: float = 1.0, bce_weight: float = 1.0,
-                 rotation_weight: float = 0.5, scale_weight: float = 0.3):
-        super().__init__()
-        self.dice_weight = dice_weight
-        self.bce_weight = bce_weight
-        self.rotation_weight = rotation_weight
-        self.scale_weight = scale_weight
 
-        self.bce_loss = nn.BCEWithLogitsLoss()
+    Combines:
+        - Heatmap KL divergence (softmax distribution matching)
+        - Rotation L1 + Scale L1
+        - Uncertainty-weighted loss (Kendall et al., 2018)
+    """
+
+    def __init__(self, heatmap_weight: float = 5.0):
+        super().__init__()
+        # Fixed heatmap weight — must not be ignored by optimizer
+        self.heatmap_weight = heatmap_weight
+        # Learnable log-variance for rot/scl only
+        self.log_var_rotation = nn.Parameter(torch.tensor(0.0))
+        self.log_var_scale = nn.Parameter(torch.tensor(0.0))
 
     def forward(
         self,
-        predicted_masks: torch.Tensor,
-        target_masks: torch.Tensor,
+        predicted_heatmaps: torch.Tensor,
+        target_heatmaps: torch.Tensor,
         pred_rotation_6d: Optional[torch.Tensor] = None,
         pred_scale: Optional[torch.Tensor] = None,
         gt_rotation_6d: Optional[torch.Tensor] = None,
@@ -498,8 +497,8 @@ class PlacementLoss(nn.Module):
         Compute placement prediction loss.
 
         Args:
-            predicted_masks: Predicted masks (logits) [B, num_candidates, H, W]
-            target_masks: Ground truth masks [B, 1, H, W]
+            predicted_heatmaps: Predicted heatmaps (logits) [B, num_candidates, H, W]
+            target_heatmaps: Ground truth heatmaps [B, 1, H, W]
             pred_rotation_6d: Predicted 6D rotation [B, 6] (optional)
             pred_scale: Predicted scale [B] (optional)
             gt_rotation_6d: GT 6D rotation [B, 6]
@@ -509,61 +508,97 @@ class PlacementLoss(nn.Module):
         Returns:
             losses: Dictionary with total and component losses
         """
-        losses = {"total": torch.tensor(0.0, device=predicted_masks.device, dtype=predicted_masks.dtype)}
+        device = predicted_heatmaps.device
+        losses = {"total": torch.tensor(0.0, device=device, dtype=predicted_heatmaps.dtype)}
 
-        # 如果有多个候选 mask，用 class_logits 选最佳
-        if predicted_masks.shape[1] > 1 and class_logits is not None:
-            # class_logits: [num_layers, B, num_candidates, 1] → 取最后一层
+        # 如果有多个候选 heatmap，用 class_logits 选最佳
+        if predicted_heatmaps.shape[1] > 1 and class_logits is not None:
             scores = class_logits[-1].squeeze(-1)  # [B, num_candidates]
             best_idx = scores.argmax(dim=-1)        # [B]
-            # 取每个 batch 的最佳 mask
-            B = predicted_masks.shape[0]
-            predicted_masks = predicted_masks[torch.arange(B, device=predicted_masks.device), best_idx]  # [B, H, W]
-            predicted_masks = predicted_masks.unsqueeze(1)  # [B, 1, H, W]
+            B = predicted_heatmaps.shape[0]
+            predicted_heatmaps = predicted_heatmaps[torch.arange(B, device=device), best_idx]
+            predicted_heatmaps = predicted_heatmaps.unsqueeze(1)  # [B, 1, H, W]
 
         # resize 到 target 尺寸
-        if predicted_masks.shape[-2:] != target_masks.shape[-2:]:
-            predicted_masks = F.interpolate(
-                predicted_masks.float(), size=target_masks.shape[-2:],
+        if predicted_heatmaps.shape[-2:] != target_heatmaps.shape[-2:]:
+            predicted_heatmaps = F.interpolate(
+                predicted_heatmaps.float(), size=target_heatmaps.shape[-2:],
                 mode="bilinear", align_corners=False,
-            ).to(predicted_masks.dtype)
+            ).to(predicted_heatmaps.dtype)
 
-        # BCE loss
-        bce_loss = self.bce_loss(predicted_masks.float(), target_masks.float())
-        losses["bce"] = bce_loss
-        losses["total"] = losses["total"] + self.bce_weight * bce_loss
+        # Heatmap loss (fixed weight)
+        if target_heatmaps.dtype != predicted_heatmaps.dtype:
+            target_heatmaps = target_heatmaps.to(predicted_heatmaps.dtype)
+        heatmap_loss, gt_prob, offset_px = self._heatmap_mse_loss(predicted_heatmaps, target_heatmaps)
+        losses["heatmap_mse"] = heatmap_loss
+        losses["total"] = losses["total"] + self.heatmap_weight * heatmap_loss
+        losses["gt_prob"] = gt_prob
+        losses["offset_px"] = offset_px
 
-        # Dice loss
-        dice_loss = self._dice_loss(predicted_masks, target_masks)
-        losses["dice"] = dice_loss
-        losses["total"] = losses["total"] + self.dice_weight * dice_loss
+        # Rotation loss (uncertainty-weighted)
+        if pred_rotation_6d is not None and gt_rotation_6d is not None:
+            rotation_loss = F.l1_loss(pred_rotation_6d, gt_rotation_6d.to(pred_rotation_6d.device))
+            losses["rotation"] = rotation_loss
+            log_var_r = self.log_var_rotation.clamp(-5, 5)
+            losses["total"] = losses["total"] + (
+                rotation_loss / (2 * torch.exp(log_var_r)) + log_var_r / 2
+            )
 
-        # Rotation loss
-        rotation_loss = F.l1_loss(pred_rotation_6d, gt_rotation_6d.to(pred_rotation_6d.device))
-        losses["rotation"] = rotation_loss
-        losses["total"] = losses["total"] + self.rotation_weight * rotation_loss
-
-        # Scale loss
-        gt_s = gt_scale.to(pred_scale.device).squeeze(-1)  # [B]
-        scale_loss = F.l1_loss(pred_scale, gt_s)
-        losses["scale"] = scale_loss
-        losses["total"] = losses["total"] + self.scale_weight * scale_loss
+        # Scale loss (uncertainty-weighted)
+        if pred_scale is not None and gt_scale is not None:
+            gt_s = gt_scale.to(pred_scale.device).squeeze(-1)  # [B]
+            scale_loss = F.l1_loss(pred_scale, gt_s)
+            losses["scale"] = scale_loss
+            log_var_s = self.log_var_scale.clamp(-5, 5)
+            losses["total"] = losses["total"] + (
+                scale_loss / (2 * torch.exp(log_var_s)) + log_var_s / 2
+            )
 
         return losses
-    
-    def _dice_loss(
+
+    def _heatmap_mse_loss(
         self,
         predicted: torch.Tensor,
         target: torch.Tensor,
-        smooth: float = 1.0,
-    ) -> torch.Tensor:
-        """Compute Dice loss."""
-        predicted = torch.sigmoid(predicted)
-        
-        intersection = (predicted * target).sum()
-        union = predicted.sum() + target.sum()
-        
-        dice_score = (2.0 * intersection + smooth) / (union + smooth)
-        
-        return 1.0 - dice_score
+    ) -> tuple:
+        """MSE with label smoothing (ICCV 2025: Heatmap Regression without Soft-Argmax).
+
+        Label smoothing prevents background pixels from driving logits to -inf:
+            y_smooth = (1-alpha) * y_gt + alpha / N
+
+        This gives every pixel a tiny minimum target, so the optimizer cannot
+        find "push everything negative" as an optimal strategy.
+        """
+        B = predicted.shape[0]
+        alpha = 0.1  # smoothing factor
+
+        pred = predicted.float()
+        tgt = target.float()
+
+        # Label smoothing: y_smooth = (1-alpha) * y_gt + alpha / N
+        _, _, H, W = tgt.shape
+        N = H * W
+        y_smooth = (1 - alpha) * tgt + alpha / N
+
+        # Sigmoid to [0, 1] for comparison
+        pred_prob = torch.sigmoid(pred)
+
+        # MSE loss
+        loss = F.mse_loss(pred_prob, y_smooth)
+
+        # Eval metrics
+        W = target.shape[-1]
+        gt_peak_idx = tgt.view(B, -1).argmax(dim=1)
+        gt_y = gt_peak_idx // W
+        gt_x = gt_peak_idx % W
+
+        batch_idx = torch.arange(B, device=tgt.device)
+        gt_prob = pred_prob.view(B, -1)[batch_idx, gt_peak_idx].mean()
+
+        pred_peak_idx = pred_prob.view(B, -1).argmax(dim=1)
+        pred_y = pred_peak_idx // W
+        pred_x = pred_peak_idx % W
+        offset_px = torch.sqrt((pred_y.float() - gt_y.float()) ** 2 + (pred_x.float() - gt_x.float()) ** 2).mean()
+
+        return loss, gt_prob, offset_px
 

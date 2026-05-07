@@ -16,25 +16,28 @@ from typing import Dict, Any, Optional
 
 
 def create_optimizer(
-    model: torch.nn.Module,
+    params_or_model,
     config: Dict[str, Any],
 ) -> torch.optim.Optimizer:
     """
     Create optimizer from configuration.
-    
+
     Args:
-        model: PyTorch model
+        params_or_model: PyTorch model or list of parameter groups
         config: Optimizer configuration
-        
+
     Returns:
         Optimizer instance
     """
     opt_type = config.get("type", "AdamW")
     lr = config.get("lr", 1e-4)
     weight_decay = config.get("weight_decay", 1e-4)
-    
+
     # Get trainable parameters
-    params = [p for p in model.parameters() if p.requires_grad]
+    if isinstance(params_or_model, list):
+        params = [p for p in params_or_model if p.requires_grad]
+    else:
+        params = [p for p in params_or_model.parameters() if p.requires_grad]
     
     if opt_type == "AdamW":
         return AdamW(

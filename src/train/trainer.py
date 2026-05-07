@@ -67,16 +67,16 @@ class Trainer:
         else:
             from ..models import PlacementLoss
             self.criterion = PlacementLoss(
-                dice_weight=loss_config.get("dice_weight", 1.0),
-                bce_weight=loss_config.get("bce_weight", 1.0),
-                rotation_weight=loss_config.get("rotation_weight", 0.5),
-                scale_weight=loss_config.get("scale_weight", 0.3),
+                heatmap_weight=loss_config.get("heatmap_weight", 5.0),
             ).to(self.device)
             self._setup_stage2()
 
         # Initialize optimizer and scheduler
+        params = list(self.model.parameters())
+        if self.criterion is not None:
+            params.extend(self.criterion.parameters())
         self.optimizer = create_optimizer(
-            self.model,
+            params,
             config.get("optimizer", {})
         )
 
@@ -253,17 +253,22 @@ class Trainer:
 
         # Apply sample limit for testing
         max_samples = data_config.get("max_samples", None)
+        train_loader_full = train_loader
+        val_loader_full = val_loader
+        test_loader_full = test_loader
         train_loader, val_loader, test_loader = split_dataloaders(
             train_loader, val_loader, test_loader, max_samples
         )
 
         # Route to appropriate stage
         if self.stage == "lm":
-            self._run_stage1(train_loader, val_loader, test_loader)
+            self._run_stage1(train_loader, val_loader, test_loader,
+                             train_loader_full, val_loader_full, test_loader_full)
         else:
             self._run_stage2(train_loader, val_loader, test_loader)
 
-    def _run_stage1(self, train_loader, val_loader, test_loader):
+    def _run_stage1(self, train_loader, val_loader, test_loader,
+                    train_loader_full, val_loader_full, test_loader_full):
         """Run Stage 1 training."""
         stage1 = Stage1Trainer(self.model, self.config, self.output_dir, self.device)
 
@@ -276,20 +281,18 @@ class Trainer:
             print(f"Running Stage 1 Validation...")
             stage1.validate(val_loader)
             print(f"{'='*60}\n")
-            
-        data_config = self.config.get("data", {})
-        max_samples = data_config.get("max_samples", None)
 
-        # Extract seg features
+        # Extract seg features for ALL datasets (not split)
         seg_dir = Path(self.config.get("data", {}).get("root_dir", "data/")) / "seg_features"
         seg_extractor = SegFeatureExtractor(self.model, self.config)
-        seg_extractor.extract(train_loader, seg_dir)
-        if val_loader is not None:
-            seg_extractor.extract(val_loader, seg_dir)
-        if test_loader is not None and max_samples is None:
-            seg_extractor.extract(test_loader, seg_dir)
+        seg_extractor.extract(train_loader_full, seg_dir)
+        if val_loader_full is not None:
+            seg_extractor.extract(val_loader_full, seg_dir)
+        if test_loader_full is not None:
+            seg_extractor.extract(test_loader_full, seg_dir)
 
         # Test evaluation
+        max_samples = self.config.get("data", {}).get("max_samples", None)
         if test_loader is not None and max_samples is None:
             print(f"\n{'='*60}")
             print(f"Running Stage 1 Test Evaluation...")

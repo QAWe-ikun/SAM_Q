@@ -14,7 +14,6 @@ from typing import Dict, Any, Optional
 from torch.utils.data import DataLoader  # type: ignore
 from tqdm import tqdm
 
-from ..metrics import compute_metrics
 from .checkpoint_mgr import CheckpointManager
 
 
@@ -115,8 +114,9 @@ class Stage2Trainer:
         self.model.train()
 
         total_loss = 0.0
-        total_bce_loss = 0.0
-        total_dice_loss = 0.0
+        total_heatmap_mse = 0.0
+        total_gt_prob = 0.0
+        total_offset_px = 0.0
         total_rotation_loss = 0.0
         total_scale_loss = 0.0
         num_batches = 0
@@ -137,8 +137,9 @@ class Stage2Trainer:
 
             # Update metrics
             total_loss += batch_metrics["total"]
-            total_bce_loss += batch_metrics["bce"]
-            total_dice_loss += batch_metrics["dice"]
+            total_heatmap_mse += batch_metrics["heatmap_mse"]
+            total_gt_prob += batch_metrics["gt_prob"]
+            total_offset_px += batch_metrics["offset_px"]
             total_rotation_loss += batch_metrics["rotation"]
             total_scale_loss += batch_metrics["scale"]
             num_batches += 1
@@ -147,12 +148,21 @@ class Stage2Trainer:
 
         self.train_losses.append(total_loss / num_batches)
 
+        # Effective weights (heatmap fixed, rot/scl dynamic)
+        w_hm = self.criterion.heatmap_weight
+        w_rot = torch.exp(-self.criterion.log_var_rotation).item()
+        w_scl = torch.exp(-self.criterion.log_var_scale).item()
+
         return {
             "train_loss": total_loss / num_batches,
-            "train_bce_loss": total_bce_loss / num_batches,
-            "train_dice_loss": total_dice_loss / num_batches,
+            "train_heatmap_mse": total_heatmap_mse / num_batches,
+            "train_gt_prob": total_gt_prob / num_batches,
+            "train_offset_px": total_offset_px / num_batches,
             "train_rotation_loss": total_rotation_loss / num_batches,
             "train_scale_loss": total_scale_loss / num_batches,
+            "w_heatmap": w_hm,
+            "w_rotation": w_rot,
+            "w_scale": w_scl,
         }
 
     @torch.no_grad()
@@ -163,51 +173,37 @@ class Stage2Trainer:
         vis_count = 0
 
         total_loss = 0.0
-        total_bce_loss = 0.0
-        total_dice_loss = 0.0
+        total_heatmap_mse = 0.0
+        total_gt_prob = 0.0
+        total_offset_px = 0.0
         total_rotation_loss = 0.0
         total_scale_loss = 0.0
         num_batches = 0
-        all_metrics = {
-            "iou": 0.0,
-            "precision": 0.0,
-            "recall": 0.0,
-            "f1": 0.0,
-        }
 
         for batch in tqdm(dataloader, desc="Validation", leave=False):
             _, batch_metrics = self._process_batch(batch, training=False)
 
             total_loss += batch_metrics["total"]
-            total_bce_loss += batch_metrics["bce"]
-            total_dice_loss += batch_metrics["dice"]
+            total_heatmap_mse += batch_metrics["heatmap_mse"]
+            total_gt_prob += batch_metrics["gt_prob"]
+            total_offset_px += batch_metrics["offset_px"]
             total_rotation_loss += batch_metrics["rotation"]
             total_scale_loss += batch_metrics["scale"]
             num_batches += 1
 
-            # Compute IoU metrics
+            # 可视化前 5 个 batch
             output = batch.get("output")
-            if output is not None:
-                metrics = self._compute_iou_metrics(output, batch)
-                for key in all_metrics:
-                    all_metrics[key] += metrics[key]
-                
-                # 可视化前 5 个 batch
-                if vis_count < 5:
-                    self._visualize_batch(batch, output, vis_count)
-                    vis_count += 1
+            if output is not None and vis_count < 5:
+                self._visualize_batch(batch, output, vis_count)
+                vis_count += 1
 
         self.val_losses.append(total_loss / num_batches)
 
-        # Average metrics
-        for key in all_metrics:
-            all_metrics[key] /= num_batches
-
         return {
-            **all_metrics,
             "val_loss": total_loss / num_batches,
-            "val_bce_loss": total_bce_loss / num_batches,
-            "val_dice_loss": total_dice_loss / num_batches,
+            "val_heatmap_mse": total_heatmap_mse / num_batches,
+            "val_gt_prob": total_gt_prob / num_batches,
+            "val_offset_px": total_offset_px / num_batches,
             "val_rotation_loss": total_rotation_loss / num_batches,
             "val_scale_loss": total_scale_loss / num_batches,
         }
@@ -221,8 +217,8 @@ class Stage2Trainer:
         if seg_hidden_batch is not None:
             seg_hidden_batch = seg_hidden_batch.to(self.device)
 
-        batch_loss_tensor = torch.tensor(0.0, device=self.device)
-        batch_metrics = {"total": 0.0, "bce": 0.0, "dice": 0.0, "rotation": 0.0, "scale": 0.0}
+        batch_loss_tensor = None
+        batch_metrics = {"total": 0.0, "heatmap_mse": 0.0, "gt_prob": 0.0, "offset_px": 0.0, "rotation": 0.0, "scale": 0.0}
 
         for i in range(len(plane_images_batch)):
             plane_image = plane_images_batch[i]
@@ -244,8 +240,8 @@ class Stage2Trainer:
             gt_rot = batch.get("rotation_6d")
             gt_scl = batch.get("scale")
             loss_dict = self.criterion(
-                predicted_masks=output["heatmap"],
-                target_masks=masks[i:i+1],
+                predicted_heatmaps=output["heatmap"],
+                target_heatmaps=masks[i:i+1],
                 pred_rotation_6d=output.get("rotation_6d"),
                 pred_scale=output.get("scale_relative"),
                 gt_rotation_6d=gt_rot[i:i+1] if gt_rot is not None else None,
@@ -253,12 +249,16 @@ class Stage2Trainer:
                 class_logits=output.get("class_logits"),
             )
 
-            batch_loss_tensor = batch_loss_tensor + loss_dict["total"]
+            if batch_loss_tensor is None:
+                batch_loss_tensor = loss_dict["total"]
+            else:
+                batch_loss_tensor = batch_loss_tensor + loss_dict["total"]
             batch_metrics["total"] += loss_dict["total"].item()
-            batch_metrics["bce"] += loss_dict.get("bce", 0).item() if isinstance(loss_dict.get("bce", 0), torch.Tensor) else loss_dict.get("bce", 0)
-            batch_metrics["dice"] += loss_dict.get("dice", 0).item() if isinstance(loss_dict.get("dice", 0), torch.Tensor) else loss_dict.get("dice", 0)
-            batch_metrics["rotation"] += loss_dict.get("rotation", 0).item() if isinstance(loss_dict.get("rotation", 0), torch.Tensor) else loss_dict.get("rotation", 0)
-            batch_metrics["scale"] += loss_dict.get("scale", 0).item() if isinstance(loss_dict.get("scale", 0), torch.Tensor) else loss_dict.get("scale", 0)
+            batch_metrics["heatmap_mse"] += self._to_float(loss_dict.get("heatmap_mse", 0))
+            batch_metrics["gt_prob"] += self._to_float(loss_dict.get("gt_prob", 0))
+            batch_metrics["offset_px"] += self._to_float(loss_dict.get("offset_px", 0))
+            batch_metrics["rotation"] += self._to_float(loss_dict.get("rotation", 0))
+            batch_metrics["scale"] += self._to_float(loss_dict.get("scale", 0))
 
         # Average over batch size
         batch_size = len(plane_images_batch)
@@ -268,36 +268,26 @@ class Stage2Trainer:
 
         return batch_loss_tensor, batch_metrics
 
-    def _compute_iou_metrics(self, output, batch):
-        """Compute IoU, Precision, Recall, F1 metrics."""
-        pred_mask = torch.sigmoid(output["heatmap"])
-
-        # Select best query
-        class_logits = output.get("class_logits")
-        if pred_mask.shape[1] > 1 and class_logits is not None:
-            scores = class_logits[-1].squeeze(-1)
-            best_idx = scores.argmax(dim=-1)
-            pred_mask = pred_mask[torch.arange(pred_mask.shape[0], device=pred_mask.device), best_idx]
-            pred_mask = pred_mask.unsqueeze(1)
-
-        # Resize to GT size
-        gt_mask = batch["masks"]
-        if pred_mask.shape[-2:] != gt_mask.shape[-2:]:
-            pred_mask = F.interpolate(pred_mask, size=gt_mask.shape[-2:], mode="bilinear", align_corners=False)
-
-        return compute_metrics(pred_mask, gt_mask)
+    def _to_float(self, v):
+        if isinstance(v, torch.Tensor):
+            return v.item()
+        return v
 
     def _print_metrics(self, metrics):
         """Print formatted metrics."""
         epoch_num = metrics['epoch']
+        # Dynamic weights (effective weight = exp(-log_var))
+        w_hm = metrics.get("w_heatmap", 1.0)
+        w_rot = metrics.get("w_rotation", 1.0)
+        w_scl = metrics.get("w_scale", 1.0)
         print(f"Epoch {epoch_num:3d} | "
               f"train_loss: {metrics.get('train_loss', 0):.4f} | "
-              f"bce: {metrics.get('train_bce_loss', 0):.4f} | "
-              f"dice: {metrics.get('train_dice_loss', 0):.4f} | "
-              f"rot: {metrics.get('train_rotation_loss', 0):.4f} | "
-              f"scl: {metrics.get('train_scale_loss', 0):.4f} | "
+              f"hm: {metrics.get('train_heatmap_mse', 0):.4f}(w={w_hm:.2f}) | "
+              f"gt_prob: {metrics.get('train_gt_prob', 0):.4f} | "
+              f"offset_px: {metrics.get('train_offset_px', 0):.1f} | "
+              f"rot: {metrics.get('train_rotation_loss', 0):.4f}(w={w_rot:.2f}) | "
+              f"scl: {metrics.get('train_scale_loss', 0):.4f}(w={w_scl:.2f}) | "
               f"val_loss: {metrics.get('val_loss', 0):.4f} | "
-              f"iou: {metrics.get('iou', 0):.4f} | "
               f"lr: {metrics.get('lr', 0):.6f}")
 
     def _check_early_stopping(self, val_loss: float) -> bool:
@@ -322,35 +312,35 @@ class Stage2Trainer:
         """Save visualization of predicted and GT heatmaps."""
         import cv2 # type: ignore
         import numpy as np
-        
-        pred_mask = torch.sigmoid(output["heatmap"])
-        gt_mask = batch["masks"]
-        
+
+        pred_heatmap = torch.sigmoid(output["heatmap"])
+        gt_heatmap = batch["masks"]
+
         # Resize pred to GT size if needed
-        if pred_mask.shape[-2:] != gt_mask.shape[-2:]:
-            pred_mask = F.interpolate(pred_mask, size=gt_mask.shape[-2:], mode="bilinear", align_corners=False)
-        
+        if pred_heatmap.shape[-2:] != gt_heatmap.shape[-2:]:
+            pred_heatmap = F.interpolate(pred_heatmap, size=gt_heatmap.shape[-2:], mode="bilinear", align_corners=False)
+
         # Get first sample in batch
-        pred = pred_mask[0, 0].cpu().float().numpy()
-        gt = gt_mask[0, 0].cpu().numpy()  # [B, 1, H, W] -> [H, W]
+        pred = pred_heatmap[0, 0].cpu().float().numpy()
+        gt = gt_heatmap[0, 0].cpu().numpy()  # [B, 1, H, W] -> [H, W]
         plane_img = batch["plane_images"][0].cpu().numpy().transpose(1, 2, 0)
-        
+
         # Normalize plane image to [0, 255]
         plane_img = np.clip(plane_img * 255, 0, 255).astype(np.uint8)
-        
+
         # Convert heatmaps to colored images
-        pred_colored = cv2.applyColorMap((pred * 255).astype(np.uint8), cv2.COLORMAP_JET)
-        gt_colored = cv2.applyColorMap((gt * 255).astype(np.uint8), cv2.COLORMAP_JET)
-        
+        pred_colored = cv2.applyColorMap((np.clip(pred, 0, 1) * 255).astype(np.uint8), cv2.COLORMAP_JET)
+        gt_colored = cv2.applyColorMap((np.clip(gt, 0, 1) * 255).astype(np.uint8), cv2.COLORMAP_JET)
+
         # Resize heatmaps to match plane image size
         h, w = plane_img.shape[:2]
         pred_colored = cv2.resize(pred_colored, (w, h))
         gt_colored = cv2.resize(gt_colored, (w, h))
-        
+
         # Overlay on plane image
         overlay_pred = cv2.addWeighted(plane_img, 0.7, pred_colored, 0.3, 0)
         overlay_gt = cv2.addWeighted(plane_img, 0.7, gt_colored, 0.3, 0)
-        
+
         # Save
         out_path = f"debug/vis/val_batch{batch_idx:02d}.png"
         combined = np.hstack([overlay_pred, overlay_gt])
